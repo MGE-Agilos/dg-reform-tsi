@@ -18,11 +18,18 @@ from haystack.tools import Tool, flatten_tools_or_toolsets
 
 DEFAULT_SYSTEM_PROMPT = "You are a precise assistant. Follow the user's instructions exactly."
 _QUOTA = re.compile(r"rate.?limit|usage limit|limit reached|quota|too many requests|\b429\b", re.IGNORECASE)
-TOOLS_INTRO = ("You can call tools to gather information before answering. Available tools, with their "
-               "parameters as JSON schema:")
-TOOLS_INSTRUCTION = ("Reply with JSON only. Either put one or more tool calls in `tool_calls` (and leave "
-                     "`answer` empty) to gather more information, or leave `tool_calls` empty and put your final "
-                     "answer to the user in `answer`. Never invent tool results.")
+# Avec --json-schema, le CLI ne donne au modele qu'un seul outil natif, StructuredOutput : il ne peut pas
+# appeler nos "outils" directement. On les lui presente comme des actions externes a demander via cet outil,
+# et on insiste pour qu'il ne le rappelle pas une fois qu'il a "reussi" (le modele peut sinon croire que l'appel
+# a produit un resultat, et rappeler StructuredOutput avec une reponse fabriquee).
+TOOLS_INTRO = ("Your only callable tool in this session is StructuredOutput. The actions listed below are NOT "
+               "tools you can call directly: an external program runs them for you. To request actions, call "
+               "StructuredOutput with the actions in `tool_calls`; their results will be sent back to you in the "
+               "next message. Actions, with their arguments as JSON schema:")
+TOOLS_INSTRUCTION = ("Call StructuredOutput exactly once. If you need information, put the requested actions in "
+                     "`tool_calls` and leave `answer` empty. Only when the conversation above already contains "
+                     "the results you need, leave `tool_calls` empty and write the final answer in `answer`. "
+                     "Never invent results.")
 
 
 class LLMCallError(RuntimeError):
@@ -65,37 +72,32 @@ class ClaudeCliChatGenerator:
             cmd += ["--json-schema", json.dumps(self.json_schema, separators=(",", ":"))]
         return cmd
 
-    def _invoke(self, system: str, prompt: str, json_schema: dict[str, Any] | None) -> tuple[dict[str, Any], dict]:
-        cmd = self._command(system or DEFAULT_SYSTEM_PROMPT)
-        if json_schema is not self.json_schema:  # schema propre a l'appel (outils) : remplace celui de l'init
-            if "--json-schema" in cmd:
-                del cmd[cmd.index("--json-schema"):cmd.index("--json-schema") + 2]
-            cmd += ["--json-schema", json.dumps(json_schema, separators=(",", ":"))]
+    def _command_for_tools(self, system_prompt: str, schema: dict[str, Any]) -> list[str]:
+        # stream-json + --verbose : on doit lire les evenements assistant un par un pour retrouver le PREMIER
+        # appel de l'outil natif StructuredOutput (voir TOOLS_INTRO). --output-format json ne donnerait que le
+        # dernier appel, potentiellement une reponse fabriquee par le modele apres un premier appel correct.
+        exe = self._resolve_executable()
+        return [exe, "-p", "--output-format", "stream-json", "--verbose", "--model", self.model,
+                "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+                "--setting-sources", "", "--no-session-persistence", "--system-prompt", system_prompt,
+                "--json-schema", json.dumps(schema, separators=(",", ":"))]
+
+    def _run_cli(self, cmd: list[str], prompt: str) -> subprocess.CompletedProcess:
         try:
-            proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
+            return subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
                                   errors="replace", timeout=self.timeout_s)
         except subprocess.TimeoutExpired as exc:
             raise LLMCallError(f"timeout after {self.timeout_s}s") from exc
         except OSError as exc:
             raise LLMCallError(f"cannot run claude CLI: {exc}") from exc
-        try:
-            data = json.loads(proc.stdout)
-        except json.JSONDecodeError as exc:
-            message = (proc.stderr or proc.stdout or "").strip()[:500]
-            if _QUOTA.search(message):
-                raise LLMQuotaExceeded(message) from exc
-            raise LLMCallError(f"exit {proc.returncode}: {message}") from exc
-        if data.get("is_error") or proc.returncode != 0:
-            message = str(data.get("result") or proc.stderr or "unknown CLI error")[:500]
-            if data.get("api_error_status") == 429 or _QUOTA.search(message):
-                raise LLMQuotaExceeded(message)
-            raise LLMCallError(message)
-        usage = data.get("usage") or {}
+
+    def _meta_from_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        usage = result.get("usage") or {}
         # Avec --json-schema, le CLI ajoute un petit appel Haiku, liste en premier : on retient
         # le modele qui a coute le plus, c'est-a-dire celui qui a fait l'extraction.
-        model_usage = data.get("modelUsage") or {}
+        model_usage = result.get("modelUsage") or {}
         model_used = max(model_usage, key=lambda m: (model_usage[m] or {}).get("costUSD") or 0, default=self.model)
-        meta = {
+        return {
             "model": f"claude-cli/{model_used}",
             "usage": {
                 "prompt_tokens": int(usage.get("input_tokens") or 0),
@@ -103,12 +105,63 @@ class ClaudeCliChatGenerator:
                 "cache_read_input_tokens": int(usage.get("cache_read_input_tokens") or 0),
                 "cache_creation_input_tokens": int(usage.get("cache_creation_input_tokens") or 0),
             },
-            "cost_usd": data.get("total_cost_usd"),
-            "duration_ms": data.get("duration_ms"),
-            "num_turns": data.get("num_turns"),
-            "session_id": data.get("session_id"),
+            "cost_usd": result.get("total_cost_usd"),
+            "duration_ms": result.get("duration_ms"),
+            "num_turns": result.get("num_turns"),
+            "session_id": result.get("session_id"),
         }
-        return data, meta
+
+    @staticmethod
+    def _raise_for_error(result: dict[str, Any], returncode: int, stderr: str) -> None:
+        if result.get("is_error") or returncode != 0:
+            message = str(result.get("result") or stderr or "unknown CLI error")[:500]
+            if result.get("api_error_status") == 429 or _QUOTA.search(message):
+                raise LLMQuotaExceeded(message)
+            raise LLMCallError(message)
+
+    def _invoke(self, system: str, prompt: str) -> tuple[dict[str, Any], dict]:
+        proc = self._run_cli(self._command(system or DEFAULT_SYSTEM_PROMPT), prompt)
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            message = (proc.stderr or proc.stdout or "").strip()[:500]
+            if _QUOTA.search(message):
+                raise LLMQuotaExceeded(message) from exc
+            raise LLMCallError(f"exit {proc.returncode}: {message}") from exc
+        self._raise_for_error(data, proc.returncode, proc.stderr)
+        return data, self._meta_from_result(data)
+
+    def _invoke_tools(self, system: str, prompt: str, schema: dict[str, Any]) -> tuple[dict[str, Any] | None, dict]:
+        proc = self._run_cli(self._command_for_tools(system or DEFAULT_SYSTEM_PROMPT, schema), prompt)
+        events: list[dict[str, Any]] = []
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue  # ligne non-JSON (rare en stream-json) : ignoree
+        result = next((e for e in events if e.get("type") == "result"), None)
+        if result is None:
+            message = (proc.stderr or proc.stdout or "").strip()[:500]
+            if _QUOTA.search(message):
+                raise LLMQuotaExceeded(message)
+            raise LLMCallError(f"exit {proc.returncode}: {message}")
+        self._raise_for_error(result, proc.returncode, proc.stderr)
+        structured = None
+        for event in events:
+            if event.get("type") != "assistant":
+                continue
+            for block in event.get("message", {}).get("content") or []:
+                if block.get("type") == "tool_use" and block.get("name") == "StructuredOutput":
+                    structured = block.get("input")
+                    break
+            if structured is not None:
+                break  # on ignore tout appel StructuredOutput suivant (reponse fabriquee)
+        if structured is None:
+            structured = result.get("structured_output")
+        return structured, self._meta_from_result(result)
 
     @staticmethod
     def _system(messages: list[ChatMessage]) -> str:
@@ -120,7 +173,7 @@ class ClaudeCliChatGenerator:
         if tools:
             return self._run_with_tools(messages, list(flatten_tools_or_toolsets(tools)))
         prompt = "\n\n".join(m.text for m in messages if not m.is_from(ChatRole.SYSTEM) and m.text)
-        data, meta = self._invoke(self._system(messages), prompt, self.json_schema)
+        data, meta = self._invoke(self._system(messages), prompt)
         structured = data.get("structured_output")
         text = json.dumps(structured, ensure_ascii=False) if structured is not None else data.get("result", "")
         return {"replies": [ChatMessage.from_assistant(text, meta=meta)]}
@@ -155,16 +208,18 @@ class ClaudeCliChatGenerator:
         return "\n\n".join(parts)
 
     def _run_with_tools(self, messages: list[ChatMessage], tools: list[Tool]) -> dict[str, list[ChatMessage]]:
-        """Le CLI n'appelle pas d'outils Python : on lui fait choisir, en JSON, entre appels d'outils et reponse."""
+        """Le CLI n'appelle pas nos outils Python : on lui fait choisir, via son seul outil natif
+        StructuredOutput, entre demander des actions et repondre (voir TOOLS_INTRO)."""
         names = {t.name for t in tools}
         described = "\n\n".join(f"### {t.name}\n{t.description}\nParameters: "
                                 f"{json.dumps(t.parameters, ensure_ascii=False)}" for t in tools)
         prompt = (f"{TOOLS_INTRO}\n\n{described}\n\n# Conversation\n\n{self._transcript(messages)}\n\n"
                   f"{TOOLS_INSTRUCTION}")
         schema = self._tools_schema(tools)
+        system = self._system(messages)
         for _ in range(2):  # une nouvelle tentative si la reponse n'est ni appel d'outil ni texte
-            data, meta = self._invoke(self._system(messages), prompt, schema)
-            out = data.get("structured_output") or {}
+            out, meta = self._invoke_tools(system, prompt, schema)
+            out = out or {}
             calls = [c for c in out.get("tool_calls") or [] if isinstance(c, dict) and c.get("tool_name") in names]
             if calls:
                 tool_calls = [ToolCall(tool_name=c["tool_name"], arguments=c.get("arguments") or {},
