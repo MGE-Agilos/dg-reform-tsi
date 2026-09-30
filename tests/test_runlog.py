@@ -36,3 +36,28 @@ def test_threads_need_copied_context(tmp_path):
             for i in range(4):
                 pool.submit(contextvars.copy_context().run, runlog.event, "C", "write", f"p{i}")
         assert run.counts["write:ok"] == 4
+
+
+def test_crash_is_recorded_and_reraised(tmp_path):
+    import pytest
+    with pytest.raises(RuntimeError):
+        with runlog.open_run(tmp_path, run_id="boom"):
+            runlog.event("C", "fetch", "u")
+            raise RuntimeError("kaput")
+    summary = json.loads((tmp_path / "runs" / "boom.summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "error" and "kaput" in summary["error"]
+    assert summary["counts"] == {"fetch:ok": 1}
+
+
+def test_clean_run_has_ok_status(tmp_path):
+    with runlog.open_run(tmp_path, run_id="fine") as run:
+        pass
+    assert run.final_summary["status"] == "ok"
+
+
+def test_automatic_run_ids_do_not_collide(tmp_path):
+    first = runlog.RunLog(tmp_path)
+    second = runlog.RunLog(tmp_path)
+    assert first.run_id != second.run_id
+    first.close()
+    second.close()

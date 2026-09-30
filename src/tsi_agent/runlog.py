@@ -29,9 +29,17 @@ def _now() -> str:
 
 class RunLog:
     def __init__(self, logs_dir: str | Path, run_id: str | None = None):
-        self.run_id = run_id or datetime.now().strftime("%Y%m%d-%H%M%S")
         self.logs_dir = Path(logs_dir)
         (self.logs_dir / "runs").mkdir(parents=True, exist_ok=True)
+        if run_id is None:
+            base_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+            self.run_id = base_id
+            counter = 2
+            while (self.logs_dir / "runs" / f"{self.run_id}.jsonl").exists():
+                self.run_id = f"{base_id}-{counter}"
+                counter += 1
+        else:
+            self.run_id = run_id
         self.path = self.logs_dir / "runs" / f"{self.run_id}.jsonl"
         self.started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self._t0 = time.monotonic()
@@ -61,17 +69,18 @@ class RunLog:
                 self.alerts.append(str(fields.get("message") or target))
 
     def summary(self) -> dict[str, Any]:
-        return {
-            "run_id": self.run_id,
-            "started_at": self.started_at,
-            "duration_s": round(time.monotonic() - self._t0, 1),
-            "counts": dict(sorted(self.counts.items())),
-            "alerts": list(self.alerts),
-            "llm_calls": self.llm_calls,
-            "tokens": {name: self.llm_tokens[name] for name in LLM_TOKEN_FIELDS},
-            "cost_usd": round(self.cost_usd, 4),
-            **self.extra,
-        }
+        with self._lock:
+            return {
+                "run_id": self.run_id,
+                "started_at": self.started_at,
+                "duration_s": round(time.monotonic() - self._t0, 1),
+                "counts": dict(sorted(self.counts.items())),
+                "alerts": list(self.alerts),
+                "llm_calls": self.llm_calls,
+                "tokens": {name: self.llm_tokens[name] for name in LLM_TOKEN_FIELDS},
+                "cost_usd": round(self.cost_usd, 4),
+                **self.extra,
+            }
 
     def close(self) -> dict[str, Any]:
         summary = self.summary()
@@ -94,8 +103,13 @@ class RunLog:
 def open_run(logs_dir: str | Path, run_id: str | None = None) -> Iterator[RunLog]:
     run = RunLog(logs_dir, run_id)
     token = _current.set(run)
+    run.extra["status"] = "ok"
     try:
         yield run
+    except BaseException as exc:
+        run.extra["status"] = "error"
+        run.extra["error"] = repr(exc)[:500]
+        raise
     finally:
         _current.reset(token)
         run.final_summary = run.close()
