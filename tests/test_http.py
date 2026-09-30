@@ -107,7 +107,14 @@ def test_429_waits_long_and_honours_retry_after(tmp_path):
     f = PoliteFetcher(tmp_path / "cache", min_interval_s=0, transport=httpx.MockTransport(handler),
                       sleep=waits.append, rate_limit_backoff_s=30)
     assert f.get(URL).content == b"ok"
-    assert waits == [90, 180]  # Retry-After, puis le délai double (jamais de retour en arrière)
+    # Attentes: [rate_limit_backoff, throttle_avant_retry1, rate_limit_backoff_doubled, throttle_avant_retry2]
+    # Après premier 429: min_interval_s devient 5.0, puis sleep 90
+    # Avant retry1: sleep ~5 (throttle)
+    # Après deuxième 429: min_interval_s devient 10.0, puis sleep 180
+    # Avant retry2: sleep ~10 (throttle)
+    assert len(waits) == 4 and waits[0] == 90 and waits[2] == 180
+    assert 4 < waits[1] < 6  # throttle: ~5.0
+    assert 9 < waits[3] < 11  # throttle: ~10.0
 
 
 def test_corrupt_cache_entry_is_a_cache_miss(tmp_path):
@@ -148,3 +155,21 @@ def test_throttle_waits_between_requests(tmp_path):
     f.get("https://example.test/b_en")
     # robots.txt, puis a, puis b : deux attentes proches de l'intervalle
     assert len(waits) == 2 and all(4.0 < w <= 5.0 for w in waits)
+
+
+def test_429_slows_the_fetcher_down_durably(tmp_path):
+    attempts = []
+
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return robots_ok(request)
+        attempts.append(1)
+        return httpx.Response(429) if len(attempts) == 1 else httpx.Response(200, content=b"ok")
+
+    f = PoliteFetcher(tmp_path / "cache", min_interval_s=2, transport=httpx.MockTransport(handler),
+                      sleep=lambda s: None, rate_limit_backoff_s=0)
+    f.get(URL)
+    assert f.min_interval_s == 5.0
+    for _ in range(3):
+        f._on_rate_limited("https://example.test/x") if hasattr(f, "_on_rate_limited") else None
+    assert f.min_interval_s <= 15.0

@@ -17,6 +17,7 @@ from tsi_agent import runlog
 
 DEFAULT_USER_AGENT = "TSI-Extraction-Agent/0.1 (DG REFORM project; polite crawler)"
 COMPONENT = "PoliteFetcher"
+MAX_INTERVAL_S = 15.0  # le site renvoie des 429 au-delà d'environ 1 req/s ; on ralentit durablement après un 429
 
 
 @dataclass
@@ -106,6 +107,7 @@ class PoliteFetcher:
                 last_error = f"HTTP {resp.status_code}"
                 last_status = resp.status_code
                 if resp.status_code == 429:
+                    self._on_rate_limited(url)
                     wait_s = max(wait_s, self.rate_limit_backoff_s, _retry_after(resp) or 0)
             if attempt < self.retries:
                 runlog.event(COMPONENT, "fetch", url, "retry", attempt=attempt, wait_s=wait_s, error=last_error)
@@ -122,6 +124,13 @@ class PoliteFetcher:
                 self._sleep(wait)
             self._last_request = time.monotonic()
         return self._client.get(url, headers=headers)
+
+    def _on_rate_limited(self, url: str) -> None:
+        """Augmente durablement l'intervalle minimum après un 429."""
+        new_interval = min(max(self.min_interval_s * 2, 5.0), MAX_INTERVAL_S)
+        if new_interval != self.min_interval_s:
+            self.min_interval_s = new_interval
+            runlog.event(COMPONENT, "throttle", url, "slowed_down", min_interval_s=self.min_interval_s)
 
     def _allowed(self, url: str) -> bool:
         if not self.respect_robots:
