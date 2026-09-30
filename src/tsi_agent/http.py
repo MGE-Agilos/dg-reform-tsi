@@ -67,14 +67,22 @@ class PoliteFetcher:
         self._lock = threading.Lock()
 
     # --- API publique -------------------------------------------------------------------
-    def get(self, url: str) -> FetchResult:
+    def cached(self, url: str) -> bytes | None:
+        """Contenu deja recupere (memo ou cache disque), sans requete reseau ; None si absent."""
         if url in self._memo:
+            return self._memo[url].content
+        _, body = self._cache_read(url)
+        return body
+
+    def get(self, url: str, cache: bool = True) -> FetchResult:
+        """`cache=False` : ni memo, ni lecture ou ecriture du cache disque (gros fichiers, PDF)."""
+        if cache and url in self._memo:
             runlog.event(COMPONENT, "cache_hit", url, "memo")
             return self._memo[url]
         if not self._allowed(url):
             runlog.event(COMPONENT, "fetch", url, "robots_disallowed")
             raise FetchError(url, "disallowed by robots.txt")
-        meta, body = self._cache_read(url)
+        meta, body = self._cache_read(url) if cache else (None, None)
         headers: dict[str, str] = {}
         if meta and body is not None:
             if meta.get("etag"):
@@ -100,10 +108,11 @@ class PoliteFetcher:
                     return result
                 if resp.status_code < 400:
                     result = FetchResult(url, str(resp.url), resp.status_code, resp.content, False)
-                    self._cache_write(url, result, resp.headers)
+                    if cache:
+                        self._cache_write(url, result, resp.headers)
+                        self._memo[url] = result
                     runlog.event(COMPONENT, "fetch", url, "ok", duration_ms=ms, status=resp.status_code,
                                  final_url=result.final_url, bytes=len(resp.content))
-                    self._memo[url] = result
                     self._on_success(url)
                     return result
                 if resp.status_code != 429 and resp.status_code < 500:

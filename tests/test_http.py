@@ -223,6 +223,25 @@ def test_throttle_waits_between_requests(tmp_path):
     assert len(waits) == 2 and all(4.0 < w <= 5.0 for w in waits)
 
 
+def test_cached_and_uncached_get(tmp_path):
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, content=b"%PDF-1.4 data")
+    f = PoliteFetcher(cache_dir=tmp_path, min_interval_s=0, transport=httpx.MockTransport(handler),
+                      respect_robots=False, sleep=lambda s: None)
+    assert f.cached("https://x/a") is None
+    f.get("https://x/a")
+    assert f.cached("https://x/a") == b"%PDF-1.4 data"
+    before = len(list(tmp_path.iterdir()))
+    assert f.get("https://x/pdf", cache=False).content == b"%PDF-1.4 data"
+    assert len(list(tmp_path.iterdir())) == before          # rien ecrit dans le cache
+    f.get("https://x/pdf", cache=False)
+    assert calls.count("https://x/pdf") == 2                 # ni memo ni cache
+    assert f.cached("https://x/pdf") is None
+
+
 def test_429_slows_the_fetcher_down_durably(tmp_path):
     attempts = []
 
