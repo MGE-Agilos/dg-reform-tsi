@@ -60,8 +60,10 @@ class RunLog:
             self._fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
             self._fh.flush()
             self.counts[f"{action}:{result}"] += 1
-            if action == "llm_call":
-                self.llm_calls += 1
+            # Les embeddings (pipeline `index`) comptent dans les tokens et le cout, pas dans llm_calls.
+            if action in ("llm_call", "embed"):
+                if action == "llm_call":
+                    self.llm_calls += 1
                 for name in LLM_TOKEN_FIELDS:
                     self.llm_tokens[name] += int(fields.get(name) or 0)
                 self.cost_usd += float(fields.get("cost_usd") or 0.0)

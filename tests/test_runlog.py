@@ -3,6 +3,8 @@ import csv
 import json
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 from tsi_agent import runlog
 
 
@@ -61,3 +63,12 @@ def test_automatic_run_ids_do_not_collide(tmp_path):
     assert first.run_id != second.run_id
     first.close()
     second.close()
+
+
+def test_embed_events_count_tokens_and_cost_but_not_llm_calls(tmp_path):
+    from tsi_agent import runlog
+    with runlog.open_run(tmp_path, "e1") as run:
+        runlog.event("VectorLayerWriter", "embed", "m", input_tokens=1000, cost_usd=0.00002)
+    s = run.final_summary
+    assert s["llm_calls"] == 0 and s["tokens"]["input_tokens"] == 1000 and s["cost_usd"] == 0.0
+    assert run.cost_usd == pytest.approx(0.00002)

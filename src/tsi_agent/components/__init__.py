@@ -6,10 +6,11 @@ from tsi_agent.components.discoverer import ProjectDiscoverer
 from tsi_agent.components.extractor import ProjectExtractor
 from tsi_agent.components.file_loader import ProjectFileLoader
 from tsi_agent.components.listing import SourceListingFetcher
+from tsi_agent.components.vector_writer import VectorLayerWriter
 from tsi_agent.components.writer import MarkdownProjectWriter
 
 __all__ = [
     "ChangeDetector", "ClaudeCliChatGenerator", "DetailPageFetcher", "LLMCallError", "LLMQuotaExceeded",
     "MarkdownProjectWriter", "ProjectChunker", "ProjectDiscoverer", "ProjectExtractor", "ProjectFileLoader",
-    "SourceListingFetcher",
+    "SourceListingFetcher", "VectorLayerWriter",
 ]

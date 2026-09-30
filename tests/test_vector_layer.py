@@ -2,6 +2,7 @@ import shutil
 
 import pytest
 from haystack import Document
+from haystack.components.embedders import MockDocumentEmbedder
 from haystack.dataclasses import ByteStream
 
 from conftest import FIXTURES
@@ -9,6 +10,7 @@ from tsi_agent import runlog
 from tsi_agent.chunking import CHUNKER_VERSION
 from tsi_agent.components.chunker import ProjectChunker
 from tsi_agent.components.file_loader import ProjectFileLoader
+from tsi_agent.components.vector_writer import VectorLayerWriter
 from tsi_agent.vector_state import (FileState, VectorLayerError, VectorState, load_state, load_store, new_store,
                                     save_state, save_store, store_path)
 
@@ -106,3 +108,92 @@ def test_loader_forces_full(tmp_path, change):
         store_path(out / "vectors").unlink()
     res = loader(out, embedder_id="other:m" if change == "embedder" else "mock:m").run(full=change == "flag")
     assert res["full"] is True and len(res["sources"]) == 3 and res["removed"] == []
+
+
+def index_once(out, *, full=False, embedder_id="MockDocumentEmbedder:mock", pricing=None):
+    """Un passage complet loader -> chunker -> mock embedder -> writer, sans Pipeline."""
+    loaded = ProjectFileLoader(output_dir=str(out), vectors_dir=str(out / "vectors"),
+                               embedder_id=embedder_id).run(full=full)
+    chunked = ProjectChunker().run(sources=loaded["sources"])
+    embedded = MockDocumentEmbedder(model="mock", dimension=8).run(documents=chunked["documents"])
+    writer = VectorLayerWriter(vectors_dir=str(out / "vectors"), embedder_id=embedder_id, pricing=pricing)
+    return writer.run(documents=embedded["documents"], sources=loaded["sources"], removed=loaded["removed"],
+                      full=loaded["full"], skipped=chunked["skipped"], embed_meta=embedded["meta"])["stats"]
+
+
+def stored_ids(out):
+    return sorted(d.id for d in load_store(store_path(out / "vectors")).filter_documents())
+
+
+def test_writer_full_then_incremental(tmp_path):
+    out = make_output(tmp_path)
+    stats = index_once(out)
+    assert stats["files_indexed"] == 3 and stats["chunks_deleted"] == 0
+    total = stats["chunks_total"]
+    assert total == len(stored_ids(out)) and "energy-regulation-academy#0" in stored_ids(out)
+    state = load_state(out / "vectors")
+    assert state.embedder_id == "MockDocumentEmbedder:mock" and state.chunker_version == CHUNKER_VERSION
+    assert state.files["projects/thin.md"].chunk_ids == ["srsp-2016-technical-support-for-the-property-tax-reform#0"]
+    loaded_docs = load_store(store_path(out / "vectors")).filter_documents()
+    assert loaded_docs and all(d.meta["embedder"] == "MockDocumentEmbedder:mock" for d in loaded_docs)
+
+    assert index_once(out) == {"files_indexed": 0, "files_removed": 0, "chunks_written": 0, "chunks_deleted": 0,
+                               "chunks_total": total}
+
+    (out / "projects" / "thin.md").unlink()
+    stats = index_once(out)
+    assert stats["files_removed"] == 1 and stats["chunks_deleted"] == 1 and stats["chunks_total"] == total - 1
+    assert "projects/thin.md" not in load_state(out / "vectors").files
+
+
+def test_writer_changed_file_replaces_its_chunks(tmp_path):
+    out = make_output(tmp_path)
+    index_once(out)
+    before = stored_ids(out)
+    detail = out / "projects" / "detail.md"
+    detail.write_text(detail.read_text(encoding="utf-8").replace("## Context", "## Context\n\nNew first line."),
+                      encoding="utf-8")
+    stats = index_once(out)
+    assert stats["files_indexed"] == 1 and stats["chunks_deleted"] == stats["chunks_written"]
+    assert stored_ids(out) == before
+    ctx = [d for d in load_store(store_path(out / "vectors")).filter_documents()
+           if d.meta["section"] == "Context"][0]
+    assert ctx.content.startswith("New first line.")
+
+
+def test_writer_skipped_file_is_retried_next_run(tmp_path):
+    out = make_output(tmp_path)
+    index_once(out)
+    (out / "projects" / "thin.md").write_text("broken", encoding="utf-8")
+    index_once(out)
+    assert "projects/thin.md" not in load_state(out / "vectors").files
+    assert not any(i.startswith("srsp-2016") for i in stored_ids(out))
+    shutil.copy(FIXTURES / "vec_thin.md", out / "projects" / "thin.md")
+    assert index_once(out)["files_indexed"] == 1
+
+
+def test_writer_full_rebuilds_the_store(tmp_path):
+    out = make_output(tmp_path)
+    total = index_once(out)["chunks_total"]
+    stats = index_once(out, embedder_id="MockDocumentEmbedder:other")
+    assert stats["files_indexed"] == 3 and stats["chunks_total"] == total
+    assert load_state(out / "vectors").embedder_id == "MockDocumentEmbedder:other"
+
+
+def test_writer_logs_embedding_tokens_and_cost(tmp_path):
+    out = make_output(tmp_path)
+    with runlog.open_run(tmp_path / "logs", "r1") as run:
+        index_once(out, pricing={"mock": {"input": 1_000_000.0}})
+    s = run.final_summary
+    assert s["counts"]["embed:ok"] == 1 and s["tokens"]["input_tokens"] > 0
+    assert s["cost_usd"] == pytest.approx(s["tokens"]["input_tokens"], rel=1e-6)
+    assert s["counts"]["write:ok"] == 1
+
+
+def test_writer_estimates_tokens_without_usage(tmp_path):
+    docs = [Document(id="a#0", content="one two three", meta={"source_file": "a.md", "context_header": "T"})]
+    with runlog.open_run(tmp_path / "logs", "r1") as run:
+        VectorLayerWriter(vectors_dir=str(tmp_path / "v"), embedder_id="x").run(
+            documents=docs, sources=[ByteStream(data=b"", meta={"file_path": "a.md", "content_hash": "h"})],
+            removed=[], full=True)
+    assert run.final_summary["tokens"]["input_tokens"] == round(4 * 1.33)
