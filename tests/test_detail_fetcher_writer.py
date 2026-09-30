@@ -245,6 +245,23 @@ def test_write_failure_on_one_project_does_not_kill_the_run(tmp_path):
     assert run.counts["error:write_failed"] == 1
 
 
+def test_extraction_writer_keeps_deliverables_section(tmp_path):
+    from test_deliverables import entry
+    from tsi_agent.deliverables_state import DeliverableStore
+    ds = DeliverableStore(tmp_path)
+    ds.put(entry(projects=("hems",)))
+    ds.save()
+    store = LocalProjectStore(tmp_path)
+    w = writer(store)
+    w.run(run_id="r1", records=[record()])
+    fm, body = parse_front_matter(store.read_project_file("hems"))
+    assert fm["deliverables"] == 1 and "## Deliverables (AI-generated summary)" in body
+    assert body.index("## Deliverables") < body.index("## Sources")
+    w.run(run_id="r2", unchanged=[ref(spotlight=True)])            # rafraichissement du listing
+    fm, body = parse_front_matter(store.read_project_file("hems"))
+    assert fm["deliverables"] == 1 and body.count("## Deliverables (AI-generated summary)") == 1
+
+
 def test_rewriting_a_record_merges_stored_aliases(tmp_path):
     store = LocalProjectStore(tmp_path)
     w = writer(store)

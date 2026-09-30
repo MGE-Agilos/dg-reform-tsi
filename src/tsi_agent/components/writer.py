@@ -4,9 +4,11 @@ from typing import Any
 from haystack import component
 
 from tsi_agent import runlog
+from tsi_agent.deliverables_state import DeliverableStore
 from tsi_agent.models import ProgrammeDoc, ProjectRecord, ProjectRef
-from tsi_agent.render import (detail_body, front_matter, parse_front_matter, programme_doc_text, render,
-                              replace_listing_tail, source_urls, thin_body)
+from tsi_agent.render import (deliverables_section, detail_body, front_matter, parse_front_matter,
+                              programme_doc_text, render, replace_deliverables_section, replace_listing_tail,
+                              source_urls, thin_body, with_deliverables_count)
 from tsi_agent.store import ProjectStore, shared_store, StoreEntry
 
 NAME = "MarkdownProjectWriter"
@@ -20,11 +22,18 @@ class MarkdownProjectWriter:
     def __init__(self, output_dir: str = "output"):
         self.output_dir = output_dir
         self._store: ProjectStore | None = None
+        self._deliverables: DeliverableStore | None = None
 
     def _get_store(self) -> ProjectStore:
         if self._store is None:
             self._store = shared_store(self.output_dir)
         return self._store
+
+    def _deliverable_entries(self, project_id: str) -> list:
+        if self._deliverables is None:
+            # Dossier du store de projets (LocalProjectStore.root) : c'est aussi celui qu'injectent les tests.
+            self._deliverables = DeliverableStore(getattr(self._get_store(), "root", self.output_dir))
+        return self._deliverables.for_project(project_id)
 
     def _first_seen(self, ref: ProjectRef, today: str) -> str:
         store = self._get_store()
@@ -64,7 +73,9 @@ class MarkdownProjectWriter:
         first_seen = self._first_seen(ref, today)
         fm = front_matter(ref, content_hash=rec.content_hash, first_seen=first_seen, last_updated=today,
                           run_id=run_id, model=rec.model, results=rec.results)
-        file = store.write_project_file(ref.project_id, render(fm, detail_body(ref, rec)))
+        entries = self._deliverable_entries(ref.project_id)
+        body = replace_deliverables_section(detail_body(ref, rec), deliverables_section(entries))
+        file = store.write_project_file(ref.project_id, render(with_deliverables_count(fm, len(entries)), body))
         self._replace_aliases(ref)
         # Hash de la vue listing : c'est à elle que le prochain run comparera (pas au ref enrichi).
         store.put(self._entry(ref, file, first_seen, today, rec.content_hash, rec.listing_hash))
@@ -100,6 +111,7 @@ class MarkdownProjectWriter:
                               model=old["extraction"]["model"], listed=listed,
                               results=old.get("results"))  # vient de la page détail, pas du listing
             fm["title"], fm["programme"], fm["year"] = old["title"], old["programme"], old["year"]
+            fm = with_deliverables_count(fm, int(old.get("deliverables") or 0))
             entry.listing_hash, entry.countries, entry.source_urls = ref.listing_hash(), countries, source_urls(ref)
             entry.aliases = aliases
             body = replace_listing_tail(body, ref)
@@ -114,6 +126,7 @@ class MarkdownProjectWriter:
     def run(self, run_id: str, records: list[ProjectRecord] | None = None, thin: list[ProjectRef] | None = None,
             unchanged: list[ProjectRef] | None = None, delisted: list[str] | None = None,
             programme_docs: list[ProgrammeDoc] | None = None) -> dict[str, Any]:
+        self._deliverables = None  # l'etage livrables a pu ecrire l'etat entre deux runs : le relire a chaque run
         today = date.today().isoformat()
         store = self._get_store()
         written: list[str] = []

@@ -9,7 +9,7 @@ from tsi_agent.countries import COUNTRIES, name_from_iso
 from tsi_agent.render import parse_front_matter
 
 # A incrementer a chaque changement des regles ci-dessous : force une revectorisation complete.
-CHUNKER_VERSION = 1
+CHUNKER_VERSION = 2  # 2 : section Deliverables (resume IA des livrables)
 SPLIT_THRESHOLD_WORDS = 300
 WINDOW_WORDS = 250
 OVERLAP_WORDS = 40
@@ -17,6 +17,8 @@ SENTENCE_LOOKBACK_WORDS = 50
 
 INTRO = "Introduction"
 SUMMARY = "Summary (AI-generated)"
+DELIVERABLES = "Deliverables (AI-generated summary)"
+AI_SECTIONS = {SUMMARY, DELIVERABLES}
 # Listes d'URL et titres de listing : deja en metadonnees, sans valeur pour la recherche.
 SKIPPED_SECTIONS = {"Sources", "Listed in country factsheets as"}
 PROJECT_FIELDS = ("title", "programme", "year", "countries", "multi_country", "policy_area", "detail_page",
@@ -92,5 +94,5 @@ def chunk_file(rel_path: str, text: str) -> list[Document]:
             index = len(docs)
             docs.append(Document(id=f"{stem}#{index}", content=piece,
                                  meta={**base, "section": section, "chunk_index": index,
-                                       "ai_generated": section == SUMMARY}))
+                                       "ai_generated": section in AI_SECTIONS}))
     return docs
