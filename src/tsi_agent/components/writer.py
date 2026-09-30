@@ -6,7 +6,7 @@ from haystack import component
 from tsi_agent import runlog
 from tsi_agent.models import ProgrammeDoc, ProjectRecord, ProjectRef
 from tsi_agent.render import (detail_body, front_matter, parse_front_matter, programme_doc_text, render,
-                              source_urls, thin_body)
+                              replace_listing_tail, source_urls, thin_body)
 from tsi_agent.store import ProjectStore, shared_store, StoreEntry
 
 NAME = "MarkdownProjectWriter"
@@ -42,10 +42,18 @@ class MarkdownProjectWriter:
     def _replace_aliases(self, ref: ProjectRef) -> None:
         store = self._get_store()
         for alias in ref.aliases:
-            if alias != ref.project_id and store.get(alias):
+            if alias == ref.project_id:
+                continue
+            entry = store.get(alias)
+            if not entry:
+                continue
+            if entry.detail_page is False:
                 store.delete_project_file(alias)
                 store.remove(alias)
                 runlog.event(NAME, "write", alias, "replaced_by_detail", project_id=ref.project_id)
+            else:
+                runlog.event(NAME, "alert", alias, "warning",
+                             message=f"Alias {alias} of {ref.project_id} is a detail project; not deleted")
 
     def _write_record(self, rec: ProjectRecord, run_id: str, today: str) -> str:
         store = self._get_store()
@@ -80,11 +88,15 @@ class MarkdownProjectWriter:
             return False
         old, body = parse_front_matter(text)
         if ref is not None:
-            fm = front_matter(ref, content_hash=entry.content_hash, first_seen=entry.first_seen,
+            aliases = list(dict.fromkeys([*entry.aliases, *ref.aliases]))
+            ref_for_fm = ref.model_copy(update={"aliases": aliases})
+            fm = front_matter(ref_for_fm, content_hash=entry.content_hash, first_seen=entry.first_seen,
                               last_updated=today, run_id=old["extraction"]["run_id"],
                               model=old["extraction"]["model"], listed=listed)
             fm["title"], fm["programme"], fm["year"] = old["title"], old["programme"], old["year"]
             entry.listing_hash, entry.countries, entry.source_urls = ref.listing_hash(), list(ref.countries), source_urls(ref)
+            entry.aliases = aliases
+            body = replace_listing_tail(body, ref)
         else:
             fm = {**old, "listed": listed, "last_updated": today}
         store.write_project_file(project_id, render(fm, body))

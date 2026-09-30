@@ -1,6 +1,6 @@
 from tsi_agent.models import ProgrammeDoc, ProjectContent, ProjectRef
 from tsi_agent.render import (NOT_REPORTED, detail_body, front_matter, parse_front_matter, programme_doc_text,
-                              render, thin_body)
+                              render, replace_listing_tail, thin_body)
 
 DETAIL = "https://reforms-investments.ec.europa.eu/technical-support-instrument-0/health-and-long-term-care/hems_en"
 
@@ -79,3 +79,15 @@ def test_listing_hash_changes_with_listing_titles():
     a = ProjectRef(listing_titles=["x"], **base)
     b = ProjectRef(listing_titles=["y"], **base)
     assert a.listing_hash() != b.listing_hash()
+
+
+def test_replace_listing_tail():
+    body = "# T\n\n## Summary\n\nS.\n\n## Sources\n\n- old"
+    new_ref = ProjectRef(project_id="p", title="T", programme="TSI", year=2025, countries=["FR"],
+                         listing_urls=["https://x/new"])
+    updated = replace_listing_tail(body, new_ref)
+    assert updated.rstrip() == "# T\n\n## Summary\n\nS.\n\n## Sources\n\n- https://x/new".rstrip()
+
+    no_tail = "# T\n\n## Summary\n\nS."
+    appended = replace_listing_tail(no_tail, new_ref)
+    assert appended.rstrip() == "# T\n\n## Summary\n\nS.\n\n## Sources\n\n- https://x/new".rstrip()

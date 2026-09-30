@@ -77,3 +77,26 @@ def test_index_save_retries_transient_permission_error(tmp_path, monkeypatch):
     assert len(calls) == 3
     monkeypatch.setattr(store_mod.os, "replace", real_replace)
     assert LocalProjectStore(tmp_path).get("a") is not None
+
+
+def test_project_file_write_retries_transient_lock(tmp_path, monkeypatch):
+    import pathlib
+
+    import tsi_agent.store as store_mod
+
+    real_write_text = pathlib.Path.write_text
+    calls = []
+
+    def flaky(self, *args, **kwargs):
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError("locked by OneDrive")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", flaky)
+    monkeypatch.setattr(store_mod.time, "sleep", lambda s: None)
+    store = LocalProjectStore(tmp_path)
+    store.write_project_file("a", "t")
+    assert len(calls) == 3
+    monkeypatch.setattr(pathlib.Path, "write_text", real_write_text)
+    assert store.read_project_file("a") == "t"

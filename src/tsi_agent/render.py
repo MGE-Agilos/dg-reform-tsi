@@ -78,6 +78,30 @@ def _listed_as_section(ref: ProjectRef) -> str | None:
     return "## Listed in country factsheets as\n\n" + "\n".join(f"- {t}" for t in distinct)
 
 
+def listing_tail(ref: ProjectRef) -> str:
+    """La partie du corps dérivée du listing : section "Listed in..." optionnelle + Sources."""
+    parts = []
+    listed_as = _listed_as_section(ref)
+    if listed_as is not None:
+        parts.append(listed_as)
+    parts.append(_sources_section(ref))
+    return "\n\n".join(parts)
+
+
+_TAIL_HEADINGS = ("## Listed in country factsheets as", "## Sources")
+
+
+def replace_listing_tail(body: str, ref: ProjectRef) -> str:
+    """Remplace la section listing-dérivée existante (si présente) par celle de `ref`."""
+    lines = body.split("\n")
+    cut = next((i for i, line in enumerate(lines) if line in _TAIL_HEADINGS), None)
+    if cut is None:
+        head = body.rstrip("\n")
+        return f"{head}\n\n{listing_tail(ref)}"
+    head = "\n".join(lines[:cut]).rstrip("\n")
+    return f"{head}\n\n{listing_tail(ref)}"
+
+
 def detail_body(ref: ProjectRef, content: ProjectContent) -> str:
     parts = [
         f"# {ref.title}",
@@ -85,11 +109,8 @@ def detail_body(ref: ProjectRef, content: ProjectContent) -> str:
         _section("Context", content.context),
         _section("Support delivered", content.support_delivered),
         _section("Results achieved", content.results_achieved),
+        listing_tail(ref),
     ]
-    listed_as = _listed_as_section(ref)
-    if listed_as is not None:
-        parts.append(listed_as)
-    parts.append(_sources_section(ref))
     return "\n\n".join(parts)
 
 
@@ -109,11 +130,7 @@ def thin_sentence(ref: ProjectRef) -> str:
 
 
 def thin_body(ref: ProjectRef) -> str:
-    parts = [f"# {ref.title}", thin_sentence(ref)]
-    listed_as = _listed_as_section(ref)
-    if listed_as is not None:
-        parts.append(listed_as)
-    parts.append(_sources_section(ref))
+    parts = [f"# {ref.title}", thin_sentence(ref), listing_tail(ref)]
     return "\n\n".join(parts)
 
 

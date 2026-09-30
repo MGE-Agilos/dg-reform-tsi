@@ -14,6 +14,17 @@ MAX_FILE_STEM = 100  # limite de chemin Windows (260) : le dossier du dépôt en
 REPLACE_ATTEMPTS = 5  # OneDrive et antivirus peuvent verrouiller le fichier temporairement
 
 
+def _retry_on_lock(fn):
+    """Réessaie `fn()` avec backoff sur PermissionError transitoire (OneDrive/antivirus)."""
+    for attempt in range(1, REPLACE_ATTEMPTS + 1):
+        try:
+            return fn()
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS:
+                raise
+            time.sleep(0.2 * attempt)
+
+
 def file_stem(project_id: str) -> str:
     """Nom de fichier sûr : l'id complet reste dans le front matter."""
     if len(project_id) <= MAX_FILE_STEM:
@@ -88,7 +99,7 @@ class LocalProjectStore:
 
     def write_project_file(self, project_id: str, text: str) -> str:
         path = self.projects_dir / f"{file_stem(project_id)}.md"
-        path.write_text(text, encoding="utf-8")
+        _retry_on_lock(lambda: path.write_text(text, encoding="utf-8"))
         return path.relative_to(self.root).as_posix()
 
     def read_project_file(self, project_id: str) -> str | None:
@@ -96,14 +107,15 @@ class LocalProjectStore:
         return path.read_text(encoding="utf-8") if path.exists() else None
 
     def delete_project_file(self, project_id: str) -> None:
-        (self.projects_dir / f"{file_stem(project_id)}.md").unlink(missing_ok=True)
+        path = self.projects_dir / f"{file_stem(project_id)}.md"
+        _retry_on_lock(lambda: path.unlink(missing_ok=True))
 
     def programme_hash(self, doc_id: str) -> str | None:
         return self._programme.get(doc_id)
 
     def write_programme_doc(self, doc_id: str, text: str, content_hash: str) -> str:
         path = self.programme_dir / f"{doc_id}.md"
-        path.write_text(text, encoding="utf-8")
+        _retry_on_lock(lambda: path.write_text(text, encoding="utf-8"))
         self._programme[doc_id] = content_hash
         self._save()
         return path.relative_to(self.root).as_posix()
@@ -113,16 +125,7 @@ class LocalProjectStore:
                 "programme_docs": dict(sorted(self._programme.items()))}
         tmp = self.index_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
-
-        # Retry with backoff on transient PermissionError (OneDrive/antivirus)
-        for attempt in range(1, REPLACE_ATTEMPTS + 1):
-            try:
-                os.replace(tmp, self.index_path)
-                return
-            except PermissionError as e:
-                if attempt == REPLACE_ATTEMPTS:
-                    raise
-                time.sleep(0.2 * attempt)
+        _retry_on_lock(lambda: os.replace(tmp, self.index_path))
 
 
 _shared: dict[str, LocalProjectStore] = {}

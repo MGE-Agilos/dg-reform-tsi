@@ -83,6 +83,46 @@ def test_writer_refreshes_front_matter_of_unchanged_and_delists(tmp_path):
     assert fm["listed"] is False and store.get("hems").listed is False
 
 
+def test_first_seen_is_kept_from_the_replaced_thin_entry(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    w = writer(store)
+    thin_entry = StoreEntry(project_id="tsi-2022-hems", file="projects/tsi-2022-hems.md", detail_page=False,
+                            first_seen="2025-01-15", last_updated="2025-01-15")
+    store.put(thin_entry)
+    store.write_project_file("tsi-2022-hems", "# HEMS\n\nplaceholder\n")
+    w.run(run_id="r2", records=[record(aliases=["tsi-2022-hems"])])
+    assert store.get("hems").first_seen == "2025-01-15"
+    fm, _ = parse_front_matter(store.read_project_file("hems"))
+    assert fm["first_seen"] == "2025-01-15"
+
+
+def test_detail_alias_is_never_deleted(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    w = writer(store)
+    other_entry = StoreEntry(project_id="other", file="projects/other.md", detail_page=True,
+                             first_seen="2026-09-30", last_updated="2026-09-30")
+    store.put(other_entry)
+    store.write_project_file("other", "# Other\n\nsome content\n")
+    w.run(run_id="r2", records=[record(aliases=["other"])])
+    assert store.read_project_file("other") is not None
+    assert store.get("other") is not None
+
+
+def test_refresh_updates_listing_sections_and_aliases(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    w = writer(store)
+    w.run(run_id="r1", records=[record()])
+    w.run(run_id="r2", unchanged=[ref(listing_titles=["HEMS for Croatia"],
+                                      listing_urls=["https://x/croatia_en", "https://x/spotlight_en"],
+                                      aliases=["tsi-2022-hems"])])
+    fm, body = parse_front_matter(store.read_project_file("hems"))
+    assert "## Listed in country factsheets as\n\n- HEMS for Croatia" in body
+    assert "- https://x/spotlight_en" in body
+    assert "## Summary\n\nS." in body
+    assert fm["aliases"] == ["tsi-2022-hems"]
+    assert store.get("hems").aliases == ["tsi-2022-hems"]
+
+
 def test_writer_programme_docs_only_when_changed(tmp_path):
     store = LocalProjectStore(tmp_path)
     w = writer(store)
