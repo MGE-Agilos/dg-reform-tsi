@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from haystack import component
@@ -34,10 +35,22 @@ class ClaudeCliChatGenerator:
         self.json_schema = json_schema
         self.executable = executable
 
-    def _command(self, system_prompt: str) -> list[str]:
-        exe = shutil.which(self.executable)
-        if exe is None:
+    def _resolve_executable(self) -> str:
+        path = shutil.which(self.executable)
+        if path is None:
             raise LLMCallError(f"'{self.executable}' introuvable dans le PATH")
+        # Sur cette machine, `claude` resout vers un shim npm (.CMD/.BAT). Le lancer
+        # passe par cmd.exe, qui developpe les %VAR% dans les arguments, reinterprete
+        # les guillemets et limite la ligne de commande a 8191 caracteres. On appelle
+        # directement l'executable natif quand il est present a cote du shim.
+        if path.lower().endswith((".cmd", ".bat")):
+            native = Path(path).parent / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+            if native.exists():
+                return str(native)
+        return path
+
+    def _command(self, system_prompt: str) -> list[str]:
+        exe = self._resolve_executable()
         cmd = [exe, "-p", "--output-format", "json", "--model", self.model,
                "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
                "--setting-sources", "", "--no-session-persistence", "--system-prompt", system_prompt]
@@ -52,9 +65,12 @@ class ClaudeCliChatGenerator:
         prompt = "\n\n".join(m.text for m in messages if not m.is_from(ChatRole.SYSTEM) and m.text)
         try:
             proc = subprocess.run(self._command(system or DEFAULT_SYSTEM_PROMPT), input=prompt,
-                                  capture_output=True, text=True, encoding="utf-8", timeout=self.timeout_s)
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  timeout=self.timeout_s)
         except subprocess.TimeoutExpired as exc:
             raise LLMCallError(f"timeout after {self.timeout_s}s") from exc
+        except OSError as exc:
+            raise LLMCallError(f"cannot run claude CLI: {exc}") from exc
         try:
             data = json.loads(proc.stdout)
         except json.JSONDecodeError as exc:

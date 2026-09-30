@@ -96,3 +96,33 @@ def test_missing_executable(monkeypatch):
     monkeypatch.setattr(claude_cli.shutil, "which", lambda exe: None)
     with pytest.raises(LLMCallError, match="introuvable"):
         ClaudeCliChatGenerator().run(messages=MESSAGES)
+
+
+def test_npm_cmd_shim_is_bypassed_for_the_native_exe(monkeypatch, tmp_path):
+    shim = tmp_path / "claude.CMD"
+    shim.write_text("@echo off")
+    exe = tmp_path / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    monkeypatch.setattr(claude_cli.shutil, "which", lambda name: str(shim))
+    assert ClaudeCliChatGenerator()._command("s")[0] == str(exe)
+
+
+def test_cmd_shim_kept_when_no_native_exe(monkeypatch, tmp_path):
+    shim = tmp_path / "claude.CMD"
+    shim.write_text("@echo off")
+    monkeypatch.setattr(claude_cli.shutil, "which", lambda name: str(shim))
+    assert ClaudeCliChatGenerator()._command("s")[0] == str(shim)
+
+
+def test_os_error_becomes_llm_call_error(fake_run):
+    fake_run(exc=OSError("The command line is too long"))
+    with pytest.raises(LLMCallError, match="cannot run claude CLI"):
+        ClaudeCliChatGenerator().run(messages=MESSAGES)
+
+
+def test_default_system_prompt_and_nonzero_exit_with_success_json(fake_run):
+    calls = fake_run(stdout=cli_output(), returncode=1)
+    with pytest.raises(LLMCallError):
+        ClaudeCliChatGenerator().run(messages=[ChatMessage.from_user("hi")])
+    assert calls["cmd"][calls["cmd"].index("--system-prompt") + 1] == claude_cli.DEFAULT_SYSTEM_PROMPT
