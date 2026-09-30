@@ -49,8 +49,33 @@ def test_detail_limit_and_offered_once_per_run(tmp_path):
 def test_thin_already_covered_by_detail_alias_is_skipped(tmp_path):
     d = detector(tmp_path)
     known(d._store, detail("academy"), aliases=["tsi-2025-academy"])
-    out = d.run(refs=[thin("tsi-2025-academy")], run_id="r", scope=SCOPE)
+    out = d.run(refs=[detail("academy").model_copy(update={"aliases": ["tsi-2025-academy"]}), thin("tsi-2025-academy")], run_id="r", scope=SCOPE)
     assert out["thin"] == []
+
+
+def test_multi_country_entry_needs_all_its_countries_in_scope(tmp_path):
+    d = detector(tmp_path)
+    known(d._store, thin("frde").model_copy(update={"countries": ["FR", "DE"]}))
+    assert d.run(refs=[], run_id="r", scope=SCOPE)["delisted"] == []
+    both = {"countries": ["FR", "DE"], "srsp": False, "all_countries": False}
+    assert d.run(refs=[], run_id="r2", scope=both)["delisted"] == ["frde"]
+
+
+def test_srsp_and_countryless_entries_scope(tmp_path):
+    d = detector(tmp_path)
+    known(d._store, ProjectRef(project_id="srsp-2019-x", title="x", programme="SRSP", year=2019, countries=["AT"]))
+    known(d._store, ProjectRef(project_id="eu-wide", title="e", detail_url="https://x/e_en"))
+    assert d.run(refs=[], run_id="r", scope=SCOPE)["delisted"] == []
+    full = {"countries": ["FR"], "srsp": True, "all_countries": True}
+    assert sorted(d.run(refs=[], run_id="r2", scope=full)["delisted"]) == ["eu-wide", "srsp-2019-x"]
+
+
+def test_thin_comes_back_when_its_detail_page_vanished(tmp_path):
+    d = detector(tmp_path)
+    known(d._store, detail("academy"), aliases=["tsi-2025-academy"])
+    out = d.run(refs=[thin("tsi-2025-academy")], run_id="r", scope=SCOPE)
+    assert [r.project_id for r in out["thin"]] == ["tsi-2025-academy"]
+    assert out["delisted"] == ["academy"]
 
 
 def test_delist_only_in_scope_and_not_for_suspect_countries(tmp_path):

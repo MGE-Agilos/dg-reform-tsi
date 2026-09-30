@@ -17,7 +17,7 @@ def _in_scope(entry: StoreEntry, scope: dict[str, Any]) -> bool:
         return bool(scope.get("srsp"))
     if not entry.countries:
         return bool(scope.get("all_countries"))
-    return any(c in scope.get("countries", []) for c in entry.countries)
+    return all(c in scope.get("countries", []) for c in entry.countries)
 
 
 @component
@@ -55,6 +55,7 @@ class ChangeDetector:
         alias_owner = {alias: pid for pid, e in known.items() for alias in e.aliases}
         offered = self._offered.setdefault(run_id, set())
         thin, detail, remaining = [], [], 0
+        seen = {r.project_id for r in refs} | {a for r in refs for a in r.aliases} | set(deferred_ids or [])
         for ref in refs:
             entry = known.get(ref.project_id)
             if ref.detail_url:
@@ -67,7 +68,7 @@ class ChangeDetector:
                 detail.append(ref)
                 runlog.event(NAME, "classify", ref.project_id, "known_detail" if entry else "new_detail")
             elif entry is None:
-                if ref.project_id in alias_owner:
+                if ref.project_id in alias_owner and alias_owner[ref.project_id] in seen:
                     continue  # déjà couvert par sa page détail
                 thin.append(ref)
                 runlog.event(NAME, "classify", ref.project_id, "new_thin")
@@ -75,7 +76,6 @@ class ChangeDetector:
                 thin.append(ref)
                 runlog.event(NAME, "classify", ref.project_id, "changed_thin")
         suspect = set(suspect_countries or []) | set(self._dropped_countries(refs, known, scope))
-        seen = {r.project_id for r in refs} | {a for r in refs for a in r.aliases} | set(deferred_ids or [])
         delisted = [
             pid for pid, e in known.items()
             if e.listed and pid not in seen and _in_scope(e, scope) and not (set(e.countries) & suspect)
