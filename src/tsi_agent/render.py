@@ -1,11 +1,12 @@
 """Rendu des fichiers Markdown (front matter YAML + corps)."""
 
+import re
 from typing import Any
 
 import yaml
 
 from tsi_agent.countries import COUNTRIES, name_from_iso
-from tsi_agent.ids import clean_text
+from tsi_agent.ids import clean_text, slugify
 from tsi_agent.models import ProgrammeDoc, ProjectContent, ProjectRef
 
 NOT_REPORTED = "Not reported on the source page."
@@ -62,13 +63,18 @@ def _section(title: str, value: str) -> str:
     return f"## {title}\n\n{value.strip() or NOT_REPORTED}"
 
 
+def _title_key(title: str) -> str:
+    """Comparaison de titres : sans casse, ponctuation ni article initial (« The … »)."""
+    return re.sub(r"^the-", "", slugify(title, max_len=1000))
+
+
 def _listed_as_section(ref: ProjectRef) -> str | None:
-    """Titres de listing distincts du titre retenu (comparaison insensible à la casse)."""
-    own = clean_text(ref.title).casefold()
+    """Titres de listing réellement différents du titre retenu."""
+    own = _title_key(ref.title)
     seen = {own}
     distinct: list[str] = []
     for title in ref.listing_titles:
-        key = clean_text(title).casefold()
+        key = _title_key(title)
         if key in seen:
             continue
         seen.add(key)

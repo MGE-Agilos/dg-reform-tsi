@@ -91,3 +91,10 @@ def test_replace_listing_tail():
     no_tail = "# T\n\n## Summary\n\nS."
     appended = replace_listing_tail(no_tail, new_ref)
     assert appended.rstrip() == "# T\n\n## Summary\n\nS.\n\n## Sources\n\n- https://x/new".rstrip()
+
+
+def test_listed_as_ignores_leading_article_and_punctuation():
+    ref = ProjectRef(project_id="era", title="The Energy Regulation Academy",
+                     listing_titles=["Energy Regulation Academy", "Energy regulation academy."], listing_urls=["u"])
+    assert "Listed in country factsheets as" not in detail_body(
+        ref, ProjectContent(summary="s", context="c", support_delivered="d", results_achieved="r"))
