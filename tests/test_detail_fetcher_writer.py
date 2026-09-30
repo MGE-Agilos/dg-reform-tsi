@@ -38,6 +38,9 @@ def test_detail_fetcher_new_then_unchanged_then_full(tmp_path):
     page = out["pages"][0]
     assert page.title == "Establishment of Helicopter Emergency Medical Services in Croatia"
     assert (page.programme, page.year) == ("TSI", 2022) and page.content_hash.startswith("sha256:")
+    assert page.intro.startswith("The Commission supported the establishment")
+    assert [h for h, _ in page.sections] == ["Context", "Support Delivered", "Results achieved"]
+    assert page.results == "achieved"
     store.put(StoreEntry(project_id="hems", file="f", content_hash=page.content_hash, first_seen="d", last_updated="d"))
     assert [r.project_id for r in f.run(refs=[ref()])["unchanged"]] == ["hems"]
     assert len(f.run(refs=[ref()], full=True)["pages"]) == 1
@@ -95,10 +98,12 @@ def test_detail_fetcher_does_not_alert_on_other_errors(tmp_path):
 
 def record(listing_ref=None, **kw):
     """`listing_ref` : vue listing (par defaut identique au ref du record)."""
-    content = ProjectContent(summary="S.", context="C.", support_delivered="D.", results_achieved="R.")
+    content = ProjectContent(summary="S.")
     rec_ref = ref(**kw)
     return ProjectRecord(ref=rec_ref, listing_hash=(listing_ref or rec_ref).listing_hash(), content=content,
-                         content_hash="sha256:1", model="claude-cli/sonnet")
+                         content_hash="sha256:1", model="claude-cli/sonnet", intro="Intro.",
+                         sections=[("Context", "C."), ("Results achieved", "R.")], results="achieved",
+                         page_text="Intro.\nContext\nC.")
 
 
 def test_writer_thin_then_detail_replaces_thin_file(tmp_path):
@@ -116,7 +121,8 @@ def test_writer_thin_then_detail_replaces_thin_file(tmp_path):
     fm, body = parse_front_matter(store.read_project_file("hems"))
     assert fm["aliases"] == ["tsi-2022-hems"] and fm["content_hash"] == "sha256:1"
     assert fm["extraction"] == {"run_id": "r2", "model": "claude-cli/sonnet"}
-    assert "## Results achieved\n\nR." in body
+    assert "## Results achieved\n\nR." in body and "## Summary (AI-generated)\n\nS." in body
+    assert fm["results"] == "achieved"
     assert store.get("hems").first_seen == store.get("hems").last_updated
 
 
@@ -127,11 +133,12 @@ def test_writer_refreshes_front_matter_of_unchanged_and_delists(tmp_path):
     out = w.run(run_id="r2", unchanged=[ref(spotlight=True)])
     assert out["stats"]["refreshed"] == 1
     fm, body = parse_front_matter(store.read_project_file("hems"))
-    assert fm["spotlight"] is True and fm["extraction"]["run_id"] == "r1" and "## Summary\n\nS." in body
+    assert fm["spotlight"] is True and fm["extraction"]["run_id"] == "r1" and "## Summary (AI-generated)\n\nS." in body
+    assert fm["results"] == "achieved" and list(fm).index("results") == list(fm).index("policy_area") + 1
     assert w.run(run_id="r3", unchanged=[ref(spotlight=True)])["stats"]["refreshed"] == 0
     w.run(run_id="r4", delisted=["hems"])
     fm, _ = parse_front_matter(store.read_project_file("hems"))
-    assert fm["listed"] is False and store.get("hems").listed is False
+    assert fm["listed"] is False and store.get("hems").listed is False and fm["results"] == "achieved"
 
 
 def test_first_seen_is_kept_from_the_replaced_thin_entry(tmp_path):
@@ -169,7 +176,7 @@ def test_refresh_updates_listing_sections_and_aliases(tmp_path):
     fm, body = parse_front_matter(store.read_project_file("hems"))
     assert "## Listed in country factsheets as\n\n- HEMS for Croatia" in body
     assert "- https://x/spotlight_en" in body
-    assert "## Summary\n\nS." in body
+    assert "## Summary (AI-generated)\n\nS.\n\n## Context\n\nC." in body
     assert fm["aliases"] == ["tsi-2022-hems"]
     assert store.get("hems").aliases == ["tsi-2022-hems"]
 

@@ -103,8 +103,8 @@ def test_yaml_roundtrip_for_deepset(settings):
     extractor = reloaded.get_component("extractor")
     assert isinstance(extractor, ProjectExtractor)
     assert isinstance(extractor.chat_generator, ClaudeCliChatGenerator)
-    assert extractor.chat_generator.json_schema["required"] == ["summary", "context", "support_delivered",
-                                                                "results_achieved"]
+    assert extractor.chat_generator.json_schema["required"] == ["summary"]
+    assert set(extractor.chat_generator.json_schema["properties"]) == {"summary", "countries"}
     assert set(reloaded.graph.nodes) == {"listing", "discoverer", "detector", "detail_fetcher", "extractor", "writer"}
 
 

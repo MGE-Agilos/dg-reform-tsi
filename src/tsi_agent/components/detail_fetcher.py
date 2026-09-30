@@ -62,6 +62,7 @@ class DetailPageFetcher:
                 continue
             pages.append(DetailPage(ref=ref, url=result.final_url, title=parsed.title or ref.title,
                                     text=parsed.text, content_hash=content_hash,
-                                    programme=parsed.programme, year=parsed.year))
+                                    programme=parsed.programme, year=parsed.year, intro=parsed.intro,
+                                    sections=parsed.sections, results=parsed.results))
             runlog.event(NAME, "classify", ref.project_id, "changed" if entry else "new")
         return {"pages": pages, "unchanged": unchanged, "failed": failed}

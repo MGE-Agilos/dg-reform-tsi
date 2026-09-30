@@ -63,8 +63,8 @@ class MarkdownProjectWriter:
         ref = rec.ref.model_copy(update={"aliases": aliases})
         first_seen = self._first_seen(ref, today)
         fm = front_matter(ref, content_hash=rec.content_hash, first_seen=first_seen, last_updated=today,
-                          run_id=run_id, model=rec.model)
-        file = store.write_project_file(ref.project_id, render(fm, detail_body(ref, rec.content)))
+                          run_id=run_id, model=rec.model, results=rec.results)
+        file = store.write_project_file(ref.project_id, render(fm, detail_body(ref, rec)))
         self._replace_aliases(ref)
         # Hash de la vue listing : c'est à elle que le prochain run comparera (pas au ref enrichi).
         store.put(self._entry(ref, file, first_seen, today, rec.content_hash, rec.listing_hash))
@@ -97,7 +97,8 @@ class MarkdownProjectWriter:
             ref_for_fm = ref.model_copy(update={"aliases": aliases, "countries": countries})
             fm = front_matter(ref_for_fm, content_hash=entry.content_hash, first_seen=entry.first_seen,
                               last_updated=today, run_id=old["extraction"]["run_id"],
-                              model=old["extraction"]["model"], listed=listed)
+                              model=old["extraction"]["model"], listed=listed,
+                              results=old.get("results"))  # vient de la page détail, pas du listing
             fm["title"], fm["programme"], fm["year"] = old["title"], old["programme"], old["year"]
             entry.listing_hash, entry.countries, entry.source_urls = ref.listing_hash(), countries, source_urls(ref)
             entry.aliases = aliases

@@ -80,6 +80,49 @@ def test_detail_page():
     assert "Context" in parsed.text.splitlines()
 
 
+def test_detail_page_keeps_official_intro_and_sections():
+    parsed = parse_detail(fixture_bytes("detail_hems_croatia.html"))
+    assert parsed.intro.startswith("The Commission supported the establishment")
+    assert "Technical Support Instrument" not in parsed.intro and "healthcare systems" not in parsed.intro
+    assert [h for h, _ in parsed.sections] == ["Context", "Support Delivered", "Results achieved"]
+    support = dict(parsed.sections)["Support Delivered"]
+    assert support.startswith("The project delivered technical support")
+    assert "\n\n- workshops,\n- stakeholder dialogues,\n" in support
+    assert dict(parsed.sections)["Results achieved"].startswith("Four HEMS bases were established")
+    assert parsed.results == "achieved"
+
+
+def test_detail_page_with_expected_results_and_sub_headings():
+    parsed = parse_detail(fixture_bytes("detail_expected_results.html"))
+    assert parsed.title == "Resources hub for sustainable investing in health"
+    assert [h for h, _ in parsed.sections] == ["Context", "Support to be delivered", "Expected results"]
+    assert parsed.results == "expected"
+    assert parsed.intro.startswith("The Commission supports the creation of a hub")
+    assert "EU support. It will also provide" in parsed.intro  # texte du lien garde, URL retiree
+    assert "https://" not in parsed.intro
+    support = dict(parsed.sections)["Support to be delivered"]
+    assert "\n\n### - Work stream 1: Making the case for public investments\n\nWS 1 aims" in support
+    expected = dict(parsed.sections)["Expected results"]
+    assert "\n\n- Greening of the Austrian Health Care System and contribution" in expected
+    assert "CO2 ecological footprint" in expected
+    assert all("You can read the documents" not in body for _, body in parsed.sections)
+    assert all("A mapping exercise" not in body for _, body in parsed.sections)  # "Useful links" exclu
+
+
+def test_markdown_conversion_of_blocks():
+    from tsi_agent.parsers import blocks_markdown, soup_of
+    html = """<main><div class="ecl"><h2>T</h2><p>Intro  <em>with</em>
+      <a href="https://x">link</a>.</p><h3>Context</h3><p>Line one<br>line two</p><p> </p>
+      <figure><img src="x.png"><figcaption>caption</figcaption></figure>
+      <ol><li>first<ul><li>nested <strong>a</strong></li></ul></li><li>second</li></ol>
+      <h5>Sub</h5><div><p>In a div</p></div><h3>Photos</h3><p>boilerplate</p></div></main>"""
+    parsed = parse_detail(html)
+    assert parsed.intro == "Intro with link."
+    assert parsed.sections == [("Context", "Line one\nline two\n\n1. first\n  - nested a\n2. second\n\n### Sub\n\nIn a div")]
+    assert parsed.results is None
+    assert blocks_markdown(soup_of("<p>a</p><ul><li>b</li></ul>").contents) == "a\n\n- b"
+
+
 def test_performance_page_is_currently_empty():
     text = main_text(fixture_bytes("tsi_performance.html"))
     assert "PPS_TSI" not in text

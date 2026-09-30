@@ -10,13 +10,21 @@ def page(pid="hems", countries=None):
                      countries=countries if countries is not None else ["HR"],
                      detail_url=f"https://x/{pid}_en")
     return DetailPage(ref=ref, url=f"https://x/{pid}_en", title="Page title", text="Four HEMS bases.",
-                      content_hash="sha256:1", programme="TSI", year=2022)
+                      content_hash="sha256:1", programme="TSI", year=2022, intro="The Commission helped.",
+                      sections=[("Context", "Islands."), ("Results achieved", "Four HEMS bases.")], results="achieved")
 
 
 def test_parse_content_accepts_fences_and_filters_countries():
-    content = parse_content('```json\n{"summary":"s","context":"c","support_delivered":"d",'
-                            '"results_achieved":"r","countries":["hr","XX","GR"]}\n```')
+    content = parse_content('```json\n{"summary":"s","countries":["hr","XX","GR"]}\n```')
     assert content.countries == ["HR", "GR"]
+    assert parse_content('{"summary": "s"}').countries == []
+
+
+def test_prompt_asks_only_for_summary_and_countries():
+    from tsi_agent.components.extractor import RETRY_MESSAGE, USER_TEMPLATE
+    assert '"summary"' in USER_TEMPLATE and '"countries"' in USER_TEMPLATE
+    assert all(k not in USER_TEMPLATE + RETRY_MESSAGE for k in ("context", "support_delivered", "results_achieved"))
+    assert "summary, countries" in RETRY_MESSAGE
 
 
 def test_record_merges_detail_metadata(tmp_path):
@@ -25,7 +33,10 @@ def test_record_merges_detail_metadata(tmp_path):
         out = ProjectExtractor(chat_generator=gen).run(pages=[page()])
     rec = out["records"][0]
     assert (rec.ref.title, rec.ref.year, rec.ref.programme) == ("Page title", 2022, "TSI")
-    assert rec.content.results_achieved == "Four HEMS bases were established."
+    assert rec.content.summary == "The Commission supported HEMS in Croatia."
+    assert rec.intro == "The Commission helped." and rec.results == "achieved"
+    assert rec.sections == [("Context", "Islands."), ("Results achieved", "Four HEMS bases.")]
+    assert rec.page_text == "Four HEMS bases."
     assert rec.model == "fake/model" and out["failed"] == [] and out["quota_exceeded"] is False
     assert run.llm_calls == 1 and run.cost_usd == 0.01
     prompt = gen.calls[0][1].text

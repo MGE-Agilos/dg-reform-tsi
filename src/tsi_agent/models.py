@@ -68,16 +68,17 @@ class DetailPage(BaseModel):
     content_hash: str
     programme: Programme | None = None
     year: int | None = None
+    intro: str = ""  # texte officiel, verbatim (Markdown)
+    sections: list[tuple[str, str]] = Field(default_factory=list)  # (titre h3 officiel, corps Markdown verbatim)
+    results: str | None = None  # "achieved" | "expected" | None
 
 
 class ProjectContent(BaseModel):
     # Docstring en ASCII : le schema JSON est passe en argument de ligne de commande.
-    """Structured content extracted from a project page."""
+    # Le LLM ne produit que le resume et les pays : le texte officiel est repris tel quel de la page.
+    """Content generated from a project page: a summary and, when stated, the beneficiary countries."""
 
     summary: str
-    context: str
-    support_delivered: str
-    results_achieved: str
     countries: list[str] = Field(default_factory=list)
 
 
@@ -87,6 +88,10 @@ class ProjectRecord(BaseModel):
     content: ProjectContent
     content_hash: str
     model: str
+    intro: str = ""
+    sections: list[tuple[str, str]] = Field(default_factory=list)
+    results: str | None = None  # "achieved" | "expected" | None
+    page_text: str = ""  # texte brut de la page : repli du rendu quand aucune section n'a été reconnue
 
 
 class ProgrammeDoc(BaseModel):

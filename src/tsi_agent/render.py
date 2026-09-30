@@ -7,9 +7,9 @@ import yaml
 
 from tsi_agent.countries import COUNTRIES, name_from_iso
 from tsi_agent.ids import slugify
-from tsi_agent.models import ProgrammeDoc, ProjectContent, ProjectRef
+from tsi_agent.models import ProgrammeDoc, ProjectRecord, ProjectRef
 
-NOT_REPORTED = "Not reported on the source page."
+SUMMARY_HEADING = "## Summary (AI-generated)"
 
 
 def source_urls(ref: ProjectRef) -> list[str]:
@@ -18,7 +18,8 @@ def source_urls(ref: ProjectRef) -> list[str]:
 
 
 def front_matter(ref: ProjectRef, *, content_hash: str | None, first_seen: str, last_updated: str,
-                 run_id: str, model: str, listed: bool = True) -> dict[str, Any]:
+                 run_id: str, model: str, listed: bool = True, results: str | None = None) -> dict[str, Any]:
+    """`results` : "achieved" / "expected" selon le titre officiel de la section résultats (None si thin)."""
     return {
         "project_id": ref.project_id,
         "title": ref.title,
@@ -28,6 +29,7 @@ def front_matter(ref: ProjectRef, *, content_hash: str | None, first_seen: str, 
         "countries": list(ref.countries),
         "multi_country": ref.multi_country or len(ref.countries) > 1,
         "policy_area": ref.policy_area,
+        "results": results,
         "spotlight": ref.spotlight,
         "highlighted": ref.highlighted,
         "detail_page": ref.detail_page,
@@ -57,10 +59,6 @@ def parse_front_matter(text: str) -> tuple[dict[str, Any], str]:
 
 def _sources_section(ref: ProjectRef) -> str:
     return "## Sources\n\n" + "\n".join(f"- {u}" for u in source_urls(ref))
-
-
-def _section(title: str, value: str) -> str:
-    return f"## {title}\n\n{value.strip() or NOT_REPORTED}"
 
 
 def _title_key(title: str) -> str:
@@ -108,15 +106,20 @@ def replace_listing_tail(body: str, ref: ProjectRef) -> str:
     return f"{head}\n\n{listing_tail(ref)}"
 
 
-def detail_body(ref: ProjectRef, content: ProjectContent) -> str:
-    parts = [
-        f"# {ref.title}",
-        _section("Summary", content.summary),
-        _section("Context", content.context),
-        _section("Support delivered", content.support_delivered),
-        _section("Results achieved", content.results_achieved),
-        listing_tail(ref),
-    ]
+def detail_body(ref: ProjectRef, rec: ProjectRecord) -> str:
+    """Titre, accroche officielle, résumé généré (étiqueté), sections officielles verbatim, puis la partie listing.
+
+    Sans section reconnue sur la page, le texte brut complet de la page remplace les sections.
+    """
+    parts = [f"# {ref.title}"]
+    if rec.intro.strip():
+        parts.append(rec.intro.strip())
+    parts.append(f"{SUMMARY_HEADING}\n\n{rec.content.summary.strip()}")
+    if rec.sections:
+        parts.extend(f"## {heading}\n\n{body.strip()}".rstrip() for heading, body in rec.sections)
+    else:
+        parts.append(f"## Page text\n\n{rec.page_text.strip()}".rstrip())
+    parts.append(listing_tail(ref))
     return "\n\n".join(parts)
 
 

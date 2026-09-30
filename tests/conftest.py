@@ -43,9 +43,6 @@ class FakeFetcher:
 
 CONTENT_JSON = json.dumps({
     "summary": "The Commission supported HEMS in Croatia.",
-    "context": "Croatia has many islands.",
-    "support_delivered": "Workshops and guidance.",
-    "results_achieved": "Four HEMS bases were established.",
     "countries": ["HR"],
 })
 

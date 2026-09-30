@@ -21,23 +21,21 @@ from tsi_agent.models import DetailPage, ProjectContent, ProjectRecord
 
 NAME = "ProjectExtractor"
 
-SYSTEM_PROMPT = ("You restructure European Commission reform project pages into JSON. "
+SYSTEM_PROMPT = ("You summarise European Commission reform project pages into JSON. "
                  "You never add facts that are not in the page.")
 
+# Le texte officiel de la page est recopié tel quel dans le fichier projet : le LLM ne produit
+# que le résumé (étiqueté comme généré) et les pays quand les listings n'en donnent pas.
 USER_TEMPLATE = """You are given the text of a public project page of the European Commission \
 (Technical Support Instrument or Structural Reform Support Programme).
 
 Return a JSON object with exactly these keys:
 - "summary": 3 to 5 sentences summarising the project, using only facts stated in the page.
-- "context": the context / problem the project addresses, as clear prose.
-- "support_delivered": the support the Commission delivered (activities, deliverables).
-- "results_achieved": the results reported on the page.
 - "countries": ISO 3166-1 alpha-2 codes of the EU Member States benefiting from the project \
 (use "GR" for Greece); an empty list if the page does not say.
 
 Rules:
-- Use only information present in the page text.
-- If the page does not cover a section, use exactly "Not reported on the source page."
+- Use only information present in the page text; never invent facts, figures or countries.
 - Write in English. Output only the JSON object, without code fences.
 
 Project title: {title}
@@ -48,8 +46,7 @@ Source URL: {url}
 --- PAGE TEXT END ---"""
 
 RETRY_MESSAGE = ("Your previous answer could not be parsed ({error}). "
-                 "Return only the JSON object with the keys summary, context, support_delivered, "
-                 "results_achieved, countries.")
+                 "Return only the JSON object with the keys summary, countries.")
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
 
@@ -152,7 +149,8 @@ class ProjectExtractor:
             })
             model = str((reply.meta or {}).get("model", "unknown"))
             return ProjectRecord(ref=ref, listing_hash=page.ref.listing_hash(), content=content,
-                                 content_hash=page.content_hash, model=model)
+                                 content_hash=page.content_hash, model=model, intro=page.intro,
+                                 sections=list(page.sections), results=page.results, page_text=page.text)
         raise ContentParseError(error)
 
     @component.output_types(records=list[ProjectRecord], failed=list[str], quota_exceeded=bool)
