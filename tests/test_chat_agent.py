@@ -121,3 +121,70 @@ def test_yaml_round_trip_and_openai_swap(tmp_path, monkeypatch):
                             "api_key": {"type": "env_var", "env_vars": ["OPENAI_API_KEY"], "strict": True}}}
     swapped = load_pipeline(yaml.safe_dump(data)).get_component("agent")
     assert type(swapped.chat_generator.chat_generator).__name__ == "OpenAIChatGenerator"
+
+
+from tsi_agent.chat.service import ask, cited_sources, find_cause
+from tsi_agent.components.claude_cli import LLMQuotaExceeded
+
+
+def test_cited_sources_keeps_cited_refs_in_order_else_all_unique():
+    srcs = [{"ref": 1, "doc_id": "a", "url": "u1"}, {"ref": 2, "doc_id": "b", "url": "u2"},
+            {"ref": 3, "doc_id": "a", "url": "u1"}]
+    assert [s["ref"] for s in cited_sources("See [2] and [1][2].", srcs)] == [1, 2]
+    assert [s["ref"] for s in cited_sources("No refs.", srcs)] == [1, 2]
+
+
+def test_find_cause():
+    try:
+        try:
+            raise LLMQuotaExceeded("limit")
+        except LLMQuotaExceeded as inner:
+            raise RuntimeError("wrapped") from inner
+    except RuntimeError as exc:
+        assert isinstance(find_cause(exc, LLMQuotaExceeded), LLMQuotaExceeded)
+        assert find_cause(exc, KeyError) is None
+
+
+def pipeline_with(tmp_path, replies, max_steps=6):
+    s = chat_settings(tmp_path)
+    s.chat_max_steps = max_steps
+    gen = ScriptedGenerator(replies)
+    return s, gen, build_chat_pipeline(s, POLICY_AREAS, chat_generator=gen,
+                                       text_embedder=MockTextEmbedder(model="mock", dimension=8))
+
+
+def test_ask_returns_answer_sources_steps_and_logs(tmp_path):
+    s, gen, pipe = pipeline_with(tmp_path, [[("search_projects", {"query": "energy", "countries": ["GR"]})],
+                                            [("list_projects", {"programme": "SRSP"})], "Answer [1]."])
+    res = ask(pipe, "Quels projets ?", [], logs_dir=s.logs_dir)
+    assert res["answer"] == "Answer [1]."
+    assert [x["ref"] for x in res["sources"]] == [1]
+    assert [st["tool"] for st in res["steps"]] == ["search_projects", "list_projects"]
+    assert res["steps"][1]["summary"].startswith("Total matching projects: 2")
+    assert res["cost_usd"] == pytest.approx(0.003) and res["run_id"]
+    import json
+    summary = json.loads((tmp_path / "logs" / "runs" / f"{res['run_id']}.summary.json").read_text(encoding="utf-8"))
+    assert summary["mode"] == "chat" and summary["counts"]["tool_call:ok"] == 2
+    assert summary["counts"]["llm_call:ok"] == 3 and summary["counts"]["question:ok"] == 1
+
+
+def test_ask_sends_history_as_messages(tmp_path):
+    s, gen, pipe = pipeline_with(tmp_path, ["A1"])
+    ask(pipe, "Et en Slovénie ?", [{"role": "user", "text": "Projets santé en Croatie ?"},
+                                   {"role": "assistant", "text": "Deux projets [1]."}], logs_dir=s.logs_dir)
+    roles = [m.role.value for m in gen.received[0]]
+    assert roles == ["system", "user", "assistant", "user"]
+    assert gen.received[0][-1].text == "Et en Slovénie ?"
+
+
+def test_ask_when_step_limit_is_reached(tmp_path):
+    s, gen, pipe = pipeline_with(tmp_path, [[("list_projects", {})]] * 5, max_steps=2)
+    res = ask(pipe, "q", [], logs_dir=s.logs_dir)
+    assert "limite" in res["answer"]
+
+
+def test_ask_propagates_quota(tmp_path):
+    s, gen, pipe = pipeline_with(tmp_path, [LLMQuotaExceeded("usage limit reached")])
+    with pytest.raises(Exception) as err:
+        ask(pipe, "q", [], logs_dir=s.logs_dir)
+    assert find_cause(err.value, LLMQuotaExceeded) is not None
