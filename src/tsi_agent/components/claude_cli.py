@@ -86,7 +86,10 @@ class ClaudeCliChatGenerator:
         structured = data.get("structured_output")
         text = json.dumps(structured, ensure_ascii=False) if structured is not None else data.get("result", "")
         usage = data.get("usage") or {}
-        model_used = next(iter(data.get("modelUsage") or {}), self.model)
+        # Avec --json-schema, le CLI ajoute un petit appel Haiku, liste en premier : on retient
+        # le modele qui a coute le plus, c'est-a-dire celui qui a fait l'extraction.
+        model_usage = data.get("modelUsage") or {}
+        model_used = max(model_usage, key=lambda m: (model_usage[m] or {}).get("costUSD") or 0, default=self.model)
         meta = {
             "model": f"claude-cli/{model_used}",
             "usage": {

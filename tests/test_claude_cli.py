@@ -126,3 +126,11 @@ def test_default_system_prompt_and_nonzero_exit_with_success_json(fake_run):
     with pytest.raises(LLMCallError):
         ClaudeCliChatGenerator().run(messages=[ChatMessage.from_user("hi")])
     assert calls["cmd"][calls["cmd"].index("--system-prompt") + 1] == claude_cli.DEFAULT_SYSTEM_PROMPT
+
+
+def test_model_is_the_one_that_did_the_work_not_the_schema_side_call(fake_run):
+    # Avec --json-schema, le CLI ajoute un petit appel Haiku, liste en premier dans modelUsage.
+    fake_run(stdout=cli_output(modelUsage={"claude-haiku-4-5-20251001": {"costUSD": 0.0004},
+                                           "claude-sonnet-4-6": {"costUSD": 0.006}}))
+    reply = ClaudeCliChatGenerator(model="sonnet").run(messages=MESSAGES)["replies"][0]
+    assert reply.meta["model"] == "claude-cli/claude-sonnet-4-6"
