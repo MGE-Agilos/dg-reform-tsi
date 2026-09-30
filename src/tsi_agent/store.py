@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Protocol
 
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 
 
 MAX_FILE_STEM = 100  # limite de chemin Windows (260) : le dossier du dépôt en consomme déjà ~110
+REPLACE_ATTEMPTS = 5  # OneDrive et antivirus peuvent verrouiller le fichier temporairement
 
 
 def file_stem(project_id: str) -> str:
@@ -111,7 +113,16 @@ class LocalProjectStore:
                 "programme_docs": dict(sorted(self._programme.items()))}
         tmp = self.index_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, self.index_path)
+
+        # Retry with backoff on transient PermissionError (OneDrive/antivirus)
+        for attempt in range(1, REPLACE_ATTEMPTS + 1):
+            try:
+                os.replace(tmp, self.index_path)
+                return
+            except PermissionError as e:
+                if attempt == REPLACE_ATTEMPTS:
+                    raise
+                time.sleep(0.2 * attempt)
 
 
 _shared: dict[str, LocalProjectStore] = {}

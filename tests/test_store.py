@@ -42,3 +42,38 @@ def test_long_ids_get_a_bounded_file_name(tmp_path):
     store = LocalProjectStore(tmp_path)
     assert store.write_project_file(long_id, "t") == f"projects/{stem}.md"
     assert store.read_project_file(long_id) == "t"
+
+
+def test_put_without_save_is_persisted_by_flush(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    store.put(entry("a"), save=False)
+    assert LocalProjectStore(tmp_path).get("a") is None
+    store.flush()
+    assert LocalProjectStore(tmp_path).get("a") is not None
+
+
+def test_shared_store_is_one_instance_per_directory(tmp_path):
+    from tsi_agent.store import shared_store
+    a = shared_store(tmp_path / "out")
+    assert shared_store(str(tmp_path / "out")) is a
+    assert shared_store(tmp_path / "other") is not a
+
+
+def test_index_save_retries_transient_permission_error(tmp_path, monkeypatch):
+    import tsi_agent.store as store_mod
+    real_replace = store_mod.os.replace
+    calls = []
+
+    def flaky(src, dst):
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError("locked by OneDrive")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(store_mod.os, "replace", flaky)
+    monkeypatch.setattr(store_mod.time, "sleep", lambda s: None)
+    store = LocalProjectStore(tmp_path)
+    store.put(entry("a"))
+    assert len(calls) == 3
+    monkeypatch.setattr(store_mod.os, "replace", real_replace)
+    assert LocalProjectStore(tmp_path).get("a") is not None
