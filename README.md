@@ -26,7 +26,8 @@ Pour l'exécution locale, le CLI `claude` doit être installé et connecté à u
 # Voir ce qui serait extrait, sans LLM ni écriture
 .venv\Scripts\python -m tsi_agent run --dry-run
 
-# Run complet incrémental (le premier envoie environ 620 projets au LLM et dure plusieurs heures)
+# Run complet incrémental (le premier envoie environ 620 projets au LLM ; plusieurs heures, surtout
+# à cause du débit limité imposé au site — voir le throttling adaptatif plus bas)
 .venv\Scripts\python -m tsi_agent run
 
 # Tout ré-extraire, même les pages inchangées
@@ -41,6 +42,15 @@ Un run interrompu (Ctrl-C, limite de souscription) reprend là où il s'était a
 `--limit` compte les projets réellement envoyés au LLM : les pages inchangées depuis le dernier run ne l'entament pas.
 
 Codes de sortie : `0` run terminé, `1` arrêt sur la limite de la souscription (le run suivant reprend), `2` erreur inattendue (détail dans `logs/runs/<run_id>.summary.json`, champ `error`).
+
+**`--dry-run`** fait la découverte et la détection sans appeler le LLM ni rien écrire, puis affiche trois
+compteurs : les pages détail candidates (`detail_candidates` — tous les projets qui ont une page détail ;
+leur hash n'est vérifié qu'au run réel, donc certains peuvent en fait être déjà à jour), les projets thin à
+écrire (`thin_to_write`) et les délistages (`delisted`).
+
+**Débit adaptatif :** le site répond par des HTTP 429 au-delà d'environ 1 requête/s soutenue. Après un 429,
+l'agent ralentit durablement (l'intervalle minimum entre requêtes double, jusqu'à 15 s) et ne réaccélère que
+progressivement, après 50 requêtes réussies d'affilée. C'est la première cause de durée d'un run complet.
 
 ## Ce qu'est un « projet »
 
@@ -62,11 +72,18 @@ Il sert à estimer le budget du passage à l'API.
 
 ## Planification (Windows)
 
+À exécuter depuis le dossier du dépôt (les chemins sont résolus en absolu à partir du dossier courant) :
+
 ```powershell
-schtasks /Create /TN "TSI Extraction Agent" /SC WEEKLY /D MON /ST 07:00 /TR "cmd /c cd /d \"%CD%\" && .venv\Scripts\python -m tsi_agent run >> logs\scheduled.log 2>&1"
+$repo = (Get-Location).Path
+$action = New-ScheduledTaskAction -Execute "$repo\.venv\Scripts\python.exe" -Argument "-m tsi_agent run" -WorkingDirectory $repo
+$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 7am
+Register-ScheduledTask -TaskName "TSI Extraction Agent" -Action $action -Trigger $trigger
 ```
 
-Code de sortie `1` : le run s'est arrêté sur la limite de la souscription, et le suivant reprendra. Code `2` : erreur à examiner dans le journal.
+Le journal du run planifié est dans `logs/` (`logs/runs/<run_id>.jsonl` et `.summary.json`), comme pour un run
+manuel. Code de sortie `1` : le run s'est arrêté sur la limite de la souscription, et le suivant reprendra.
+Code `2` : erreur à examiner dans le journal.
 
 ## Passage à deepset Studio (API OpenAI)
 
@@ -93,6 +110,22 @@ Le reste ne change pas. Le composant de stockage local (`LocalProjectStore`) ser
 implémentation qui écrit dans l'espace de travail deepset (hors périmètre de cette version).
 Le package `tsi_agent` doit être installé côté deepset en tant que composant custom. Au rechargement
 d'un YAML, Haystack 3 exige `allowed_modules=["tsi_agent"]` (voir `tsi_agent.pipeline.load_pipeline`).
+
+### Ce qui ne passe pas par le YAML
+
+Remplacer le `chat_generator` dans le YAML suffit pour le LLM (vérifié : `OpenAIChatGenerator` se recharge
+bien). Ce n'est pas le cas de tout le reste :
+
+- **La boucle par lots, le journal de run (JSONL, résumé, `costs.csv`) et la reprenabilité vivent dans
+  `runner.py`**, en dehors du pipeline Haystack. Dans deepset, ce code n'est pas exécuté : les événements de
+  `runlog` retombent alors sur le `logging` standard, et il n'y a ni fichier de run ni `costs.csv`.
+- **`detector.run_id` et `writer.run_id` sont des entrées obligatoires du pipeline** (pas des paramètres
+  d'init) : il faut les fournir explicitement à chaque exécution du pipeline dans deepset.
+- **`output_dir`, `cache_dir` et `executable` sont des paramètres d'init locaux**, propres à l'exécution sur
+  le poste de l'utilisateur.
+- **Remplacer le stockage local par l'espace de travail deepset demande du code**, pas seulement du YAML :
+  une nouvelle implémentation de `ProjectStore` (voir `store.py`), branchée dans `ChangeDetector`,
+  `DetailPageFetcher` et `MarkdownProjectWriter`.
 
 ## Tests
 
