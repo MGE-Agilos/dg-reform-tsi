@@ -1,19 +1,33 @@
 """Etage livrables : publications liees aux projets, PDF, texte integral, resume IA, section des fichiers projet."""
 
+import contextvars
 import io
+import json
+import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 import pdfplumber
-from haystack import component
+from haystack import component, default_from_dict, default_to_dict
+from haystack.core.serialization import component_to_dict
+from haystack.dataclasses import ChatMessage
+from haystack.utils import deserialize_chatgenerator_inplace
+from pydantic import ValidationError
 
 from tsi_agent import runlog
-from tsi_agent.deliverables_state import DeliverableStore
+from tsi_agent.components.claude_cli import LLMQuotaExceeded
+from tsi_agent.deliverables_state import DeliverableEntry, DeliverableStore
 from tsi_agent.http import DEFAULT_USER_AGENT, FetchError, PoliteFetcher, shared_fetcher
 from tsi_agent.ids import slug_from_url
-from tsi_agent.models import DeliverableFileText, DeliverableText, Publication
+from tsi_agent.models import (DeliverableContent, DeliverableFileText, DeliverableRecord, DeliverableText,
+                              Publication)
 from tsi_agent.parsers.publication import files_key, parse_publication, publication_links, select_files
-from tsi_agent.render import render
+from tsi_agent.render import (deliverables_section, parse_front_matter, render, replace_deliverables_section,
+                              with_deliverables_count)
 from tsi_agent.store import ProjectStore, _retry_on_lock, file_stem, shared_store
 
 
@@ -202,3 +216,203 @@ class DeliverableTextExtractor(_Http):
                 continue
             texts.append(DeliverableText(publication=pub, files=files, full_text_path=self._write(pub, files)))
         return {"texts": texts, "failed": failed}
+
+
+SUMMARY_SYSTEM = ("You summarise the deliverables of European Commission technical support projects into JSON. "
+                  "You never add facts that are not in the documents.")
+SUMMARY_TEMPLATE = """You are given the text of the deliverables (final report, presentation, factsheet...) of a \
+European Commission technical support project (Technical Support Instrument or Structural Reform Support Programme).
+
+Return a JSON object with exactly these keys:
+- "summary": 4 to 8 sentences on what the project delivered and achieved, using only the documents.
+- "key_outputs": up to 6 short items, the main outputs produced (strategies, analyses, tools, trainings...).
+- "results": up to 6 short items, results achieved or main recommendations.
+- "figures": up to 6 short items, key figures with their context (for example "40+ stakeholders involved").
+
+Rules:
+- Use only information present in the documents; never invent facts or figures.
+- Do not name individual persons; organisations may be named.
+- Write in English. Output only the JSON object, without code fences.
+
+Publication: {title}
+Source URL: {url}
+
+--- DOCUMENTS START ---
+{text}
+--- DOCUMENTS END ---"""
+SUMMARY_RETRY = ("Your previous answer could not be parsed ({error}). Return only the JSON object with the keys "
+                 "summary, key_outputs, results, figures.")
+_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
+
+
+def parse_deliverable_content(text: str) -> DeliverableContent:
+    cleaned = _FENCE.sub("", text.strip())
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError("no JSON object in reply")
+    try:
+        return DeliverableContent.model_validate(json.loads(cleaned[start:end + 1]))
+    except (json.JSONDecodeError, ValidationError) as exc:
+        raise ValueError(str(exc).splitlines()[0]) from exc
+
+
+def documents_text(text: DeliverableText, max_words: int) -> tuple[str, bool]:
+    """Texte des fichiers, dans l'ordre de la page, limite a `max_words` mots (debut des documents)."""
+    parts: list[str] = []
+    budget = max_words
+    truncated = False
+    for f in text.files:
+        words = f.text.split()
+        if budget <= 0:
+            truncated = True
+            break
+        kept = words[:budget]
+        truncated = truncated or len(kept) < len(words)
+        budget -= len(kept)
+        parts.append(f"### {f.file.document or f.file.filename}\n" + " ".join(kept))
+    body = "\n\n".join(parts)
+    if truncated:
+        body += f"\n\n[... truncated after {max_words} words ...]"
+    return body, truncated
+
+
+@component
+class DeliverableSummarizer:
+    def __init__(self, chat_generator: Any, max_concurrency: int = 2, max_retries: int = 1,
+                 pricing: dict[str, dict[str, float]] | None = None, max_words: int = 15000):
+        self.chat_generator = chat_generator
+        self.max_concurrency = max_concurrency
+        self.max_retries = max_retries
+        self.pricing = pricing or {}
+        self.max_words = max_words
+        self._warmed = False
+
+    def warm_up(self) -> None:
+        if not self._warmed and hasattr(self.chat_generator, "warm_up"):
+            self.chat_generator.warm_up()
+        self._warmed = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return default_to_dict(self, chat_generator=component_to_dict(obj=self.chat_generator, name="chat_generator"),
+                               max_concurrency=self.max_concurrency, max_retries=self.max_retries,
+                               pricing=self.pricing, max_words=self.max_words)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DeliverableSummarizer":
+        deserialize_chatgenerator_inplace(data["init_parameters"], key="chat_generator")
+        return default_from_dict(cls, data)
+
+    def _cost(self, meta: dict[str, Any]) -> float | None:
+        if meta.get("cost_usd") is not None:
+            return float(meta["cost_usd"])
+        usage = meta.get("usage") or {}
+        model = str(meta.get("model", ""))
+        for prefix, price in sorted(self.pricing.items(), key=lambda kv: len(kv[0]), reverse=True):
+            if model.startswith(prefix):
+                return (usage.get("prompt_tokens", 0) * price.get("input", 0)
+                        + usage.get("completion_tokens", 0) * price.get("output", 0)) / 1_000_000
+        return None
+
+    def _summarize_one(self, text: DeliverableText) -> DeliverableRecord:
+        pub = text.publication
+        body, truncated = documents_text(text, self.max_words)
+        messages = [ChatMessage.from_system(SUMMARY_SYSTEM),
+                    ChatMessage.from_user(SUMMARY_TEMPLATE.format(title=pub.title, url=pub.url, text=body))]
+        error = "no attempt"
+        for attempt in range(1, self.max_retries + 2):
+            t0 = time.monotonic()
+            reply = self.chat_generator.run(messages=messages)["replies"][0]
+            meta = reply.meta or {}
+            usage = meta.get("usage") or {}
+            try:
+                content = parse_deliverable_content(reply.text or "")
+                result = "ok"
+            except ValueError as exc:
+                content, result, error = None, "invalid_json", str(exc)
+            runlog.event("DeliverableSummarizer", "llm_call", pub.publication_id, result,
+                         duration_ms=int((time.monotonic() - t0) * 1000), attempt=attempt,
+                         model=meta.get("model"), input_tokens=usage.get("prompt_tokens", 0),
+                         output_tokens=usage.get("completion_tokens", 0),
+                         cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+                         cache_creation_tokens=usage.get("cache_creation_input_tokens", 0),
+                         cost_usd=self._cost(meta), truncated=truncated)
+            if content is not None:
+                return DeliverableRecord(text=text, content=content, model=str(meta.get("model", "unknown")))
+            messages = [*messages, reply, ChatMessage.from_user(SUMMARY_RETRY.format(error=error))]
+        raise ValueError(error)
+
+    @component.output_types(records=list[DeliverableRecord], failed=list[str], quota_exceeded=bool)
+    def run(self, texts: list[DeliverableText]) -> dict[str, Any]:
+        self.warm_up()
+        stop = threading.Event()
+        results: dict[int, DeliverableRecord] = {}
+        failed: list[str] = []
+
+        def work(i: int, text: DeliverableText) -> None:
+            pid = text.publication.publication_id
+            if stop.is_set():
+                runlog.event("DeliverableSummarizer", "error", pid, "skipped_quota")
+                failed.append(pid)
+                return
+            try:
+                results[i] = self._summarize_one(text)
+            except Exception as exc:
+                quota = isinstance(exc, LLMQuotaExceeded) or "RateLimit" in type(exc).__name__
+                if quota:
+                    stop.set()
+                runlog.event("DeliverableSummarizer", "error", pid, "quota_exceeded" if quota else "summary_failed",
+                             error=str(exc)[:300])
+                failed.append(pid)
+
+        with ThreadPoolExecutor(max_workers=max(1, self.max_concurrency)) as pool:
+            for i, text in enumerate(texts):
+                pool.submit(contextvars.copy_context().run, work, i, text)
+        return {"records": [results[i] for i in sorted(results)], "failed": failed,
+                "quota_exceeded": stop.is_set()}
+
+
+@component
+class DeliverableWriter:
+    """Met a jour output/state/deliverables.json et la section Deliverables des fichiers projet concernes."""
+
+    def __init__(self, output_dir: str = "output"):
+        self.output_dir = output_dir
+        self._store: ProjectStore | None = None
+
+    @component.output_types(stats=dict[str, int])
+    def run(self, records: list[DeliverableRecord], unchanged: list[Publication] | None = None) -> dict[str, Any]:
+        state = DeliverableStore(self.output_dir)
+        today = date.today().isoformat()
+        affected: set[str] = set()
+        for rec in records:
+            pub = rec.text.publication
+            old = state.get(pub.publication_id)
+            affected |= set(pub.project_ids) | set(old.project_ids if old else [])
+            state.put(DeliverableEntry(
+                publication_id=pub.publication_id, url=pub.url, title=pub.title, date=pub.date,
+                project_ids=list(pub.project_ids), files_key=pub.files_key or "",
+                files=[{"document": f.file.document, "url": f.file.url, "language": f.file.language,
+                        "filename": f.file.filename, "pages": f.pages, "words": f.words} for f in rec.text.files],
+                full_text_path=rec.text.full_text_path, content=rec.content, model=rec.model, processed=today))
+            runlog.event("DeliverableWriter", "write", pub.publication_id, "publication", projects=pub.project_ids)
+        for pub in unchanged or []:
+            old = state.get(pub.publication_id)
+            if old is not None and sorted(old.project_ids) != sorted(pub.project_ids):
+                affected |= set(old.project_ids) | set(pub.project_ids)
+                state.put(old.model_copy(update={"project_ids": list(pub.project_ids)}))
+        state.save()
+        store = self._store if self._store is not None else shared_store(self.output_dir)
+        updated = 0
+        for project_id in sorted(affected):
+            text = store.read_project_file(project_id)
+            if text is None:
+                continue
+            fm, body = parse_front_matter(text)
+            entries = state.for_project(project_id)
+            new = render(with_deliverables_count(fm, len(entries)),
+                         replace_deliverables_section(body, deliverables_section(entries)))
+            if new != text:
+                store.write_project_file(project_id, new)
+                updated += 1
+                runlog.event("DeliverableWriter", "write", project_id, "project_section", deliverables=len(entries))
+        return {"stats": {"publications": len(records), "projects_updated": updated}}

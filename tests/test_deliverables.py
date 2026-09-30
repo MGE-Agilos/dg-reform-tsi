@@ -1,11 +1,16 @@
+import json
+
 import pytest
 
-from conftest import FakeFetcher, fixture_bytes
+from conftest import FakeChatGenerator, FakeFetcher, fixture_bytes
 from tsi_agent import runlog
-from tsi_agent.components.deliverables import DeliverableTextExtractor, PublicationDiscoverer, PublicationFetcher
+from tsi_agent.components.claude_cli import LLMQuotaExceeded
+from tsi_agent.components.deliverables import (DeliverableSummarizer, DeliverableTextExtractor, DeliverableWriter,
+                                               PublicationDiscoverer, PublicationFetcher)
 from tsi_agent.deliverables_state import DeliverableEntry, DeliverableStore
-from tsi_agent.models import DeliverableContent, Publication, PublicationFile
-from tsi_agent.render import (DELIVERABLES_HEADING, deliverables_section, parse_front_matter,
+from tsi_agent.models import (DeliverableContent, DeliverableFileText, DeliverableRecord, DeliverableText,
+                              Publication, PublicationFile)
+from tsi_agent.render import (DELIVERABLES_HEADING, deliverables_section, parse_front_matter, render,
                               replace_deliverables_section, with_deliverables_count)
 from tsi_agent.store import LocalProjectStore, StoreEntry
 
@@ -166,3 +171,75 @@ def test_extractor_skips_bad_files(tmp_path, content, kw):
         out = extractor(tmp_path, {PDF_URL: pdf}, **kw).run(publications=[pub_with_file()])
     assert out["texts"] == [] and out["failed"] == ["developing-ehealth-healthier-society-slovenia"]
     assert run.final_summary["alerts"]
+
+
+CONTENT = json.dumps({"summary": "The project delivered an eHealth strategy.", "key_outputs": ["Strategy"],
+                      "results": ["Adopted by the ministry"], "figures": ["40+ stakeholders"]})
+
+
+def text_of(words=600):
+    pub = pub_with_file()
+    ft = DeliverableFileText(file=pub.files[0], pages=2, words=words, text=" ".join(["word"] * words))
+    return DeliverableText(publication=pub.model_copy(update={"files_key": "sha256:k"}), files=[ft],
+                           full_text_path="deliverables/slo.md")
+
+
+def test_summarizer_parses_json_and_truncates(tmp_path):
+    gen = FakeChatGenerator(replies=[CONTENT])
+    with runlog.open_run(tmp_path / "logs", "r1") as run:
+        out = DeliverableSummarizer(chat_generator=gen, max_words=50).run(texts=[text_of()])
+    assert out["failed"] == [] and out["quota_exceeded"] is False
+    rec = out["records"][0]
+    assert rec.content.figures == ["40+ stakeholders"] and rec.model == "fake/model"
+    prompt = gen.calls[0][-1].text
+    assert "Developing eHealth" in prompt and "[... truncated" in prompt and prompt.count("word") <= 60
+    assert run.final_summary["llm_calls"] == 1
+
+
+def test_summarizer_retries_invalid_json_then_quota(tmp_path):
+    gen = FakeChatGenerator(replies=["not json", CONTENT])
+    assert len(DeliverableSummarizer(chat_generator=gen).run(texts=[text_of()])["records"]) == 1
+    quota = FakeChatGenerator(error=LLMQuotaExceeded("usage limit reached"))
+    out = DeliverableSummarizer(chat_generator=quota).run(texts=[text_of(), text_of()])
+    assert out["quota_exceeded"] is True and out["records"] == []
+
+
+def project_file(store, pid):
+    fm = {"project_id": pid, "title": "T", "results": "achieved", "spotlight": False}
+    store.write_project_file(pid, render(fm, f"# T\n\nIntro.\n\n## Context\n\nC.\n\n## Sources\n\n- https://x/{pid}"))
+
+
+def record_for(pid="slo", summary="The project delivered an eHealth strategy."):
+    return DeliverableRecord(text=text_of(), model="fake/model",
+                             content=DeliverableContent(summary=summary, key_outputs=["Strategy"]))
+
+
+def test_writer_updates_state_and_project_files(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    project_file(store, "slo")
+    w = DeliverableWriter(output_dir=str(tmp_path))
+    w._store = store
+    stats = w.run(records=[record_for()])["stats"]
+    assert stats == {"publications": 1, "projects_updated": 1}
+    fm, body = parse_front_matter(store.read_project_file("slo"))
+    assert fm["deliverables"] == 1 and list(fm).index("deliverables") == list(fm).index("results") + 1
+    assert body.index("## Context") < body.index("## Deliverables (AI-generated summary)") < body.index("## Sources")
+    assert "The project delivered an eHealth strategy." in body
+    assert DeliverableStore(tmp_path).get("developing-ehealth-healthier-society-slovenia").project_ids == ["slo"]
+    w.run(records=[record_for(summary="Updated summary.")])
+    body = parse_front_matter(store.read_project_file("slo"))[1]
+    assert body.count("## Deliverables (AI-generated summary)") == 1 and "Updated summary." in body
+    assert w.run(records=[record_for(summary="Updated summary.")])["stats"]["projects_updated"] == 0
+
+
+def test_writer_moves_section_when_project_list_changes(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    project_file(store, "slo")
+    project_file(store, "other")
+    w = DeliverableWriter(output_dir=str(tmp_path))
+    w._store = store
+    w.run(records=[record_for()])
+    moved = text_of().publication.model_copy(update={"project_ids": ["other"]})
+    assert w.run(records=[], unchanged=[moved])["stats"]["projects_updated"] == 2
+    assert "## Deliverables" not in store.read_project_file("slo")
+    assert "## Deliverables (AI-generated summary)" in store.read_project_file("other")
