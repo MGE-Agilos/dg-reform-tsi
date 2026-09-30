@@ -108,3 +108,43 @@ def test_429_waits_long_and_honours_retry_after(tmp_path):
                       sleep=waits.append, rate_limit_backoff_s=30)
     assert f.get(URL).content == b"ok"
     assert waits == [90, 180]  # Retry-After, puis le délai double (jamais de retour en arrière)
+
+
+def test_corrupt_cache_entry_is_a_cache_miss(tmp_path):
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return robots_ok(request)
+        return httpx.Response(200, content=b"fresh", headers={"ETag": '"v1"'})
+
+    make(tmp_path, handler).get(URL)
+    for meta in (tmp_path / "cache").glob("*.json"):
+        meta.write_text('{"url": "trunc', encoding="utf-8")  # écriture interrompue
+    assert make(tmp_path, handler).get(URL).content == b"fresh"
+
+
+def test_exhausted_retries_raise_with_last_status_and_cache_nothing(tmp_path):
+    attempts = []
+
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return robots_ok(request)
+        attempts.append(1)
+        return httpx.Response(503)
+
+    f = make(tmp_path, handler)
+    with pytest.raises(FetchError) as err:
+        f.get(URL)
+    assert len(attempts) == 3 and err.value.status == 503
+    assert URL not in f._memo and not list((tmp_path / "cache").glob("*.bin"))
+
+
+def test_throttle_waits_between_requests(tmp_path):
+    waits = []
+    f = PoliteFetcher(tmp_path / "cache", min_interval_s=5,
+                      transport=httpx.MockTransport(lambda r: robots_ok(r) if r.url.path == "/robots.txt"
+                                                    else httpx.Response(200, content=b"x")),
+                      sleep=waits.append)
+    f.get("https://example.test/a_en")
+    f.get("https://example.test/b_en")
+    # robots.txt, puis a, puis b : deux attentes proches de l'intervalle
+    assert len(waits) == 2 and all(4.0 < w <= 5.0 for w in waits)

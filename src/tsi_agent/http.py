@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -77,6 +78,7 @@ class PoliteFetcher:
             if meta.get("last_modified"):
                 headers["If-Modified-Since"] = meta["last_modified"]
         last_error = "unknown error"
+        last_status: int | None = None
         wait_s = self.backoff_s
         for attempt in range(1, self.retries + 1):
             t0 = time.monotonic()
@@ -102,6 +104,7 @@ class PoliteFetcher:
                     runlog.event(COMPONENT, "fetch", url, f"http_{resp.status_code}", duration_ms=ms)
                     raise FetchError(url, f"HTTP {resp.status_code}", resp.status_code)
                 last_error = f"HTTP {resp.status_code}"
+                last_status = resp.status_code
                 if resp.status_code == 429:
                     wait_s = max(wait_s, self.rate_limit_backoff_s, _retry_after(resp) or 0)
             if attempt < self.retries:
@@ -109,7 +112,7 @@ class PoliteFetcher:
                 self._sleep(wait_s)
                 wait_s *= 2
         runlog.event(COMPONENT, "fetch", url, "error", error=last_error, attempts=self.retries)
-        raise FetchError(url, last_error)
+        raise FetchError(url, last_error, last_status)
 
     # --- internes -----------------------------------------------------------------------
     def _request(self, url: str, headers: dict[str, str]) -> httpx.Response:
@@ -146,14 +149,19 @@ class PoliteFetcher:
         meta_path, body_path = self._cache_paths(url)
         if not meta_path.exists() or not body_path.exists():
             return None, None
-        return json.loads(meta_path.read_text(encoding="utf-8")), body_path.read_bytes()
+        try:
+            return json.loads(meta_path.read_text(encoding="utf-8")), body_path.read_bytes()
+        except (json.JSONDecodeError, OSError):
+            return None, None
 
     def _cache_write(self, url: str, result: FetchResult, headers: httpx.Headers) -> None:
         meta_path, body_path = self._cache_paths(url)
         body_path.write_bytes(result.content)
         meta = {"url": url, "final_url": result.final_url, "etag": headers.get("etag"),
                 "last_modified": headers.get("last-modified")}
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        tmp = meta_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(meta), encoding="utf-8")
+        os.replace(tmp, meta_path)
 
 
 _shared: dict[tuple, PoliteFetcher] = {}
