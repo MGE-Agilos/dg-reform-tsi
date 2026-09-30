@@ -1,0 +1,105 @@
+"""Objets échangés entre les composants du pipeline."""
+
+import json
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+from tsi_agent.ids import sha256_text
+
+Programme = Literal["TSI", "SRSP"]
+PageKind = Literal["factsheet", "spotlight", "policy_area", "srsp_pdf", "programme_doc"]
+
+
+class RawPage(BaseModel):
+    """Page source brute. `key` = slug pays, slug domaine ou id de document."""
+
+    kind: PageKind
+    key: str
+    url: str
+    content: bytes
+    title: str | None = None
+
+
+class ProjectRef(BaseModel):
+    """Projet tel que vu dans les listings (avant extraction)."""
+
+    project_id: str
+    title: str
+    listing_titles: list[str] = Field(default_factory=list)
+    programme: Programme | None = None
+    year: int | None = None
+    countries: list[str] = Field(default_factory=list)
+    multi_country: bool = False
+    detail_url: str | None = None
+    policy_area: str | None = None
+    spotlight: bool = False
+    highlighted: bool = False
+    listing_urls: list[str] = Field(default_factory=list)
+    aliases: list[str] = Field(default_factory=list)
+
+    @property
+    def detail_page(self) -> bool:
+        return self.detail_url is not None
+
+    def listing_hash(self) -> str:
+        """Hash des métadonnées de listing : change si pays, drapeaux ou sources changent."""
+        payload = {
+            "title": self.title,
+            "listing_titles": sorted(self.listing_titles),
+            "programme": self.programme,
+            "year": self.year,
+            "countries": sorted(self.countries),
+            "multi_country": self.multi_country,
+            "detail_url": self.detail_url,
+            "policy_area": self.policy_area,
+            "spotlight": self.spotlight,
+            "highlighted": self.highlighted,
+            "listing_urls": sorted(self.listing_urls),
+        }
+        return sha256_text(json.dumps(payload, sort_keys=True))
+
+
+class DetailPage(BaseModel):
+    ref: ProjectRef
+    url: str
+    title: str
+    text: str
+    content_hash: str
+    programme: Programme | None = None
+    year: int | None = None
+    intro: str = ""  # texte officiel, verbatim (Markdown)
+    sections: list[tuple[str, str]] = Field(default_factory=list)  # (titre h3 officiel, corps Markdown verbatim)
+    results: str | None = None  # "achieved" | "expected" | None
+
+
+class ProjectContent(BaseModel):
+    # Docstring en ASCII : le schema JSON est passe en argument de ligne de commande.
+    # Le LLM ne produit que le resume et les pays : le texte officiel est repris tel quel de la page.
+    """Content generated from a project page: a summary and, when stated, the beneficiary countries."""
+
+    summary: str
+    countries: list[str] = Field(default_factory=list)
+
+
+class ProjectRecord(BaseModel):
+    ref: ProjectRef
+    listing_hash: str  # hash de la vue listing (avant enrichissement par la page détail et le LLM)
+    content: ProjectContent
+    content_hash: str
+    model: str
+    intro: str = ""
+    sections: list[tuple[str, str]] = Field(default_factory=list)
+    results: str | None = None  # "achieved" | "expected" | None
+    page_text: str = ""  # texte brut de la page : repli du rendu quand aucune section n'a été reconnue
+
+
+class ProgrammeDoc(BaseModel):
+    doc_id: str
+    title: str
+    url: str
+    text: str
+
+    @property
+    def content_hash(self) -> str:
+        return sha256_text(self.text)
