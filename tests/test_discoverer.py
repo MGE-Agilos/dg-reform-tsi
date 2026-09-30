@@ -25,6 +25,16 @@ def test_merge_by_url_and_by_title_key():
     assert m.listing_urls == ["https://x/france_en", "https://x/germany_en", "https://x/spotlight_en"]
 
 
+def test_merge_unions_listing_titles_in_order_of_first_appearance():
+    a = ProjectRef(project_id="a", title="A for France", programme="TSI", year=2025,
+                   detail_url=f"{BASE}/t/a_en", countries=["FR"], listing_titles=["A for France"])
+    b = ProjectRef(project_id="a", title="A for Italy", programme="TSI", year=2025,
+                   detail_url=f"{BASE}/t/a_en", countries=["IT"], listing_titles=["A for Italy"])
+    merged = merge_refs([a, b])
+    assert len(merged) == 1
+    assert merged[0].listing_titles == ["A for France", "A for Italy"]
+
+
 def test_distinct_projects_stay_distinct():
     a = ProjectRef(project_id="tsi-2025-a", title="A", programme="TSI", year=2025, countries=["FR"])
     b = ProjectRef(project_id="tsi-2024-a", title="A", programme="TSI", year=2024, countries=["FR"])

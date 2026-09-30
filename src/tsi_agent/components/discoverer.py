@@ -36,7 +36,8 @@ def combine(a: ProjectRef, b: ProjectRef) -> ProjectRef:
         aliases = _union(aliases, [r.project_id for r in (a, b) if not r.detail_url])
     project_id = slug_from_url(detail_url) if detail_url else a.project_id
     return ProjectRef(
-        project_id=project_id, title=title, programme=a.programme or b.programme, year=a.year or b.year,
+        project_id=project_id, title=title, listing_titles=_union(a.listing_titles, b.listing_titles),
+        programme=a.programme or b.programme, year=a.year or b.year,
         countries=countries, multi_country=a.multi_country or b.multi_country or len(countries) > 1,
         detail_url=detail_url, policy_area=a.policy_area or b.policy_area,
         spotlight=a.spotlight or b.spotlight, highlighted=a.highlighted or b.highlighted,

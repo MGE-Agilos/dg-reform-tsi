@@ -81,8 +81,8 @@ def parse_factsheet(html: bytes | str, url: str, country_iso: str) -> FactsheetP
             detail = _detail_url(el)
             out.refs.append(ProjectRef(
                 project_id=slug_from_url(detail) if detail else thin_id,
-                title=text, programme="TSI", year=year, countries=[country_iso], multi_country=multi,
-                detail_url=detail, listing_urls=[url], aliases=[thin_id] if detail else [],
+                title=text, listing_titles=[text], programme="TSI", year=year, countries=[country_iso],
+                multi_country=multi, detail_url=detail, listing_urls=[url], aliases=[thin_id] if detail else [],
             ))
         out.parsed_counts[year] = count
 

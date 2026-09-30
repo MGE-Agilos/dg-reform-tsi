@@ -5,6 +5,7 @@ from typing import Any
 import yaml
 
 from tsi_agent.countries import COUNTRIES, name_from_iso
+from tsi_agent.ids import clean_text
 from tsi_agent.models import ProgrammeDoc, ProjectContent, ProjectRef
 
 NOT_REPORTED = "Not reported on the source page."
@@ -20,6 +21,7 @@ def front_matter(ref: ProjectRef, *, content_hash: str | None, first_seen: str, 
     return {
         "project_id": ref.project_id,
         "title": ref.title,
+        "listing_titles": list(ref.listing_titles),
         "programme": ref.programme,
         "year": ref.year,
         "countries": list(ref.countries),
@@ -60,15 +62,35 @@ def _section(title: str, value: str) -> str:
     return f"## {title}\n\n{value.strip() or NOT_REPORTED}"
 
 
+def _listed_as_section(ref: ProjectRef) -> str | None:
+    """Titres de listing distincts du titre retenu (comparaison insensible à la casse)."""
+    own = clean_text(ref.title).casefold()
+    seen = {own}
+    distinct: list[str] = []
+    for title in ref.listing_titles:
+        key = clean_text(title).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        distinct.append(title)
+    if not distinct:
+        return None
+    return "## Listed in country factsheets as\n\n" + "\n".join(f"- {t}" for t in distinct)
+
+
 def detail_body(ref: ProjectRef, content: ProjectContent) -> str:
-    return "\n\n".join([
+    parts = [
         f"# {ref.title}",
         _section("Summary", content.summary),
         _section("Context", content.context),
         _section("Support delivered", content.support_delivered),
         _section("Results achieved", content.results_achieved),
-        _sources_section(ref),
-    ])
+    ]
+    listed_as = _listed_as_section(ref)
+    if listed_as is not None:
+        parts.append(listed_as)
+    parts.append(_sources_section(ref))
+    return "\n\n".join(parts)
 
 
 def _country_names(ref: ProjectRef) -> str:
@@ -87,7 +109,12 @@ def thin_sentence(ref: ProjectRef) -> str:
 
 
 def thin_body(ref: ProjectRef) -> str:
-    return "\n\n".join([f"# {ref.title}", thin_sentence(ref), _sources_section(ref)])
+    parts = [f"# {ref.title}", thin_sentence(ref)]
+    listed_as = _listed_as_section(ref)
+    if listed_as is not None:
+        parts.append(listed_as)
+    parts.append(_sources_section(ref))
+    return "\n\n".join(parts)
 
 
 def programme_doc_text(doc: ProgrammeDoc, run_id: str, fetched: str) -> str:

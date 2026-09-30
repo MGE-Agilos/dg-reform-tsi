@@ -26,6 +26,7 @@ class ProjectRef(BaseModel):
 
     project_id: str
     title: str
+    listing_titles: list[str] = Field(default_factory=list)
     programme: Programme | None = None
     year: int | None = None
     countries: list[str] = Field(default_factory=list)
@@ -45,6 +46,7 @@ class ProjectRef(BaseModel):
         """Hash des métadonnées de listing : change si pays, drapeaux ou sources changent."""
         payload = {
             "title": self.title,
+            "listing_titles": sorted(self.listing_titles),
             "programme": self.programme,
             "year": self.year,
             "countries": sorted(self.countries),

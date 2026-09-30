@@ -17,7 +17,7 @@ def test_front_matter_roundtrip_and_field_order():
     text = render(fm, "# body")
     parsed, body = parse_front_matter(text)
     assert parsed == fm
-    assert list(parsed) == ["project_id", "title", "programme", "year", "countries", "multi_country", "policy_area", "spotlight", "highlighted", "detail_page", "listed", "aliases", "source_urls", "content_hash", "first_seen", "last_updated", "extraction"]
+    assert list(parsed) == ["project_id", "title", "listing_titles", "programme", "year", "countries", "multi_country", "policy_area", "spotlight", "highlighted", "detail_page", "listed", "aliases", "source_urls", "content_hash", "first_seen", "last_updated", "extraction"]
     assert parsed["source_urls"][0] == DETAIL and parsed["detail_page"] is True
     assert body == "# body\n"
 
@@ -53,3 +53,29 @@ def test_programme_doc_text():
     fm, body = parse_front_matter(programme_doc_text(doc, "r1", "2026-09-30"))
     assert fm["doc_id"] == "country-croatia" and fm["content_hash"] == doc.content_hash
     assert "138 projects" in body
+
+
+def test_detail_body_lists_distinct_listing_titles_before_sources():
+    ref = ProjectRef(project_id="social-climate-plan", title="Support preparation social climate plans",
+                     programme="TSI", year=2024, countries=["CZ", "DK"], detail_url=DETAIL,
+                     listing_titles=["Social Climate Plan for Czechia", "Social Climate Plan for Denmark",
+                                     "social climate plan for czechia"])
+    content = ProjectContent(summary="S.", context="C.", support_delivered="D.", results_achieved="R.")
+    body = detail_body(ref, content)
+    assert ("## Listed in country factsheets as\n\n- Social Climate Plan for Czechia\n"
+            "- Social Climate Plan for Denmark\n\n## Sources") in body
+
+
+def test_detail_body_omits_listed_section_when_only_title_case_insensitively():
+    ref = ProjectRef(project_id="hems", title="HEMS in Croatia", programme="TSI", year=2022, countries=["HR"],
+                     detail_url=DETAIL, listing_titles=["hems in croatia"])
+    content = ProjectContent(summary="S.", context="C.", support_delivered="D.", results_achieved="R.")
+    body = detail_body(ref, content)
+    assert "## Listed in country factsheets as" not in body
+
+
+def test_listing_hash_changes_with_listing_titles():
+    base = dict(project_id="p", title="T", programme="TSI", year=2025, countries=["FR"])
+    a = ProjectRef(listing_titles=["x"], **base)
+    b = ProjectRef(listing_titles=["y"], **base)
+    assert a.listing_hash() != b.listing_hash()

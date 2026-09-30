@@ -25,6 +25,12 @@ def test_factsheet_france_lists_every_year_with_single_and_multi_country():
     assert parsed.announced[2026] == 10 and parsed.parsed_counts[2026] == 9
 
 
+def test_factsheet_first_listed_ref_carries_its_listing_title():
+    parsed = parse_factsheet(fixture_bytes("factsheet_france.html"), "https://x/france_en", "FR")
+    listed = [r for r in parsed.refs if not r.highlighted]
+    assert listed[0].listing_titles == ["PACE - European Victim Architecture Digital Evaluation (EVADE)"]
+
+
 def test_factsheet_detail_refs_carry_their_thin_id_as_alias():
     parsed = parse_factsheet(fixture_bytes("factsheet_france.html"), "https://x/france_en", "FR")
     ref = next(r for r in parsed.refs if r.detail_url and r.detail_url.endswith("/energy-regulation-academy_en"))
