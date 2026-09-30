@@ -110,7 +110,7 @@ class ProjectExtractor:
             return float(meta["cost_usd"])
         usage = meta.get("usage") or {}
         model = str(meta.get("model", ""))
-        for prefix, price in self.pricing.items():
+        for prefix, price in sorted(self.pricing.items(), key=lambda kv: len(kv[0]), reverse=True):
             if model.startswith(prefix):
                 return (usage.get("prompt_tokens", 0) * price.get("input", 0)
                         + usage.get("completion_tokens", 0) * price.get("output", 0)) / 1_000_000
@@ -163,6 +163,7 @@ class ProjectExtractor:
 
         def work(i: int, page: DetailPage) -> None:
             if stop.is_set():
+                runlog.event(NAME, "error", page.ref.project_id, "skipped_quota")
                 return
             try:
                 results[i] = self._extract_one(page)

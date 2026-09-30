@@ -81,3 +81,28 @@ def test_openai_style_meta_is_logged(tmp_path):
     assert out["records"][0].model == "gpt-4o-mini-2024-07-18"
     assert run.llm_tokens["cache_read_tokens"] == 400
     assert abs(run.cost_usd - (1000 * 0.15 + 200 * 0.6) / 1_000_000) < 1e-12
+
+
+def test_longest_pricing_prefix_wins(tmp_path):
+    from haystack import component
+    from haystack.dataclasses import ChatMessage
+
+    @component
+    class Mini:
+        @component.output_types(replies=list[ChatMessage])
+        def run(self, messages: list[ChatMessage]):
+            meta = {"model": "gpt-4o-mini-2024-07-18", "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 0}}
+            return {"replies": [ChatMessage.from_assistant(CONTENT_JSON, meta=meta)]}
+
+    pricing = {"gpt-4o": {"input": 2.5, "output": 10.0}, "gpt-4o-mini": {"input": 0.15, "output": 0.6}}
+    with runlog.open_run(tmp_path, "rp") as run:
+        ProjectExtractor(chat_generator=Mini(), pricing=pricing).run(pages=[page()])
+    assert abs(run.cost_usd - 0.15) < 1e-9
+
+
+def test_pages_skipped_after_quota_are_logged(tmp_path):
+    gen = FakeChatGenerator(error=LLMQuotaExceeded("usage limit reached"))
+    with runlog.open_run(tmp_path, "rq") as run:
+        out = ProjectExtractor(chat_generator=gen, max_concurrency=1).run(pages=[page("a"), page("b"), page("c")])
+    assert out["failed"] == ["a"]
+    assert run.counts["error:skipped_quota"] == 2
