@@ -1,0 +1,100 @@
+import pytest
+
+from conftest import FIXTURES
+from tsi_agent.chunking import (CHUNKER_VERSION, INTRO, SUMMARY, chunk_file, context_header, split_sections,
+                                split_words)
+
+
+def read(name: str) -> str:
+    return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+def test_split_sections_drops_title_sources_and_listed():
+    body = ("# Title\n\nIntro text.\n\n## Summary (AI-generated)\n\nSum.\n\n## Context\n\nCtx.\n\n"
+            "## Listed in country factsheets as\n\n- X\n\n## Sources\n\n- https://x\n")
+    assert split_sections(body) == [(INTRO, "Intro text."), (SUMMARY, "Sum."), ("Context", "Ctx.")]
+
+
+def test_split_sections_skips_empty_intro():
+    assert split_sections("# T\n\n## Context\n\nCtx.\n") == [("Context", "Ctx.")]
+
+
+def test_split_words_keeps_short_text_verbatim():
+    text = "Line one.\nLine two."
+    assert split_words(text) == [text]
+
+
+def test_split_words_windows_with_overlap_and_sentence_cut():
+    words = [f"w{i}" + ("." if i % 20 == 19 else "") for i in range(620)]
+    chunks = split_words(" ".join(words))
+    assert len(chunks) == 3
+    first = chunks[0].split()
+    assert len(first) <= 250 and first[-1].endswith(".")
+    assert chunks[1].split()[0] == first[-40]          # recouvrement de 40 mots
+    assert chunks[-1].split()[-1] == "w619."
+    assert all(len(c.split()) <= 250 for c in chunks)
+
+
+def test_context_header():
+    fm = {"title": "HEMS", "programme": "TSI", "year": 2022, "countries": ["HR", "SI"]}
+    assert context_header(fm) == "HEMS — TSI 2022 — Croatia, Slovenia"
+    assert context_header({"title": "TSI country factsheet - Croatia"}) == "TSI country factsheet - Croatia"
+
+
+def test_detail_file_with_sections():
+    docs = chunk_file("projects/energy-regulation-academy.md", read("vec_detail_sections.md"))
+    sections = [d.meta["section"] for d in docs]
+    assert sections == [INTRO, SUMMARY, "Context", "Support delivered", "Expected results"]
+    assert [d.id for d in docs] == [f"energy-regulation-academy#{i}" for i in range(5)]
+    first = docs[0].meta
+    assert first["doc_type"] == "project" and first["detail_page"] is True and first["programme"] == "TSI"
+    assert first["year"] == 2026 and len(first["countries"]) == 27 and first["multi_country"] is True
+    assert first["source_file"] == "projects/energy-regulation-academy.md"
+    assert first["source_url"].endswith("/green-transition/energy-regulation-academy_en")
+    assert first["context_header"].startswith("The Energy Regulation Academy — TSI 2026 — Austria")
+    assert [d.meta["ai_generated"] for d in docs] == [False, True, False, False, False]
+    assert all("https://" not in d.content for d in docs)
+    assert docs[0].content.startswith("The Energy Regulation Academy is a capacity-building initiative")
+
+
+def test_detail_file_with_page_text():
+    sections = [d.meta["section"] for d in chunk_file("projects/x.md", read("vec_detail_page_text.md"))]
+    assert "Page text" in sections and SUMMARY in sections
+
+
+def test_long_section_is_split():
+    docs = chunk_file("projects/x.md", read("vec_detail_long_section.md"))
+    support = [d for d in docs if d.meta["section"].lower() == "support delivered"]
+    assert len(support) == 2
+    assert [d.meta["chunk_index"] for d in docs] == list(range(len(docs)))
+
+
+def test_thin_file_is_one_chunk():
+    docs = chunk_file("projects/thin.md", read("vec_thin.md"))
+    assert len(docs) == 1
+    meta = docs[0].meta
+    assert meta["detail_page"] is False and meta["programme"] == "SRSP" and meta["countries"] == ["GR"]
+    assert "No detail page is published." in docs[0].content
+    assert meta["source_url"].endswith(".pdf")
+
+
+def test_programme_file():
+    docs = chunk_file("programme/country-croatia.md", read("vec_programme.md"))
+    assert docs and all(d.meta["doc_type"] == "programme" for d in docs)
+    assert docs[0].meta["doc_id"] == "country-croatia" and docs[0].meta["detail_page"] is None
+    assert docs[0].meta["source_url"].endswith("/croatia_en")
+
+
+def test_crlf_file_is_accepted():
+    text = read("vec_thin.md").replace("\n", "\r\n")
+    assert len(chunk_file("projects/thin.md", text)) == 1
+
+
+@pytest.mark.parametrize("text", ["no front matter", "---\n- a list\n---\n\nbody", "---\ntitle: x\n---\n\nbody"])
+def test_invalid_files_raise_value_error(text):
+    with pytest.raises(ValueError):
+        chunk_file("projects/bad.md", text)
+
+
+def test_chunker_version_is_an_int():
+    assert isinstance(CHUNKER_VERSION, int)
