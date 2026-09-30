@@ -37,9 +37,13 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--model")
     index = sub.add_parser("index", help="vectoriser les fichiers extraits nouveaux ou modifiés (couche RAG)")
     index.add_argument("--full", action="store_true", help="revectoriser tous les fichiers")
+    chat = sub.add_parser("chat", help="chatbot local sur la couche vectorisée (page web)")
+    chat.add_argument("--port", type=int, help="port local (défaut : chat_port des réglages)")
+    chat.add_argument("--no-browser", action="store_true", help="ne pas ouvrir le navigateur")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
+    export.add_argument("--chat", action="store_true", help="exporter le pipeline du chatbot")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -51,13 +55,35 @@ def main(argv: list[str] | None = None) -> int:
     sources = load_sources(args.sources)
     if args.command == "export-yaml":
         try:
-            pipe = build_index_pipeline(settings) if args.index else build_pipeline(settings, sources)
+            if args.chat:
+                from tsi_agent.chat import pipeline as chat_pipeline
+                pipe = chat_pipeline.build_chat_pipeline(settings, sources.get("policy_areas") or [])
+            elif args.index:
+                pipe = build_index_pipeline(settings)
+            else:
+                pipe = build_pipeline(settings, sources)
             Path(args.path).write_text(pipe.dumps(), encoding="utf-8")
         except Exception as exc:
             print(f"ERREUR : {exc!r}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
             return 2
         print(f"Pipeline exporté vers {args.path}")
+        return 0
+    if args.command == "chat":
+        import webbrowser
+
+        from tsi_agent.chat import web
+        port = args.port or settings.chat_port
+        try:
+            app = web.create_app(settings, policy_areas=sources.get("policy_areas") or [])
+        except Exception as exc:
+            print(f"ERREUR : {exc}", file=sys.stderr)
+            return 2
+        url = f"http://127.0.0.1:{port}/"
+        print(f"Chatbot : {url}  (Ctrl+C pour arrêter)")
+        if not args.no_browser:
+            webbrowser.open(url)
+        app.run(host="127.0.0.1", port=port, threaded=True)
         return 0
     if args.command == "index":
         try:
