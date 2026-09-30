@@ -38,6 +38,11 @@ Constats de volumétrie, mesurés sur les 27 factsheets :
 - Environ 24 liens pointent vers l'ancien domaine (`reform-support.ec.europa.eu/what-we-do/…`) ou vers des chemins non standard. Ils redirigent vers la page canonique, parfois avec un slug différent.
 - Le nombre de projets annoncé par année (« the Commission approved the following **N** projects ») diffère souvent d'une unité du nombre réellement listé. C'est une incohérence du site : ce contrôle n'est qu'informatif.
 - Un même projet multi-pays peut avoir un lien dans une factsheet et pas dans une autre.
+- Sur les 27 pages détail réelles en cache, les 27 ont leurs sections officielles (aucune ne tombe dans le
+  repli « Page text »). Titres de section rencontrés : « Context » (27) ; « Support delivered » /
+  « Support Delivered » / « Support to be delivered » ; puis soit « Results achieved » / « Result achieved »
+  (14 pages), soit « Expected results » / « Results expected » (13 pages). Le texte rendu (`blocks_markdown`)
+  a été vérifié mot pour mot contre le texte de chaque page.
 
 ## 3. Modèle de données
 
@@ -63,6 +68,7 @@ year: 2022
 countries: [HR]             # codes ISO 3166-1 alpha-2 (Grèce = GR)
 multi_country: false
 policy_area: health-and-long-term-care   # null si inconnu
+results: achieved            # achieved | expected | null, selon le titre officiel de la section résultats
 spotlight: true
 highlighted: false
 detail_page: true           # false = projet "thin"
@@ -81,15 +87,39 @@ extraction:
 
 # Establishment of Helicopter Emergency Medical Services in Croatia
 
-## Summary
+Paragraphe d'accroche officiel de la page, recopié mot pour mot (entre le titre h2 et le premier h3).
+
+## Summary (AI-generated)
+
+Résumé de 3 à 5 phrases généré par le LLM à partir du texte de la page.
+
 ## Context
+
+Texte officiel de la section, recopié mot pour mot et converti en Markdown (paragraphes, listes,
+sous-titres h4 devenus `###`).
+
 ## Support delivered
+
+Idem, texte officiel verbatim.
+
 ## Results achieved
+
+Idem (ou `## Expected results`, selon le titre trouvé sur la page — voir `results` dans le front matter).
+
 ## Listed in country factsheets as   # optionnelle : seulement si un listing_titles diffère du titre retenu
 ## Sources
 ```
 
-- **Le LLM restructure, il n'invente pas.** Chaque section reprend uniquement le contenu de la page source. Une section absente de la source vaut « Not reported on the source page. ».
+Les titres de section (`## Context`, `## Support delivered`, `## Results achieved` / `## Expected results`…)
+sont repris **tels quels** depuis la page (casse et libellé exacts), pas normalisés. Les titres h3 de mise en
+page (« More about the project », « Useful links », « Photos visuals », « Photos », « Videos ») sont exclus.
+
+Si la page ne comporte aucun h3 reconnu, tout le corps entre le titre et la queue (Listed in / Sources) est
+remplacé par une unique section `## Page text` contenant le texte brut complet de la page, verbatim.
+
+- **Le texte officiel n'est jamais réécrit.** Seul le résumé est généré (étiqueté « AI-generated ») ;
+  l'accroche et les sections (Context, Support delivered, Results achieved/Expected results, ou le repli
+  Page text) sont recopiées mot pour mot depuis la page, converties en Markdown sans changement de contenu.
 - **Pays d'un projet détaillé :** on prend ceux des listings. Si aucun listing ne les donne (projet trouvé seulement via un domaine politique), on prend les pays que le LLM a identifiés dans le texte.
 - **Programme et année d'un projet détaillé :** la liste de description de la page détail est prioritaire sur le listing.
 - **Un projet thin** a le front matter complet, et comme corps une ligne générée sans LLM, dans le format produit par `render.thin_sentence` (ex. « Project listed in the TSI country factsheet for Croatia under TSI 2025 (single-country). No detail page is published. », ou pour un projet SRSP « Project listed in the SRSP list of approved technical support requests (Croatia, 2019). No detail page is published. »), suivie de la section « Listed in country factsheets as » (optionnelle) puis des Sources.
@@ -125,8 +155,8 @@ SourceListingFetcher → ProjectDiscoverer → ChangeDetector ─┬─ thin ─
 | `SourceListingFetcher` | `countries?` → `pages: list[RawPage]` | Récupère les factsheets, le spotlight, les domaines politiques, le PDF SRSP et les documents programme via `PoliteFetcher`. |
 | `ProjectDiscoverer` | `pages` → `refs`, `programme_docs`, `suspect_countries`, `scope`, `deferred_ids` | Parsing déterministe (BeautifulSoup, pdfplumber), résolution des liens non canoniques, fusion (§3). Deux cas lèvent une alerte : une factsheet avec 0 projet, et un document programme vide. Un lien dont la résolution échoue temporairement (429, 5xx, réseau) est **reporté** : il n'est ni écrit en thin ni dé-listé, et ses ids vont dans `deferred_ids`. `scope` indique les pays et le PDF réellement récupérés, pour que le dé-listage ne touche que ce périmètre. Met en cache, par instance (donc par process), les résolutions de lien déjà effectuées et le PDF SRSP déjà analysé, pour ne pas les refaire à chaque lot d'un même run. |
 | `ChangeDetector` | `refs`, `run_id`, `scope`, `suspect_countries`, `deferred_ids`, `limit` → `thin`, `detail`, `delisted`, `remaining` | Retient les thin nouveaux, ou dont le `listing_hash` a changé. Retient les projets détaillés pas encore proposés dans ce run (ensemble mémorisé par `run_id` dans l'instance), dans la limite de `limit`. Sur un run pilote (scope partiel), complète chaque ref connue avec les sources de listing **non récupérées ce run** (`countries`, `listing_urls` de l'état), pour ne pas réécrire hors périmètre les projets simplement absents du run. Ne dé-liste (`delisted`) que les projets connus dont **toutes** les URLs de listing (hors page détail) ont été récupérées ce run (`scope["fetched"]`), et seulement s'ils ne sont ni dans un pays suspect ni concernés par un id reporté (`deferred_ids`, y compris via leurs `aliases` ou `source_urls`). |
-| `DetailPageFetcher` | `detail` refs, `full` → `pages: list[DetailPage]`, `unchanged: list[ProjectRef]`, `failed: list[str]` | Récupère la page et calcule le hash. Si le hash est inchangé et que `full` est faux, le projet va dans `unchanged` et ne passe pas par le LLM. Un échec de récupération va dans `failed` (projet ni écrit ni dé-listé, retenté au run suivant) ; un 404 ou 410 lève en plus une alerte (page détail disparue). |
-| `ProjectExtractor` | `pages` → `records`, `failed`, `quota_exceeded` | Construit le prompt et appelle un **chat generator Haystack injecté** (`ClaudeCliChatGenerator` en local, `OpenAIChatGenerator` dans deepset). Valide le JSON avec Pydantic, avec un seul nouvel essai. Parallélisme borné (`max_concurrency`). S'arrête proprement en cas de quota. |
+| `DetailPageFetcher` | `detail` refs, `full` → `pages: list[DetailPage]`, `unchanged: list[ProjectRef]`, `failed: list[str]` | Récupère la page et calcule le hash. Parse aussi, par analyse déterministe (`parse_detail`), l'accroche officielle (`intro`), les sections officielles (`sections`, titre h3 + corps Markdown, verbatim) et le type de résultats (`results`) — c'est ce texte-là, pas le LLM, qui est recopié dans le fichier projet. Si le hash est inchangé et que `full` est faux, le projet va dans `unchanged` et ne passe pas par le LLM. Un échec de récupération va dans `failed` (projet ni écrit ni dé-listé, retenté au run suivant) ; un 404 ou 410 lève en plus une alerte (page détail disparue). |
+| `ProjectExtractor` | `pages` → `records`, `failed`, `quota_exceeded` | Construit le prompt et appelle un **chat generator Haystack injecté** (`ClaudeCliChatGenerator` en local, `OpenAIChatGenerator` dans deepset). Ne demande au LLM que le résumé et les pays (§5) ; l'accroche, les sections officielles et `results` viennent tels quels du `DetailPage` produit par `DetailPageFetcher` et sont recopiés dans le `ProjectRecord`. Valide le JSON avec Pydantic, avec un seul nouvel essai. Parallélisme borné (`max_concurrency`). S'arrête proprement en cas de quota. |
 | `MarkdownProjectWriter` | `records`, `thin`, `unchanged`, `delisted`, `programme_docs`, `run_id` → `written`, `stats` | Écrit les fichiers et met à jour `ProjectStore`, en isolant les erreurs disque par projet (`write_failed`, compté dans `stats`) pour qu'une panne sur un fichier ne fasse pas perdre les autres. Marque `listed: false` pour les delisted. Pour les unchanged dont les métadonnées de listing ont changé (nouveau pays, spotlight…), réécrit le front matter et **régénère** les sections du corps dérivées du listing (« Listed in country factsheets as », Sources), sans appel LLM, en conservant les pays déjà trouvés par le LLM si le listing n'en fournit pas. Stocke le hash de la vue listing (`listing_hash`), comparé au run suivant. Les fichiers thin sont les **seuls jamais supprimés**, et seulement quand ils sont remplacés par leur page détail. |
 
 Choix d'implémentation :
@@ -153,6 +183,7 @@ Le runner exécute le pipeline en **lots** de `chunk_size` projets détaillés (
   - `--bare` n'est pas utilisable : il impose une clé API et ignore l'OAuth de la souscription.
   - Avec ces options, le contexte de base mesuré tombe à environ **1 950 tokens d'entrée** (contre environ 24 000 sans elles), soit environ 0,003 $ par appel avec haiku hors texte de la page.
 - **Sortie :** si `--json-schema` est fourni, le CLI renvoie `structured_output`, un JSON déjà validé, qui est ré-sérialisé en texte dans la réponse. Sinon, c'est `result`. On lit aussi `usage` (input, output, cache_read, cache_creation), `total_cost_usd`, `duration_ms`, `num_turns` et `session_id`.
+- **Schéma demandé au LLM (`ProjectContent`) :** deux clés seulement, `summary` et `countries` (le texte officiel de la page — accroche, sections, résultats — n'est plus produit par le LLM, voir §3). Cela réduit d'autant les tokens de sortie par rapport à un schéma qui redemanderait les sections.
 - **Paramètres d'init :** `model` (défaut `sonnet`), `timeout_s` (180), `json_schema` (optionnel), `executable` (défaut `claude`, résolu comme ci-dessus). Le prompt système, lui, est reconstruit à chaque appel à partir des messages système passés à `run()`.
 - **Erreurs :** un `is_error`, un `api_error_status == 429`, ou un JSON de sortie non parsable dont le message contient une limite (« rate limit », « usage limit », « limit reached », « quota », « too many requests », ou `429`) lève `LLMQuotaExceeded`. Un timeout du sous-processus ou toute autre erreur (y compris une `OSError` au lancement du CLI) lève `LLMCallError`.
 - **Coût :** sur la souscription, `total_cost_usd` est un **coût équivalent API** (notionnel), journalisé pour projeter le budget API. Mesuré au smoke test : environ 0,02 $ par projet avec haiku. Avec sonnet, on estime environ 0,06 $, soit environ 35 à 40 $ notionnels pour les ~620 appels du premier run complet.
@@ -197,7 +228,7 @@ python -m tsi_agent export-yaml pipeline.yaml
 | Erreur disque à l'écriture d'un fichier projet ou programme (verrou OneDrive/antivirus compris) | Isolée par projet : comptée dans `stats["write_failed"]`, événement `error`/`write_failed`. Les autres projets du lot continuent d'être écrits. |
 | Erreur inattendue non rattrapée pendant le run | Le run se termine en erreur : `status: error` et `error` (repr tronqué) dans `logs/runs/<run_id>.summary.json` ; code de sortie `2`. |
 
-## 9. Tests (pytest, 136 tests)
+## 9. Tests (pytest, 143 tests)
 
 - **Parsers** testés sur des fixtures réelles enregistrées dans `tests/fixtures/` : factsheets France et Croatie, spotlight, page projet, domaine politique, page performance, index des factsheets et PDF SRSP. Les valeurs attendues ont été mesurées sur ces fixtures.
 - **`PoliteFetcher`** avec `httpx.MockTransport` : cache ETag et 304, retry, 404 sans retry, robots, mémo.

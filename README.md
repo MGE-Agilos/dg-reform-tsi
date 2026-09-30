@@ -56,11 +56,16 @@ progressivement, après 50 requêtes réussies d'affilée. C'est la première ca
 
 Un projet correspond à une page détail du site de la Commission. Une même page peut couvrir plusieurs composantes nationales, listées dans les factsheets sous des titres différents (par exemple les 25 projets « PACE 2023 »). Ces titres sont conservés dans `listing_titles` et dans la section « Listed in country factsheets as ». Un titre générique de projet *flagship* qui pointe vers une page différente dans chaque pays donne un projet par page. Les mentions de ce titre sans lien forment un projet « thin » distinct. Un projet sans page détail (« thin ») est décrit à partir du listing seul.
 
+Le corps du fichier reprend mot pour mot les sections officielles de la page (Context, Support delivered,
+puis Results achieved ou Expected results selon le titre trouvé sur la page) ; seul le résumé est généré par
+le LLM, sous l'étiquette « Summary (AI-generated) ». Le front matter porte `results: achieved` ou `expected`
+en conséquence (`null` si la page n'a pas de section résultats reconnue).
+
 ## Sorties
 
 | Chemin | Contenu |
 |---|---|
-| `output/projects/<project_id>.md` | Un fichier par projet : front matter (pays, année, programme, titres de listing nationaux, sources, hash, run) + Summary / Context / Support delivered / Results achieved |
+| `output/projects/<project_id>.md` | Un fichier par projet : front matter (pays, année, programme, titres de listing nationaux, sources, hash, run, `results: achieved\|expected\|null`) + un résumé généré par IA (« Summary (AI-generated) ») suivi des sections officielles de la page recopiées mot pour mot (Context, Support delivered, Results achieved ou Expected results) |
 | `output/programme/*.md` | Documents programme : chiffres par pays, domaines politiques, performance TSI |
 | `output/state/index.json` | État utilisé pour l'incrémental. Ne pas éditer à la main. |
 | `logs/runs/<run_id>.jsonl` | Journal : une action par ligne (fetch, classification, appel LLM avec tokens et coût, écriture…) |
