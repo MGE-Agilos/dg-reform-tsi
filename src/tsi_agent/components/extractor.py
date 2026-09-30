@@ -151,7 +151,8 @@ class ProjectExtractor:
                 "detail_url": page.url,
             })
             model = str((reply.meta or {}).get("model", "unknown"))
-            return ProjectRecord(ref=ref, content=content, content_hash=page.content_hash, model=model)
+            return ProjectRecord(ref=ref, listing_hash=page.ref.listing_hash(), content=content,
+                                 content_hash=page.content_hash, model=model)
         raise ContentParseError(error)
 
     @component.output_types(records=list[ProjectRecord], failed=list[str], quota_exceeded=bool)

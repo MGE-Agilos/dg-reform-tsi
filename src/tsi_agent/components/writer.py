@@ -32,10 +32,10 @@ class MarkdownProjectWriter:
         return min(dates) if dates else today
 
     def _entry(self, ref: ProjectRef, file: str, first_seen: str, today: str,
-               content_hash: str | None) -> StoreEntry:
+               content_hash: str | None, listing_hash: str) -> StoreEntry:
         return StoreEntry(project_id=ref.project_id, file=file, programme=ref.programme,
                           detail_page=ref.detail_page, content_hash=content_hash,
-                          listing_hash=ref.listing_hash(), source_urls=source_urls(ref),
+                          listing_hash=listing_hash, source_urls=source_urls(ref),
                           countries=list(ref.countries), first_seen=first_seen, last_updated=today,
                           listed=True, aliases=list(ref.aliases))
 
@@ -57,13 +57,17 @@ class MarkdownProjectWriter:
 
     def _write_record(self, rec: ProjectRecord, run_id: str, today: str) -> str:
         store = self._get_store()
-        ref = rec.ref
+        stored = store.get(rec.ref.project_id)
+        aliases = [a for a in dict.fromkeys([*(stored.aliases if stored else []), *rec.ref.aliases])
+                   if a != rec.ref.project_id]
+        ref = rec.ref.model_copy(update={"aliases": aliases})
         first_seen = self._first_seen(ref, today)
         fm = front_matter(ref, content_hash=rec.content_hash, first_seen=first_seen, last_updated=today,
                           run_id=run_id, model=rec.model)
         file = store.write_project_file(ref.project_id, render(fm, detail_body(ref, rec.content)))
         self._replace_aliases(ref)
-        store.put(self._entry(ref, file, first_seen, today, rec.content_hash))
+        # Hash de la vue listing : c'est à elle que le prochain run comparera (pas au ref enrichi).
+        store.put(self._entry(ref, file, first_seen, today, rec.content_hash, rec.listing_hash))
         runlog.event(NAME, "write", ref.project_id, "detail", file=file)
         return file
 
@@ -73,7 +77,7 @@ class MarkdownProjectWriter:
         fm = front_matter(ref, content_hash=None, first_seen=first_seen, last_updated=today,
                           run_id=run_id, model="none")
         file = store.write_project_file(ref.project_id, render(fm, thin_body(ref)))
-        store.put(self._entry(ref, file, first_seen, today, None), save=False)
+        store.put(self._entry(ref, file, first_seen, today, None, ref.listing_hash()), save=False)
         runlog.event(NAME, "write", ref.project_id, "thin", file=file)
         return file
 
@@ -89,12 +93,13 @@ class MarkdownProjectWriter:
         old, body = parse_front_matter(text)
         if ref is not None:
             aliases = list(dict.fromkeys([*entry.aliases, *ref.aliases]))
-            ref_for_fm = ref.model_copy(update={"aliases": aliases})
+            countries = list(ref.countries) or list(entry.countries)  # pays trouvés par le LLM si le listing n'en a pas
+            ref_for_fm = ref.model_copy(update={"aliases": aliases, "countries": countries})
             fm = front_matter(ref_for_fm, content_hash=entry.content_hash, first_seen=entry.first_seen,
                               last_updated=today, run_id=old["extraction"]["run_id"],
                               model=old["extraction"]["model"], listed=listed)
             fm["title"], fm["programme"], fm["year"] = old["title"], old["programme"], old["year"]
-            entry.listing_hash, entry.countries, entry.source_urls = ref.listing_hash(), list(ref.countries), source_urls(ref)
+            entry.listing_hash, entry.countries, entry.source_urls = ref.listing_hash(), countries, source_urls(ref)
             entry.aliases = aliases
             body = replace_listing_tail(body, ref)
         else:
@@ -122,6 +127,7 @@ class MarkdownProjectWriter:
                 store.flush()
         store.flush()
         for ref in unchanged or []:
+            self._replace_aliases(ref)  # thin écrit pendant que la page détail avait disparu
             if self._refresh(ref.project_id, today, ref=ref):
                 stats["refreshed"] += 1
                 runlog.event(NAME, "write", ref.project_id, "refreshed_front_matter")

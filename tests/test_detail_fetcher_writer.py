@@ -45,9 +45,12 @@ def test_detail_fetcher_failure(tmp_path):
     assert out["failed"] == ["missing"] and out["pages"] == []
 
 
-def record(**kw):
+def record(listing_ref=None, **kw):
+    """`listing_ref` : vue listing (par defaut identique au ref du record)."""
     content = ProjectContent(summary="S.", context="C.", support_delivered="D.", results_achieved="R.")
-    return ProjectRecord(ref=ref(**kw), content=content, content_hash="sha256:1", model="claude-cli/sonnet")
+    rec_ref = ref(**kw)
+    return ProjectRecord(ref=rec_ref, listing_hash=(listing_ref or rec_ref).listing_hash(), content=content,
+                         content_hash="sha256:1", model="claude-cli/sonnet")
 
 
 def test_writer_thin_then_detail_replaces_thin_file(tmp_path):
@@ -130,3 +133,49 @@ def test_writer_programme_docs_only_when_changed(tmp_path):
     assert w.run(run_id="r1", programme_docs=[doc])["stats"]["programme_docs"] == 1
     assert w.run(run_id="r2", programme_docs=[doc])["stats"]["programme_docs"] == 0
     assert (tmp_path / "programme" / "country-croatia.md").exists()
+
+
+def test_llm_countries_survive_an_identical_second_run(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    w = writer(store)
+    listing = ref(countries=[])  # le listing ne donne pas de pays ; le LLM a trouvé HR
+    w.run(run_id="r1", records=[record(listing_ref=listing, countries=["HR"])])
+    before = store.read_project_file("hems")
+    out = w.run(run_id="r2", unchanged=[listing])
+    assert out["stats"]["refreshed"] == 0
+    assert store.read_project_file("hems") == before
+    assert store.get("hems").countries == ["HR"]
+
+
+def test_refresh_keeps_stored_countries_when_listing_has_none(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    w = writer(store)
+    listing = ref(countries=[])
+    w.run(run_id="r1", records=[record(listing_ref=listing, countries=["HR"])])
+    out = w.run(run_id="r2", unchanged=[listing.model_copy(update={"spotlight": True})])
+    assert out["stats"]["refreshed"] == 1
+    fm, _ = parse_front_matter(store.read_project_file("hems"))
+    assert fm["spotlight"] is True and fm["countries"] == ["HR"]
+    assert store.get("hems").countries == ["HR"]
+
+
+def test_unchanged_detail_page_removes_its_thin_alias(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    w = writer(store)
+    w.run(run_id="r1", records=[record()])
+    thin_ref = ProjectRef(project_id="tsi-2022-hems", title="HEMS", programme="TSI", year=2022, countries=["HR"],
+                          listing_urls=["https://x/croatia_en"])
+    w.run(run_id="r2", thin=[thin_ref])  # la page détail avait disparu
+    assert store.get("tsi-2022-hems") is not None
+    w.run(run_id="r3", unchanged=[ref(aliases=["tsi-2022-hems"])])
+    assert store.get("tsi-2022-hems") is None and store.read_project_file("tsi-2022-hems") is None
+
+
+def test_rewriting_a_record_merges_stored_aliases(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    w = writer(store)
+    w.run(run_id="r1", records=[record(aliases=["tsi-2022-hems"])])
+    w.run(run_id="r2", records=[record(aliases=["tsi-2021-hems"])])
+    assert store.get("hems").aliases == ["tsi-2022-hems", "tsi-2021-hems"]
+    fm, _ = parse_front_matter(store.read_project_file("hems"))
+    assert fm["aliases"] == ["tsi-2022-hems", "tsi-2021-hems"]

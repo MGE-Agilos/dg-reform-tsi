@@ -108,7 +108,8 @@ def test_resolves_non_canonical_links_and_builds_programme_docs():
     assert resolved.policy_area == "financial-sector-and-access-finance"
     assert disc._fetcher.calls == [odd]
     assert [d.doc_id for d in out["programme_docs"]] == ["country-croatia"]  # performance vide => écartée
-    assert out["scope"] == {"countries": ["HR"], "srsp": False, "all_countries": False}
+    assert out["scope"] == {"countries": ["HR"], "srsp": False, "all_countries": False,
+                            "fetched": sorted([hr_url, "https://x/perf_en"])}
     assert out["suspect_countries"] == []
 
 
@@ -142,7 +143,8 @@ def test_transient_resolve_failure_is_deferred_not_thin():
     disc._fetcher = RateLimited()
     out = disc.run(pages=[RawPage(kind="factsheet", key="FR", url="https://x/france_en", content=html)])
     assert out["refs"] == []
-    assert out["deferred_ids"] == ["busy", "tsi-2025-busy-project"]
+    assert out["deferred_ids"] == ["busy", "tsi-2025-busy-project",
+                                   "https://reform-support.ec.europa.eu/what-we-do/x/busy_en"]
 
 
 def test_unexpected_resolve_error_defers_instead_of_crashing():
@@ -158,7 +160,8 @@ def test_unexpected_resolve_error_defers_instead_of_crashing():
     disc._fetcher = Broken()
     out = disc.run(pages=[RawPage(kind="factsheet", key="FR", url="https://x/france_en", content=html)])
     assert out["refs"] == []
-    assert out["deferred_ids"] == ["busy", "tsi-2025-busy-project"]
+    assert out["deferred_ids"] == ["busy", "tsi-2025-busy-project",
+                                   "https://reform-support.ec.europa.eu/what-we-do/x/busy_en"]
 
 
 def test_permanent_403_becomes_thin():

@@ -65,6 +65,7 @@ def test_two_runs_first_writes_second_is_incremental(settings):
                             pipeline_factory=factory(gen2, FakeFetcher(default=fake_site)))
     assert second["llm_calls"] == 0 and gen2.calls == []
     assert second["written"]["thin"] == 0 and second["written"]["detail"] == 0
+    assert second["written"]["refreshed"] == 0
 
 
 def test_limit_caps_llm_calls(settings):

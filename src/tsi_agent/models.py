@@ -83,6 +83,7 @@ class ProjectContent(BaseModel):
 
 class ProjectRecord(BaseModel):
     ref: ProjectRef
+    listing_hash: str  # hash de la vue listing (avant enrichissement par la page détail et le LLM)
     content: ProjectContent
     content_hash: str
     model: str

@@ -6,6 +6,7 @@ from haystack import component
 from tsi_agent import runlog
 from tsi_agent.models import ProjectRef
 from tsi_agent.store import ProjectStore, shared_store, StoreEntry
+from tsi_agent.urls import is_detail_candidate
 
 NAME = "ChangeDetector"
 DROP_RATIO = 0.7      # moins de 70 % des projets connus d'un pays => pays suspect
@@ -18,6 +19,22 @@ def _in_scope(entry: StoreEntry, scope: dict[str, Any]) -> bool:
     if not entry.countries:
         return bool(scope.get("all_countries"))
     return all(c in scope.get("countries", []) for c in entry.countries)
+
+
+def _union(a: list[str], b: list[str]) -> list[str]:
+    return list(dict.fromkeys([*a, *b]))
+
+
+def _complete(ref: ProjectRef, entry: StoreEntry | None, fetched: set[str]) -> ProjectRef:
+    """Complète une vue partielle (run pilote) avec ce que l'état sait des sources non lues dans ce run."""
+    if entry is None or not entry.listed:
+        return ref
+    extra_urls = [u for u in entry.source_urls if not is_detail_candidate(u) and u not in fetched]
+    if not extra_urls:
+        return ref
+    countries = _union(ref.countries, entry.countries)
+    return ref.model_copy(update={"listing_urls": _union(ref.listing_urls, extra_urls), "countries": countries,
+                                  "multi_country": ref.multi_country or len(countries) > 1})
 
 
 @component
@@ -52,10 +69,16 @@ class ChangeDetector:
             limit: int | None = None) -> dict[str, Any]:
         store = self._get_store()
         known = store.all()
+        if scope.get("fetched") is not None:
+            fetched = set(scope["fetched"])
+            refs = [_complete(r, known.get(r.project_id), fetched) for r in refs]
         alias_owner = {alias: pid for pid, e in known.items() for alias in e.aliases}
         offered = self._offered.setdefault(run_id, set())
         thin, detail, remaining = [], [], 0
-        seen = {r.project_id for r in refs} | {a for r in refs for a in r.aliases} | set(deferred_ids or [])
+        deferred = set(deferred_ids or [])
+        seen = {r.project_id for r in refs} | {a for r in refs for a in r.aliases} | deferred
+        # Lien reporté : il porte l'ancien slug/l'ancienne URL, l'état connaît le projet sous son slug canonique.
+        seen |= {pid for pid, e in known.items() if deferred & {*e.aliases, *e.source_urls}}
         for ref in refs:
             entry = known.get(ref.project_id)
             if ref.detail_url:

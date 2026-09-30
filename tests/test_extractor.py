@@ -37,6 +37,12 @@ def test_countries_fallback_to_llm_when_listing_has_none(tmp_path):
     assert out["records"][0].ref.countries == ["HR"]
 
 
+def test_record_keeps_the_hash_of_the_listing_view():
+    p = page(countries=[])
+    rec = ProjectExtractor(chat_generator=FakeChatGenerator()).run(pages=[p])["records"][0]
+    assert rec.listing_hash == p.ref.listing_hash() != rec.ref.listing_hash()
+
+
 def test_one_retry_on_invalid_json_then_failure():
     ok = ProjectExtractor(chat_generator=FakeChatGenerator(replies=["not json", CONTENT_JSON])).run(pages=[page()])
     assert len(ok["records"]) == 1

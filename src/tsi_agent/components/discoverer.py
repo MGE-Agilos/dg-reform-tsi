@@ -150,7 +150,7 @@ class ProjectDiscoverer:
         except FetchError as exc:
             permanent = exc.status is not None and 400 <= exc.status < 500 and exc.status not in (408, 429)
             if not permanent:
-                deferred.extend([ref.project_id, *ref.aliases])
+                deferred.extend([ref.project_id, *ref.aliases, ref.detail_url])
                 runlog.event(NAME, "resolve", ref.detail_url, "deferred", error=str(exc))
                 return None
             final = None
@@ -184,6 +184,7 @@ class ProjectDiscoverer:
                              message=f"Factsheet {page.key}: 0 project parsed (site structure changed?)")
             refs += found
         scope["all_countries"] = set(scope["countries"]) == set(COUNTRIES)
+        scope["fetched"] = sorted(page.url for page in pages)  # sources lues dans ce run (vue partielle ?)
         deferred: list[str] = []
         resolved: list[ProjectRef] = []
         for r in refs:
@@ -191,7 +192,7 @@ class ProjectDiscoverer:
                 result = self._resolve(r, deferred)
             except Exception as exc:  # une erreur inattendue ne doit ni planter le run ni perdre le projet
                 runlog.event(NAME, "resolve", r.detail_url, "deferred", error=repr(exc))
-                deferred.extend([r.project_id, *r.aliases])
+                deferred.extend([r.project_id, *r.aliases, *([r.detail_url] if r.detail_url else [])])
                 continue
             if result is not None:
                 resolved.append(result)

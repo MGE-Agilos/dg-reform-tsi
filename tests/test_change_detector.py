@@ -104,3 +104,62 @@ def test_deferred_ids_are_not_delisted(tmp_path):
     known(d._store, thin("busy"))
     out = d.run(refs=[], run_id="r", scope=SCOPE, deferred_ids=["busy"])
     assert out["delisted"] == []
+
+
+FACTSHEETS = "https://reforms-investments.ec.europa.eu/technical-support-instrument-0/our-projects/tsi-country-factsheets"
+HR_URL, FR_URL = f"{FACTSHEETS}/croatia_en", f"{FACTSHEETS}/france_en"
+
+
+def test_pilot_run_completes_refs_with_sources_not_fetched(tmp_path):
+    d = detector(tmp_path)
+    full_ref = thin("p").model_copy(update={"countries": ["HR", "FR"], "multi_country": True,
+                                            "listing_urls": [HR_URL, FR_URL]})
+    d._store.put(StoreEntry(project_id="p", file="f", programme="TSI", countries=["HR", "FR"],
+                            listing_hash=full_ref.listing_hash(), source_urls=[HR_URL, FR_URL],
+                            first_seen="d", last_updated="d"))
+    partial = thin("p", country="HR", listing_urls=[HR_URL])
+    scope = {"countries": ["HR"], "srsp": False, "all_countries": False, "fetched": [HR_URL]}
+    assert d.run(refs=[partial], run_id="r", scope=scope)["thin"] == []
+    # Changement réel vu dans ce run : la ref sortie porte aussi les sources non récupérées.
+    out = d.run(refs=[partial.model_copy(update={"highlighted": True})], run_id="r2", scope=scope)
+    [got] = out["thin"]
+    assert got.countries == ["HR", "FR"] and got.listing_urls == [HR_URL, FR_URL]
+
+
+def test_pilot_run_completes_detail_refs(tmp_path):
+    d = detector(tmp_path)
+    url = "https://reforms-investments.ec.europa.eu/technical-support-instrument-0/green-transition/p_en"
+    d._store.put(StoreEntry(project_id="p", file="f", programme="TSI", countries=["HR", "FR"], detail_page=True,
+                            source_urls=[url, HR_URL, FR_URL], first_seen="d", last_updated="d"))
+    partial = ProjectRef(project_id="p", title="p", programme="TSI", year=2025, countries=["HR"],
+                         detail_url=url, listing_urls=[HR_URL])
+    scope = {"countries": ["HR"], "srsp": False, "all_countries": False, "fetched": [HR_URL]}
+    [got] = d.run(refs=[partial], run_id="r", scope=scope)["detail"]
+    assert got.countries == ["HR", "FR"] and got.listing_urls == [HR_URL, FR_URL]
+
+
+def test_fetched_sources_are_not_added_back(tmp_path):
+    d = detector(tmp_path)
+    old = thin("p").model_copy(update={"countries": ["HR", "FR"], "listing_urls": [HR_URL, FR_URL]})
+    d._store.put(StoreEntry(project_id="p", file="f", programme="TSI", countries=["HR", "FR"],
+                            listing_hash=old.listing_hash(), source_urls=[HR_URL, FR_URL],
+                            first_seen="d", last_updated="d"))
+    now = thin("p", country="HR", listing_urls=[HR_URL])  # FR récupéré et ne liste plus le projet
+    scope = {"countries": ["HR", "FR"], "srsp": False, "all_countries": False, "fetched": [HR_URL, FR_URL]}
+    [got] = d.run(refs=[now], run_id="r", scope=scope)["thin"]
+    assert got.countries == ["HR"] and got.listing_urls == [HR_URL]
+
+
+def test_deferred_old_slug_protects_canonical_project(tmp_path):
+    d = detector(tmp_path)
+    known(d._store, detail("canonical-slug"), aliases=["tsi-2025-busy-project"])
+    out = d.run(refs=[], run_id="r", scope=SCOPE, deferred_ids=["old-slug", "tsi-2025-busy-project"])
+    assert out["delisted"] == []
+
+
+def test_deferred_url_protects_project_with_that_source(tmp_path):
+    d = detector(tmp_path)
+    old_url = "https://reform-support.ec.europa.eu/what-we-do/x/old-slug_en"
+    known(d._store, detail("canonical-slug"), source_urls=[old_url])
+    out = d.run(refs=[], run_id="r", scope=SCOPE, deferred_ids=["old-slug", old_url])
+    assert out["delisted"] == []
