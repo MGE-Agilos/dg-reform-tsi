@@ -66,3 +66,27 @@ class FakeChatGenerator:
         meta = {"model": "fake/model", "usage": {"prompt_tokens": 100, "completion_tokens": 20},
                 "cost_usd": self.cost_usd}
         return {"replies": [ChatMessage.from_assistant(text, meta=meta)]}
+
+
+def make_vector_store(tmp_path: Path) -> Path:
+    """Couche vectorisee de test : 4 projets (fixtures vec_*) + 1 document programme, embedder factice (dim 8)."""
+    import shutil
+
+    from haystack.components.embedders import MockDocumentEmbedder
+
+    from tsi_agent.config import Settings
+    from tsi_agent.runner import run_index
+
+    out = tmp_path / "output"
+    (out / "projects").mkdir(parents=True)
+    (out / "programme").mkdir()
+    for name, rel in [("vec_detail_sections.md", "projects/energy-regulation-academy.md"),
+                      ("vec_detail_page_text.md", "projects/building-capacity-competition-authority-spain.md"),
+                      ("vec_detail_long_section.md", "projects/governance-digital-skills.md"),
+                      ("vec_thin.md", "projects/srsp-2016-property-tax.md"),
+                      ("vec_programme.md", "programme/country-croatia.md")]:
+        shutil.copy(FIXTURES / name, out / rel)
+    settings = Settings(output_dir=str(out), vectors_dir=str(out / "vectors"), logs_dir=str(tmp_path / "logs"))
+    run_index(settings, embedder=MockDocumentEmbedder(model="mock", dimension=8,
+                                                      meta_fields_to_embed=["context_header"]))
+    return out / "vectors" / "store.json"

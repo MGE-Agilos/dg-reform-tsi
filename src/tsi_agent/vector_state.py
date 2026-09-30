@@ -67,14 +67,21 @@ def new_store() -> InMemoryDocumentStore:
     return InMemoryDocumentStore(embedding_similarity_function="cosine", shared=False)
 
 
-def load_store(path: Path) -> InMemoryDocumentStore:
+def read_documents(path: Path) -> list[Document]:
+    """Morceaux de `store.json` (format InMemoryDocumentStore.save_to_disk)."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        documents = [Document.from_dict(d) for d in data["documents"]]
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return [Document.from_dict(d) for d in data["documents"]]
+    except FileNotFoundError as exc:
+        raise VectorLayerError(f"couche vectorisee absente ({path}) : lancez d'abord python -m tsi_agent index") \
+            from exc
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise VectorLayerError(f"couche vectorisee illisible ({path}) : relancer avec --full") from exc
+
+
+def load_store(path: Path) -> InMemoryDocumentStore:
     store = new_store()
-    store.write_documents(documents, policy=DuplicatePolicy.OVERWRITE)
+    store.write_documents(read_documents(path), policy=DuplicatePolicy.OVERWRITE)
     return store
 
 

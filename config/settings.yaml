@@ -13,3 +13,8 @@ chunk_size: 25
 vectors_dir: output/vectors
 embedding_model: intfloat/multilingual-e5-small   # local, multilingue ; OpenAI text-embedding-3-small dans deepset
 embedding_batch_size: 32
+
+# Chatbot (python -m tsi_agent chat)
+chat_model: sonnet
+chat_max_steps: 6     # appels LLM maximum par question
+chat_port: 8765

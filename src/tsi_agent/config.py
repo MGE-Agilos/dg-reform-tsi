@@ -21,6 +21,10 @@ class Settings(BaseModel):
     embedding_batch_size: int = 32
     # $ par million de tokens, par préfixe de modèle ; sert quand le generator ne renvoie pas de coût (API OpenAI).
     pricing: dict[str, dict[str, float]] = Field(default_factory=dict)
+    # Chatbot (pipeline `chat`).
+    chat_model: str = "sonnet"
+    chat_max_steps: int = 6
+    chat_port: int = 8765
 
 
 def load_settings(path: str | Path = "config/settings.yaml") -> Settings:
