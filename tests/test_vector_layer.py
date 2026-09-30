@@ -130,10 +130,10 @@ def test_writer_full_then_incremental(tmp_path):
     stats = index_once(out)
     assert stats["files_indexed"] == 3 and stats["chunks_deleted"] == 0
     total = stats["chunks_total"]
-    assert total == len(stored_ids(out)) and "energy-regulation-academy#0" in stored_ids(out)
+    assert total == len(stored_ids(out)) and "projects/detail#0" in stored_ids(out)
     state = load_state(out / "vectors")
     assert state.embedder_id == "MockDocumentEmbedder:mock" and state.chunker_version == CHUNKER_VERSION
-    assert state.files["projects/thin.md"].chunk_ids == ["srsp-2016-technical-support-for-the-property-tax-reform#0"]
+    assert state.files["projects/thin.md"].chunk_ids == ["projects/thin#0"]
     loaded_docs = load_store(store_path(out / "vectors")).filter_documents()
     assert loaded_docs and all(d.meta["embedder"] == "MockDocumentEmbedder:mock" for d in loaded_docs)
 
@@ -167,7 +167,7 @@ def test_writer_skipped_file_is_retried_next_run(tmp_path):
     (out / "projects" / "thin.md").write_text("broken", encoding="utf-8")
     index_once(out)
     assert "projects/thin.md" not in load_state(out / "vectors").files
-    assert not any(i.startswith("srsp-2016") for i in stored_ids(out))
+    assert not any(i.startswith("projects/thin#") for i in stored_ids(out))
     shutil.copy(FIXTURES / "vec_thin.md", out / "projects" / "thin.md")
     assert index_once(out)["files_indexed"] == 1
 
@@ -197,3 +197,70 @@ def test_writer_estimates_tokens_without_usage(tmp_path):
             documents=docs, sources=[ByteStream(data=b"", meta={"file_path": "a.md", "content_hash": "h"})],
             removed=[], full=True)
     assert run.final_summary["tokens"]["input_tokens"] == round(4 * 1.33)
+
+
+def test_two_files_with_same_project_id_dont_collide(tmp_path):
+    """Meme project_id (front matter duplique) a deux chemins differents : pas de collision d'id, pas d'ecrasement."""
+    out = make_output(tmp_path)
+    shutil.copy(out / "projects" / "detail.md", out / "projects" / "detail2.md")
+    stats = index_once(out, full=True)
+    assert stats["files_indexed"] == 4
+    ids = stored_ids(out)
+    assert any(i.startswith("projects/detail#") for i in ids)
+    assert any(i.startswith("projects/detail2#") for i in ids)
+
+    (out / "projects" / "detail2.md").unlink()
+    index_once(out)
+    ids = stored_ids(out)
+    assert any(i.startswith("projects/detail#") for i in ids)
+    assert not any(i.startswith("projects/detail2#") for i in ids)
+
+
+def test_writer_recovers_from_interruption_before_state_save(tmp_path, monkeypatch):
+    """Panne entre save_store et save_state (spec 3.4) : le run suivant reconcilie sans doublon ni orphelin."""
+    import tsi_agent.components.vector_writer as vector_writer_module
+
+    out = make_output(tmp_path)
+    index_once(out)  # etat initial complet
+
+    # Retire la section "## Expected results" de detail.md : son nombre de morceaux passe de 5 a 4.
+    detail = out / "projects" / "detail.md"
+    text = detail.read_text(encoding="utf-8")
+    before, _, after = text.partition("## Expected results\n")
+    _, _, rest = after.partition("## Sources")
+    detail.write_text(before + "## Sources" + rest, encoding="utf-8")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated crash after save_store")
+
+    monkeypatch.setattr(vector_writer_module, "save_state", boom)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        index_once(out)
+    monkeypatch.undo()  # store.json a ete sauvegarde avec les 4 nouveaux morceaux ; state.json est reste l'ancien
+
+    # Run normal suivant : doit reconcilier, sans doublon ni morceau orphelin.
+    index_once(out)
+    ids_after_recovery = stored_ids(out)
+    state = load_state(out / "vectors")
+    expected_ids = sorted(cid for fs in state.files.values() for cid in fs.chunk_ids)
+    assert ids_after_recovery == expected_ids
+
+    # Doit correspondre a un full index frais sur le meme contenu.
+    shutil.rmtree(out / "vectors")
+    index_once(out, full=True)
+    assert stored_ids(out) == ids_after_recovery
+
+
+def test_unreadable_state_is_a_clear_error(tmp_path):
+    (tmp_path / "state.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(VectorLayerError, match="--full"):
+        load_state(tmp_path)
+
+
+def test_loader_full_ignores_corrupted_state(tmp_path):
+    """Avec --full, l'ancien etat est inutile : un state.json corrompu ne doit pas bloquer le run."""
+    out = make_output(tmp_path)
+    (out / "vectors").mkdir(parents=True)
+    (out / "vectors" / "state.json").write_text("{not json", encoding="utf-8")
+    res = loader(out).run(full=True)
+    assert res["full"] is True and len(res["sources"]) == 3 and res["removed"] == []

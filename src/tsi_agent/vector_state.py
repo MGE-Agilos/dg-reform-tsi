@@ -48,7 +48,12 @@ def store_path(vectors_dir: str | Path) -> Path:
 
 def load_state(vectors_dir: str | Path) -> VectorState | None:
     path = Path(vectors_dir) / STATE_FILE
-    return VectorState.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else None
+    if not path.exists():
+        return None
+    try:
+        return VectorState.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:  # ValueError : couvre aussi pydantic.ValidationError
+        raise VectorLayerError(f"couche vectorisee illisible ({path}) : relancer avec --full") from exc
 
 
 def save_state(vectors_dir: str | Path, state: VectorState) -> None:

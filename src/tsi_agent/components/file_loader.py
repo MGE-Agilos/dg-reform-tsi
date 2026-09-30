@@ -13,7 +13,7 @@ from haystack.dataclasses import ByteStream
 
 from tsi_agent import runlog
 from tsi_agent.chunking import CHUNKER_VERSION
-from tsi_agent.vector_state import load_state, store_path
+from tsi_agent.vector_state import VectorState, load_state, store_path
 
 FOLDERS = ("projects", "programme")
 
@@ -27,8 +27,7 @@ class ProjectFileLoader:
         self.embedder_id = embedder_id
         self.chunker_version = chunker_version
 
-    def _full_reason(self, full: bool) -> str | None:
-        state = load_state(self.vectors_dir)
+    def _full_reason(self, full: bool, state: "VectorState | None") -> str | None:
         if full:
             return "requested"
         if state is None:
@@ -43,10 +42,12 @@ class ProjectFileLoader:
 
     @component.output_types(sources=list[ByteStream], removed=list[str], full=bool)
     def run(self, full: bool = False) -> dict[str, Any]:
-        reason = self._full_reason(full)
+        # En --full l'ancien etat ne sert a rien : on ne le lit pas, un state.json corrompu ne doit pas bloquer
+        # le run. Sinon on ne le lit qu'une fois (evite de lire deux fois, et de lever deux fois une erreur).
+        state = None if full else load_state(self.vectors_dir)
+        reason = self._full_reason(full, state)
         if reason:
             runlog.event("ProjectFileLoader", "full", None, reason)
-        state = load_state(self.vectors_dir)
         known = {} if reason or state is None else state.files
         root = Path(self.output_dir)
         sources: list[ByteStream] = []

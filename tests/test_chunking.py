@@ -45,7 +45,7 @@ def test_detail_file_with_sections():
     docs = chunk_file("projects/energy-regulation-academy.md", read("vec_detail_sections.md"))
     sections = [d.meta["section"] for d in docs]
     assert sections == [INTRO, SUMMARY, "Context", "Support delivered", "Expected results"]
-    assert [d.id for d in docs] == [f"energy-regulation-academy#{i}" for i in range(5)]
+    assert [d.id for d in docs] == [f"projects/energy-regulation-academy#{i}" for i in range(5)]
     first = docs[0].meta
     assert first["doc_type"] == "project" and first["detail_page"] is True and first["programme"] == "TSI"
     assert first["year"] == 2026 and len(first["countries"]) == 27 and first["multi_country"] is True
@@ -98,3 +98,12 @@ def test_invalid_files_raise_value_error(text):
 
 def test_chunker_version_is_an_int():
     assert isinstance(CHUNKER_VERSION, int)
+
+
+def test_chunk_ids_are_scoped_by_file_path_not_doc_id():
+    """Deux fichiers peuvent partager le meme project_id (front matter duplique) sans faire collision."""
+    text = read("vec_thin.md")
+    docs_a = chunk_file("projects/a.md", text)
+    docs_b = chunk_file("projects/b.md", text)
+    assert docs_a[0].id == "projects/a#0" and docs_b[0].id == "projects/b#0"
+    assert docs_a[0].meta["doc_id"] == docs_b[0].meta["doc_id"]

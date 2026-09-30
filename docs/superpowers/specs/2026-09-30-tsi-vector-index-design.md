@@ -67,7 +67,9 @@ ProjectFileLoader ──changed──▶ ProjectChunker ──▶ Embedder ─�
   coupant de préférence en fin de phrase. Les documents programme (sans sections) passent directement par ce
   découpage.
 - Un projet thin donne un seul morceau.
-- Identifiant stable par morceau : `<doc_id>#<index>`. `doc_id` est `project_id` ou `doc_id` du front matter.
+- Identifiant stable par morceau : `<chemin relatif sans .md>#<index>` (unique par fichier ; `doc_id` reste en
+  métadonnée). `doc_id` est `project_id` ou `doc_id` du front matter : deux fichiers peuvent le partager sans
+  faire collision sur leurs identifiants de morceaux.
 - Métadonnées de chaque morceau :
   - `doc_id`, `doc_type` (`project` | `programme`), `source_file` (chemin relatif), `section`, `chunk_index` ;
   - `title`, `programme`, `year`, `countries` (liste ISO), `multi_country`, `policy_area`, `detail_page`,

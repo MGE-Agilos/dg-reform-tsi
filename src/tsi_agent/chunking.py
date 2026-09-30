@@ -83,11 +83,14 @@ def chunk_file(rel_path: str, text: str) -> list[Document]:
         "context_header": context_header(fm),
         **{field: fm.get(field) for field in PROJECT_FIELDS},
     }
+    # Identifiant par chemin de fichier, pas par doc_id : deux fichiers peuvent partager le meme project_id/doc_id
+    # (front matter duplique ou erreur d'extraction) sans faire collision ni s'ecraser l'un l'autre.
+    stem = rel_path.removesuffix(".md")
     docs: list[Document] = []
     for section, section_text in split_sections(body):
         for piece in split_words(section_text):
             index = len(docs)
-            docs.append(Document(id=f"{doc_id}#{index}", content=piece,
+            docs.append(Document(id=f"{stem}#{index}", content=piece,
                                  meta={**base, "section": section, "chunk_index": index,
                                        "ai_generated": section == SUMMARY}))
     return docs
