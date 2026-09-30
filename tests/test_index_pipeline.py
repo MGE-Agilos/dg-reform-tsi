@@ -7,6 +7,7 @@ from conftest import FIXTURES
 from tsi_agent.config import Settings
 from tsi_agent.index_pipeline import build_index_pipeline, embedder_id
 from tsi_agent.pipeline import load_pipeline
+from tsi_agent.runner import run_index
 from tsi_agent.vector_state import load_state
 
 
@@ -55,3 +56,13 @@ def test_embedder_can_be_swapped_for_openai_in_yaml(tmp_path, monkeypatch):
     }
     pipe = load_pipeline(yaml.safe_dump(data))
     assert type(pipe.get_component("embedder")).__name__ == "OpenAIDocumentEmbedder"
+
+
+def test_run_index_summary(tmp_path):
+    s = settings_for(tmp_path)
+    summary = run_index(s, embedder=mock(), run_id="i1")
+    assert summary["status"] == "ok" and summary["mode"] == "index" and summary["full"] is True
+    assert summary["stats"]["files_indexed"] == 2 and summary["skipped"] == []
+    assert summary["counts"]["embed:ok"] == 1
+    again = run_index(s, embedder=mock(), run_id="i2")
+    assert again["full"] is False and again["stats"]["files_indexed"] == 0

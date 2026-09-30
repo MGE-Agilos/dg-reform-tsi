@@ -9,8 +9,9 @@ from pathlib import Path
 
 from tsi_agent.config import load_settings, load_sources
 from tsi_agent.countries import COUNTRIES
+from tsi_agent.index_pipeline import build_index_pipeline
 from tsi_agent.pipeline import build_pipeline
-from tsi_agent.runner import run_extraction
+from tsi_agent.runner import run_extraction, run_index
 
 
 def _countries(value: str) -> list[str]:
@@ -34,8 +35,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--chunk-size", type=int)
     run.add_argument("--dry-run", action="store_true", help="découverte seule, sans LLM ni écriture")
     run.add_argument("--model")
+    index = sub.add_parser("index", help="vectoriser les fichiers extraits nouveaux ou modifiés (couche RAG)")
+    index.add_argument("--full", action="store_true", help="revectoriser tous les fichiers")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
+    export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -46,8 +50,18 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings(args.settings)
     sources = load_sources(args.sources)
     if args.command == "export-yaml":
-        Path(args.path).write_text(build_pipeline(settings, sources).dumps(), encoding="utf-8")
+        pipe = build_index_pipeline(settings) if args.index else build_pipeline(settings, sources)
+        Path(args.path).write_text(pipe.dumps(), encoding="utf-8")
         print(f"Pipeline exporté vers {args.path}")
+        return 0
+    if args.command == "index":
+        try:
+            summary = run_index(settings, full=args.full)
+        except Exception as exc:
+            print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return 2
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
         return 0
     try:
         summary = run_extraction(settings, sources, full=args.full, countries=args.countries, limit=args.limit,

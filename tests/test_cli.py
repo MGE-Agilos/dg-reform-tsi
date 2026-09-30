@@ -32,3 +32,27 @@ def test_exit_codes(monkeypatch, capsys):
     monkeypatch.setattr(cli, "run_extraction", boom)
     assert cli.main(["run", "--dry-run"]) == 2
     assert "kaput" in capsys.readouterr().err
+
+
+def test_index_command_and_exit_codes(monkeypatch, capsys):
+    calls = {}
+
+    def fake(settings, *, full=False, **kw):
+        calls["full"] = full
+        return {"status": "ok"}
+    monkeypatch.setattr(cli, "run_index", fake)
+    assert cli.main(["index", "--full"]) == 0 and calls["full"] is True
+
+    def boom(*a, **k):
+        raise RuntimeError("kaput")
+    monkeypatch.setattr(cli, "run_index", boom)
+    assert cli.main(["index"]) == 2
+    assert "kaput" in capsys.readouterr().err
+
+
+def test_export_index_yaml(tmp_path, monkeypatch):
+    from haystack.components.embedders import MockDocumentEmbedder
+    monkeypatch.setattr("tsi_agent.index_pipeline.default_embedder", lambda s: MockDocumentEmbedder(model="m"))
+    out = tmp_path / "index.yaml"
+    assert cli.main(["export-yaml", "--index", str(out)]) == 0
+    assert "VectorLayerWriter" in out.read_text(encoding="utf-8")
