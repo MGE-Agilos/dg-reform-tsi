@@ -44,7 +44,11 @@ def render(front: dict[str, Any], body: str) -> str:
 
 
 def parse_front_matter(text: str) -> tuple[dict[str, Any], str]:
-    _, fm, body = text.split("---\n", 2)
+    if not text.startswith("---\n"):
+        raise ValueError("missing front matter")
+    fm, sep, body = text[4:].partition("\n---\n")
+    if not sep:
+        raise ValueError("unterminated front matter")
     return yaml.safe_load(fm), body.lstrip("\n")
 
 

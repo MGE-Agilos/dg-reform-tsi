@@ -17,9 +17,17 @@ def test_front_matter_roundtrip_and_field_order():
     text = render(fm, "# body")
     parsed, body = parse_front_matter(text)
     assert parsed == fm
-    assert list(parsed)[:3] == ["project_id", "title", "programme"]
+    assert list(parsed) == ["project_id", "title", "programme", "year", "countries", "multi_country", "policy_area", "spotlight", "highlighted", "detail_page", "listed", "aliases", "source_urls", "content_hash", "first_seen", "last_updated", "extraction"]
     assert parsed["source_urls"][0] == DETAIL and parsed["detail_page"] is True
     assert body == "# body\n"
+
+
+def test_parse_front_matter_is_anchored_on_lines():
+    fm = {"project_id": "p", "title": "line one\n---\nline three"}
+    text = render(fm, "# body\n\n---\n\nafter rule")
+    parsed, body = parse_front_matter(text)
+    assert parsed == fm
+    assert body == "# body\n\n---\n\nafter rule\n"
 
 
 def test_detail_body_fills_missing_sections():
