@@ -6,7 +6,7 @@ from tsi_agent.parsers.detail import parse_detail
 from tsi_agent.parsers.factsheet import parse_factsheet
 from tsi_agent.parsers.policy_area import parse_policy_area
 from tsi_agent.parsers.spotlight import parse_spotlight
-from tsi_agent.parsers.srsp_pdf import parse_srsp_pdf
+from tsi_agent.parsers.srsp_pdf import heading_kind, parse_srsp_pdf
 
 HR_URL = "https://reforms-investments.ec.europa.eu/technical-support-instrument-0/our-projects/tsi-country-factsheets/croatia_en"
 
@@ -91,3 +91,55 @@ def test_srsp_pdf():
     first = refs[0]
     assert (first.countries, first.year, first.title) == (["AT"], 2020, "National strategy for financial literacy")
     assert first.project_id == "srsp-2020-national-strategy-for-financial-literacy"
+
+
+def test_factsheet_nested_list_is_not_a_separate_project():
+    html = """
+    <main>
+    <details class="ecl-accordion__item">
+      <summary>2025</summary>
+      <div class="ecl-accordion__content">
+        <ul>
+          <li><a href="/technical-support-instrument-0/green-transition/main-one_en">Main Project One</a>
+            <ul><li>Sub-note about scope</li></ul>
+          </li>
+          <li>Main Project Two</li>
+        </ul>
+      </div>
+    </details>
+    </main>
+    """
+    parsed = parse_factsheet(html, "https://x/country_en", "FR")
+    refs = [r for r in parsed.refs if not r.highlighted]
+    assert len(refs) == 2
+    assert [r.title for r in refs] == ["Main Project One", "Main Project Two"]
+    assert refs[0].detail_url.endswith("/main-one_en")
+
+
+def test_factsheet_ignores_cards_outside_main():
+    html = """
+    <main>
+    <details class="ecl-accordion__item">
+      <summary>2024</summary>
+      <div class="ecl-accordion__content">
+        <ul><li>Some Project</li></ul>
+      </div>
+    </details>
+    </main>
+    <footer>
+      <article class="ecl-card">
+        <a href="/technical-support-instrument-0/green-transition/teaser_en">2024 - Teaser</a>
+      </article>
+    </footer>
+    """
+    parsed = parse_factsheet(html, "https://x/country_en", "FR")
+    assert not any(r.highlighted for r in parsed.refs)
+
+
+def test_srsp_heading_kind():
+    assert heading_kind("Austria") == "AT"
+    assert heading_kind("The Netherlands") == "NL"
+    assert heading_kind("Iceland") == "unknown"
+    assert heading_kind("Funding") is None
+    assert heading_kind("Title of the request") is None
+    assert heading_kind("1") is None
