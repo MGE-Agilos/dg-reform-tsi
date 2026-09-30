@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import sys
+import traceback
 from pathlib import Path
 
 from tsi_agent.config import load_settings, load_sources
@@ -28,7 +29,8 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("run", help="extraire les projets nouveaux ou modifiés")
     run.add_argument("--full", action="store_true", help="ré-extraire toutes les pages détail")
     run.add_argument("--countries", type=_countries, help="codes ISO, ex. FR,HR (exclut le PDF SRSP)")
-    run.add_argument("--limit", type=int, help="nombre maximal d'appels LLM (projets détaillés)")
+    run.add_argument("--limit", type=int,
+                     help="nombre maximal de projets envoyés au LLM (projets détaillés)")
     run.add_argument("--chunk-size", type=int)
     run.add_argument("--dry-run", action="store_true", help="découverte seule, sans LLM ni écriture")
     run.add_argument("--model")
@@ -39,14 +41,21 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
 
     logging.basicConfig(level=logging.WARNING)
+    if not Path(args.sources).exists():
+        parser.error(f"fichier introuvable : {args.sources}")
     settings = load_settings(args.settings)
     sources = load_sources(args.sources)
     if args.command == "export-yaml":
         Path(args.path).write_text(build_pipeline(settings, sources).dumps(), encoding="utf-8")
         print(f"Pipeline exporté vers {args.path}")
         return 0
-    summary = run_extraction(settings, sources, full=args.full, countries=args.countries, limit=args.limit,
-                             chunk_size=args.chunk_size, dry_run=args.dry_run, model=args.model)
+    try:
+        summary = run_extraction(settings, sources, full=args.full, countries=args.countries, limit=args.limit,
+                                 chunk_size=args.chunk_size, dry_run=args.dry_run, model=args.model)
+    except Exception as exc:
+        print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return 2
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     return 1 if summary.get("quota_exceeded") else 0
 

@@ -74,6 +74,19 @@ def test_limit_caps_llm_calls(settings):
     assert summary["llm_calls"] == 3 and summary["remaining_detail"] > 0
 
 
+def test_limit_counts_pages_sent_to_llm_not_unchanged_ones(settings):
+    gen1 = FakeChatGenerator()
+    first = run_extraction(settings, SOURCES, countries=["HR"], limit=3, run_id="a",
+                           pipeline_factory=factory(gen1, FakeFetcher(default=fake_site)))
+    assert len(gen1.calls) == 3
+
+    gen2 = FakeChatGenerator()
+    second = run_extraction(settings, SOURCES, countries=["HR"], limit=3, run_id="b",
+                            pipeline_factory=factory(gen2, FakeFetcher(default=fake_site)))
+    assert len(gen2.calls) == 3
+    assert second["llm_pages"] == 3
+
+
 def test_dry_run_writes_nothing(settings):
     summary = run_extraction(settings, SOURCES, countries=["HR"], dry_run=True, run_id="d",
                              pipeline_factory=factory(FakeChatGenerator(), FakeFetcher(default=fake_site)))
