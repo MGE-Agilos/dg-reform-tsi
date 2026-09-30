@@ -1,5 +1,6 @@
 import shutil
 
+import pytest
 import yaml
 from haystack.components.embedders import MockDocumentEmbedder
 
@@ -66,3 +67,24 @@ def test_run_index_summary(tmp_path):
     assert summary["counts"]["embed:ok"] == 1
     again = run_index(s, embedder=mock(), run_id="i2")
     assert again["full"] is False and again["stats"]["files_indexed"] == 0
+
+
+@pytest.mark.integration
+def test_real_model_finds_project_from_french_question(tmp_path):
+    pytest.importorskip("haystack_integrations.components.embedders.sentence_transformers")
+    from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersTextEmbedder
+
+    from tsi_agent.index_pipeline import default_embedder
+    from tsi_agent.vector_state import load_store, store_path
+
+    s = settings_for(tmp_path)
+    shutil.copy(FIXTURES / "vec_detail_long_section.md", tmp_path / "output" / "projects" / "skills.md")
+    run_index(s, embedder=default_embedder(s), run_id="it1")
+    store = load_store(store_path(s.vectors_dir))
+    query = SentenceTransformersTextEmbedder(model=s.embedding_model, prefix="query: ", normalize_embeddings=True)
+    vec = query.run(text="formation des régulateurs de l'électricité")["embedding"]
+    results = store.embedding_retrieval(query_embedding=vec, top_k=3)
+    if results[0].meta["doc_id"] != "energy-regulation-academy":
+        lines = "\n".join(f"{i + 1}. {r.meta['doc_id']} (score={r.score:.4f})" for i, r in enumerate(results))
+        pytest.fail(f"top-1 n'est pas energy-regulation-academy ; top-3 :\n{lines}")
+    assert results[0].meta["doc_id"] == "energy-regulation-academy"

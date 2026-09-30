@@ -27,3 +27,5 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = ["integration: vrai modele d'embedding, lance a la main (pytest -m integration)"]
+addopts = "-m 'not integration'"
