@@ -1,0 +1,20 @@
+# Sources publiques crawlées par l'agent d'extraction.
+factsheet_url: "https://reforms-investments.ec.europa.eu/technical-support-instrument-0/our-projects/tsi-country-factsheets/{slug}_en"
+spotlight_url: "https://reforms-investments.ec.europa.eu/technical-support-instrument-0/our-projects/projects-spotlight_en"
+policy_area_url: "https://reforms-investments.ec.europa.eu/technical-support-instrument-0/{slug}_en"
+policy_areas:
+  - competitiveness
+  - digital-transition
+  - financial-sector-and-access-finance
+  - green-transition
+  - health-and-long-term-care
+  - labour-market-and-social-protection
+  - migration-management
+  - public-administration-and-governance
+  - revenue-administration-and-public-financial-management
+  - skills-education-and-training
+srsp_pdf_url: "https://commission.europa.eu/system/files/2020-03/rss-technical-support-per-country_en.pdf"
+programme_docs:
+  - id: tsi-performance
+    title: Technical Support Instrument - programme performance
+    url: "https://commission.europa.eu/strategy-and-policy/eu-budget/performance-and-reporting/programme-performance-statements/technical-support-instrument-performance_en"

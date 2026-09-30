@@ -1,0 +1,9 @@
+pyproject.toml
+src/tsi_agent/__init__.py
+src/tsi_agent.egg-info/PKG-INFO
+src/tsi_agent.egg-info/SOURCES.txt
+src/tsi_agent.egg-info/dependency_links.txt
+src/tsi_agent.egg-info/requires.txt
+src/tsi_agent.egg-info/top_level.txt
+src/tsi_agent/components/__init__.py
+src/tsi_agent/parsers/__init__.py
