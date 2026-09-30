@@ -1,5 +1,6 @@
 """Serveur web local du chatbot (Flask, 127.0.0.1 uniquement). L'historique vit dans la page."""
 
+import logging
 import threading
 from pathlib import Path
 from typing import Any
@@ -7,12 +8,27 @@ from typing import Any
 from flask import Flask, Response, jsonify, request
 
 from tsi_agent.chat.pipeline import build_chat_pipeline
-from tsi_agent.chat.service import ask, find_cause
+from tsi_agent.chat.service import ask, find_cause, root_cause
 from tsi_agent.components.claude_cli import LLMQuotaExceeded
 from tsi_agent.config import Settings
 
 INDEX_HTML = Path(__file__).parent / "static" / "index.html"
 QUOTA_MESSAGE = "La limite de la souscription Claude est atteinte. Réessayez plus tard."
+MAX_CONTENT_LENGTH = 1_000_000
+
+
+def _valid_history(history: Any) -> bool:
+    """Chaque tour doit etre {"role": "user"|"assistant", "text": str} ; sinon l'historique est invalide."""
+    if not isinstance(history, list):
+        return False
+    for turn in history:
+        if not isinstance(turn, dict):
+            return False
+        if turn.get("role") not in ("user", "assistant"):
+            return False
+        if not isinstance(turn.get("text"), str):
+            return False
+    return True
 
 
 def create_app(settings: Settings, pipeline: Any = None, policy_areas: list[str] | None = None) -> Flask:
@@ -22,6 +38,7 @@ def create_app(settings: Settings, pipeline: Any = None, policy_areas: list[str]
     pipeline.warm_up()
     lock = threading.Lock()  # une question a la fois : un seul CLI claude en parallele
     app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = MAX_CONTENT_LENGTH
 
     @app.get("/")
     def index() -> Response:
@@ -32,14 +49,18 @@ def create_app(settings: Settings, pipeline: Any = None, policy_areas: list[str]
         data = request.get_json(silent=True) or {}
         question = str(data.get("question") or "").strip()
         history = data.get("history") or []
-        if not question or not isinstance(history, list):
+        if not question:
             return jsonify({"error": "question vide ou historique invalide"}), 400
+        if not _valid_history(history):
+            return jsonify({"error": "historique invalide"}), 400
         with lock:
             try:
                 return jsonify(ask(pipeline, question, history, logs_dir=settings.logs_dir))
-            except Exception as exc:  # erreur renvoyee a la page ; le detail est dans le journal du run
+            except Exception as exc:  # erreur generique renvoyee a la page ; le detail complet va dans les logs
                 if find_cause(exc, LLMQuotaExceeded):
                     return jsonify({"error": QUOTA_MESSAGE}), 429
-                return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+                logging.getLogger("tsi_agent").exception("Erreur lors du traitement d'une question du chatbot")
+                cause = root_cause(exc)
+                return jsonify({"error": f"Erreur interne ({type(cause).__name__}). Détail dans logs/runs/."}), 500
 
     return app

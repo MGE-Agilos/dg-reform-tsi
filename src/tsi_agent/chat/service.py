@@ -24,6 +24,18 @@ def find_cause(exc: BaseException | None, cls: type) -> BaseException | None:
     return None
 
 
+def root_cause(exc: BaseException) -> BaseException:
+    """Exception la plus profonde de la chaine (__cause__ / __context__) : deroule les enveloppes du Pipeline/Agent."""
+    seen: set[int] = set()
+    current = exc
+    while True:
+        nxt = current.__cause__ or current.__context__
+        if nxt is None or id(nxt) in seen:
+            return current
+        seen.add(id(nxt))
+        current = nxt
+
+
 def cited_sources(answer: str, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Sources citees [n] dans la reponse, dans l'ordre des numeros ; a defaut, toutes (une par projet)."""
     cited = {int(n) for n in _REF.findall(answer)}

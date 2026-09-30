@@ -33,9 +33,20 @@ def test_chat_api_validation(tmp_path):
     assert client.post("/api/chat", json={"question": "q", "history": "x"}).status_code == 400
 
 
+def test_chat_api_validation_rejects_bad_history_items(tmp_path):
+    client = client_with(tmp_path, [])
+    res = client.post("/api/chat", json={"question": "q", "history": ["x"]})
+    assert res.status_code == 400 and res.get_json()["error"] == "historique invalide"
+    res = client.post("/api/chat", json={"question": "q", "history": [{"role": "system", "text": "x"}]})
+    assert res.status_code == 400 and res.get_json()["error"] == "historique invalide"
+
+
 def test_chat_api_quota_and_errors(tmp_path):
     client = client_with(tmp_path, [LLMQuotaExceeded("usage limit reached"), LLMCallError("boom")])
     res = client.post("/api/chat", json={"question": "q", "history": []})
     assert res.status_code == 429 and "limite" in res.get_json()["error"]
     res = client.post("/api/chat", json={"question": "q", "history": []})
-    assert res.status_code == 500 and "boom" in res.get_json()["error"]
+    body = res.get_json()
+    assert res.status_code == 500
+    assert "boom" not in body["error"]
+    assert "LLMCallError" in body["error"]

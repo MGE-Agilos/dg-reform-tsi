@@ -78,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
             app = web.create_app(settings, policy_areas=sources.get("policy_areas") or [])
         except Exception as exc:
             print(f"ERREUR : {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
             return 2
         url = f"http://127.0.0.1:{port}/"
         print(f"Chatbot : {url}  (Ctrl+C pour arrêter)")
