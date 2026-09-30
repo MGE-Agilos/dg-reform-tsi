@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 
 MAX_FILE_STEM = 100  # limite de chemin Windows (260) : le dossier du dépôt en consomme déjà ~110
-REPLACE_ATTEMPTS = 5  # OneDrive et antivirus peuvent verrouiller le fichier temporairement
+REPLACE_ATTEMPTS = 8  # OneDrive et antivirus peuvent verrouiller le fichier temporairement
 
 
 def _retry_on_lock(fn):
@@ -22,7 +22,7 @@ def _retry_on_lock(fn):
         except PermissionError:
             if attempt == REPLACE_ATTEMPTS:
                 raise
-            time.sleep(0.2 * attempt)
+            time.sleep(0.5 * attempt)
 
 
 def file_stem(project_id: str) -> str:
@@ -124,8 +124,13 @@ class LocalProjectStore:
         data = {"projects": {k: v.model_dump() for k, v in sorted(self._projects.items())},
                 "programme_docs": dict(sorted(self._programme.items()))}
         tmp = self.index_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
-        _retry_on_lock(lambda: os.replace(tmp, self.index_path))
+        payload = json.dumps(data, indent=1, ensure_ascii=False)
+
+        def write_and_replace() -> None:
+            tmp.write_text(payload, encoding="utf-8")
+            os.replace(tmp, self.index_path)
+
+        _retry_on_lock(write_and_replace)
 
 
 _shared: dict[str, LocalProjectStore] = {}

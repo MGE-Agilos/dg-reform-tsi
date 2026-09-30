@@ -1,3 +1,4 @@
+import hashlib
 from typing import Any
 
 from haystack import component
@@ -125,12 +126,16 @@ def merge_refs(refs: list[ProjectRef]) -> list[ProjectRef]:
 class ProjectDiscoverer:
     """Parse les listings, résout les liens non canoniques, fusionne, produit les documents programme."""
 
-    def __init__(self, cache_dir: str = ".cache/http", min_interval_s: float = 1.0,
+    def __init__(self, cache_dir: str = ".cache/http", min_interval_s: float = 2.0,
                  user_agent: str = DEFAULT_USER_AGENT):
         self.cache_dir = cache_dir
         self.min_interval_s = min_interval_s
         self.user_agent = user_agent
         self._fetcher: PoliteFetcher | None = None
+        # Mémo par instance (donc par process) : évite de rappeler le fetcher ou le parseur PDF
+        # pour la même URL/le même contenu à chaque lot d'un même run.
+        self._resolve_cache: dict[str, tuple[str, str | None]] = {}
+        self._srsp_cache: dict[str, list[ProjectRef]] = {}
 
     def _get_fetcher(self) -> PoliteFetcher:
         if self._fetcher is None:
@@ -145,15 +150,21 @@ class ProjectDiscoverer:
         """
         if ref.detail_url is None or is_canonical_detail(ref.detail_url):
             return ref
-        try:
-            final = self._get_fetcher().get(ref.detail_url).final_url
-        except FetchError as exc:
-            permanent = exc.status is not None and 400 <= exc.status < 500 and exc.status not in (408, 429)
-            if not permanent:
-                deferred.extend([ref.project_id, *ref.aliases, ref.detail_url])
-                runlog.event(NAME, "resolve", ref.detail_url, "deferred", error=str(exc))
-                return None
-            final = None
+        url = ref.detail_url
+        outcome = self._resolve_cache.get(url)
+        if outcome is None:
+            try:
+                outcome = ("resolved", self._get_fetcher().get(url).final_url)
+            except FetchError as exc:
+                permanent = exc.status is not None and 400 <= exc.status < 500 and exc.status not in (408, 429)
+                outcome = ("resolved", None) if permanent else ("deferred", str(exc))
+            self._resolve_cache[url] = outcome
+        kind, value = outcome
+        if kind == "deferred":
+            deferred.extend([ref.project_id, *ref.aliases, ref.detail_url])
+            runlog.event(NAME, "resolve", ref.detail_url, "deferred", error=value)
+            return None
+        final = value
         if final and is_final_detail(final):
             runlog.event(NAME, "resolve", ref.detail_url, "ok", final_url=final)
             return ref.model_copy(update={"detail_url": final, "project_id": slug_from_url(final)})
@@ -233,7 +244,12 @@ class ProjectDiscoverer:
             return found
         if page.kind == "srsp_pdf":
             scope["srsp"] = True
-            return parse_srsp_pdf(page.content, page.url)
+            key = hashlib.sha256(page.content).hexdigest()
+            cached = self._srsp_cache.get(key)
+            if cached is None:
+                cached = parse_srsp_pdf(page.content, page.url)
+                self._srsp_cache[key] = cached
+            return [r.model_copy(deep=True) for r in cached]
         docs.append(ProgrammeDoc(doc_id=page.key, title=page.title or page.key, url=page.url,
                                  text=main_text(page.content)))
         return []

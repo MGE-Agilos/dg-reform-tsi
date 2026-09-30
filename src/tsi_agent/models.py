@@ -71,7 +71,7 @@ class DetailPage(BaseModel):
 
 
 class ProjectContent(BaseModel):
-    # Docstring en ASCII : il part dans le JSON schema passé en argument au CLI (via cmd.exe).
+    # Docstring en ASCII : le schema JSON est passe en argument de ligne de commande.
     """Structured content extracted from a project page."""
 
     summary: str

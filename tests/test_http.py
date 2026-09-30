@@ -1,6 +1,9 @@
+from pathlib import Path
+
 import httpx
 import pytest
 
+from tsi_agent import runlog
 from tsi_agent.http import FetchError, PoliteFetcher
 
 URL = "https://example.test/page_en"
@@ -117,6 +120,50 @@ def test_429_waits_long_and_honours_retry_after(tmp_path):
     assert 9 < waits[3] < 11  # throttle: ~10.0
 
 
+def test_throttle_recovers_after_sustained_success(tmp_path):
+    state = {"n": 0}
+
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return robots_ok(request)
+        state["n"] += 1
+        return httpx.Response(429) if state["n"] == 1 else httpx.Response(200, content=b"ok")
+
+    f = PoliteFetcher(tmp_path / "cache", min_interval_s=2, transport=httpx.MockTransport(handler),
+                      sleep=lambda s: None, rate_limit_backoff_s=0)
+    f.get(f"{URL}-0")  # 429 puis succes : min_interval_s -> 5.0 (streak de succes = 1)
+    assert f.min_interval_s == 5.0
+    for i in range(1, 50):  # 49 succes de plus => streak = 50 => RECOVER_AFTER atteint
+        f.get(f"{URL}-{i}")
+    assert f.min_interval_s == 2.5  # 5.0 / 2, jamais en dessous de la base (2.0)
+
+
+def test_throttle_recovery_counter_resets_on_429(tmp_path):
+    fail_next = {"flag": False}
+
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return robots_ok(request)
+        if fail_next["flag"]:
+            fail_next["flag"] = False
+            return httpx.Response(429)
+        return httpx.Response(200, content=b"ok")
+
+    f = PoliteFetcher(tmp_path / "cache", min_interval_s=2, transport=httpx.MockTransport(handler),
+                      sleep=lambda s: None, rate_limit_backoff_s=0)
+    for i in range(49):  # streak = 49, pas encore recupere
+        f.get(f"{URL}-{i}")
+    assert f.min_interval_s == 2
+    fail_next["flag"] = True
+    f.get(f"{URL}-49")  # ce call recoit un 429 (reset du streak a 0) puis reussit au retry -> streak = 1
+    assert f.min_interval_s == 5.0  # le 429 a fait remonter min_interval_s ; pas de recuperation prematuree
+    for i in range(50, 98):  # 48 succes de plus : streak = 1 + 48 = 49
+        f.get(f"{URL}-{i}")
+    assert f.min_interval_s == 5.0
+    f.get(f"{URL}-98")  # 50e succes depuis le reset : recuperation
+    assert f.min_interval_s == 2.5
+
+
 def test_corrupt_cache_entry_is_a_cache_miss(tmp_path):
     def handler(request):
         if request.url.path == "/robots.txt":
@@ -143,6 +190,25 @@ def test_exhausted_retries_raise_with_last_status_and_cache_nothing(tmp_path):
         f.get(URL)
     assert len(attempts) == 3 and err.value.status == 503
     assert URL not in f._memo and not list((tmp_path / "cache").glob("*.bin"))
+
+
+def test_cache_write_failure_does_not_fail_the_fetch(tmp_path, monkeypatch):
+    def handler(request):
+        if request.url.path == "/robots.txt":
+            return robots_ok(request)
+        return httpx.Response(200, content=b"hello", headers={"ETag": '"v1"'})
+
+    f = make(tmp_path, handler)
+
+    def boom(self, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_bytes", boom)
+    with runlog.open_run(tmp_path / "logs", "r1") as run:
+        result = f.get(URL)
+    assert (result.content, result.from_cache) == (b"hello", False)
+    assert run.counts["error:cache_write_failed"] == 1
+    assert not list((tmp_path / "cache").glob("*.bin"))
 
 
 def test_throttle_waits_between_requests(tmp_path):

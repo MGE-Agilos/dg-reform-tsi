@@ -10,13 +10,14 @@ from tsi_agent.parsers.detail import parse_detail
 from tsi_agent.store import ProjectStore, shared_store
 
 NAME = "DetailPageFetcher"
+GONE_STATUSES = (404, 410)
 
 
 @component
 class DetailPageFetcher:
     """Récupère les pages détail ; seules celles dont le texte a changé partent vers le LLM."""
 
-    def __init__(self, output_dir: str = "output", cache_dir: str = ".cache/http", min_interval_s: float = 1.0,
+    def __init__(self, output_dir: str = "output", cache_dir: str = ".cache/http", min_interval_s: float = 2.0,
                  user_agent: str = DEFAULT_USER_AGENT):
         self.output_dir = output_dir
         self.cache_dir = cache_dir
@@ -45,6 +46,13 @@ class DetailPageFetcher:
             except FetchError as exc:
                 failed.append(ref.project_id)
                 runlog.event(NAME, "error", ref.project_id, "fetch_failed", error=str(exc))
+                if exc.status in GONE_STATUSES:
+                    runlog.event(NAME, "alert", ref.project_id, "warning",
+                                 message=f"Detail page gone ({exc.status}): {ref.detail_url}")
+                continue
+            except OSError as exc:
+                failed.append(ref.project_id)
+                runlog.event(NAME, "error", ref.project_id, "fetch_failed", error=repr(exc))
                 continue
             content_hash = sha256_text(parsed.text)
             entry = self._get_store().get(ref.project_id)

@@ -14,11 +14,22 @@ DROP_MIN_KNOWN = 5    # en dessous, on ne juge pas une chute
 
 
 def _in_scope(entry: StoreEntry, scope: dict[str, Any]) -> bool:
-    if entry.programme == "SRSP":
-        return bool(scope.get("srsp"))
-    if not entry.countries:
-        return bool(scope.get("all_countries"))
-    return all(c in scope.get("countries", []) for c in entry.countries)
+    """Le projet peut-il etre dé-listé au vu de ce qui a ete recupere dans ce run ?
+
+    Regle: en scope ssi ses URLs de listing (hors pages détail) sont non vides et toutes
+    dans `scope["fetched"]` (les listings effectivement lus ce run) ; sinon on ne sait pas
+    s'il manque toujours ailleurs, donc pas de dé-listing. Si `scope` ne porte pas de clé
+    "fetched" (anciens appelants/tests), on retombe sur la regle pays/SRSP historique.
+    """
+    if scope.get("fetched") is None:
+        if entry.programme == "SRSP":
+            return bool(scope.get("srsp"))
+        if not entry.countries:
+            return bool(scope.get("all_countries"))
+        return all(c in scope.get("countries", []) for c in entry.countries)
+    fetched = set(scope["fetched"])
+    listing_urls = [u for u in entry.source_urls if not is_detail_candidate(u)]
+    return bool(listing_urls) and all(u in fetched for u in listing_urls)
 
 
 def _union(a: list[str], b: list[str]) -> list[str]:

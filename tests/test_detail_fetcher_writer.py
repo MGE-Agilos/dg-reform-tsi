@@ -1,6 +1,10 @@
+import pytest
+
 from conftest import FakeFetcher, fixture_bytes
+from tsi_agent import runlog
 from tsi_agent.components.detail_fetcher import DetailPageFetcher
 from tsi_agent.components.writer import MarkdownProjectWriter
+from tsi_agent.http import FetchError
 from tsi_agent.models import ProgrammeDoc, ProjectContent, ProjectRecord, ProjectRef
 from tsi_agent.render import parse_front_matter
 from tsi_agent.store import LocalProjectStore, StoreEntry
@@ -43,6 +47,50 @@ def test_detail_fetcher_failure(tmp_path):
     f = fetcher(tmp_path, LocalProjectStore(tmp_path))
     out = f.run(refs=[ref(project_id="missing", detail_url="https://x/missing_en")])
     assert out["failed"] == ["missing"] and out["pages"] == []
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_detail_fetcher_alerts_when_page_is_gone(tmp_path, status):
+    f = DetailPageFetcher(output_dir=str(tmp_path))
+    f._store = LocalProjectStore(tmp_path)
+
+    class Gone(FakeFetcher):
+        def get(self, url):
+            raise FetchError(url, f"HTTP {status}", status)
+
+    f._fetcher = Gone()
+    with runlog.open_run(tmp_path / "logs", f"r{status}") as run:
+        out = f.run(refs=[ref(project_id="missing", detail_url="https://x/missing_en")])
+    assert out["failed"] == ["missing"]
+    assert any(f"Detail page gone ({status})" in a and "https://x/missing_en" in a for a in run.alerts)
+
+
+def test_detail_fetcher_os_error_is_not_fatal(tmp_path):
+    f = DetailPageFetcher(output_dir=str(tmp_path))
+    f._store = LocalProjectStore(tmp_path)
+
+    class DiskFull(FakeFetcher):
+        def get(self, url):
+            raise OSError("disk full")
+
+    f._fetcher = DiskFull()
+    out = f.run(refs=[ref(project_id="missing", detail_url="https://x/missing_en")])
+    assert out["failed"] == ["missing"] and out["pages"] == []
+
+
+def test_detail_fetcher_does_not_alert_on_other_errors(tmp_path):
+    f = DetailPageFetcher(output_dir=str(tmp_path))
+    f._store = LocalProjectStore(tmp_path)
+
+    class ServerError(FakeFetcher):
+        def get(self, url):
+            raise FetchError(url, "HTTP 503", 503)
+
+    f._fetcher = ServerError()
+    with runlog.open_run(tmp_path / "logs", "r503") as run:
+        out = f.run(refs=[ref(project_id="missing", detail_url="https://x/missing_en")])
+    assert out["failed"] == ["missing"]
+    assert run.alerts == []
 
 
 def record(listing_ref=None, **kw):
@@ -169,6 +217,25 @@ def test_unchanged_detail_page_removes_its_thin_alias(tmp_path):
     assert store.get("tsi-2022-hems") is not None
     w.run(run_id="r3", unchanged=[ref(aliases=["tsi-2022-hems"])])
     assert store.get("tsi-2022-hems") is None and store.read_project_file("tsi-2022-hems") is None
+
+
+def test_write_failure_on_one_project_does_not_kill_the_run(tmp_path):
+    class FlakyStore(LocalProjectStore):
+        def write_project_file(self, project_id, text):
+            if project_id == "bad":
+                raise OSError("disk full")
+            return super().write_project_file(project_id, text)
+
+    store = FlakyStore(tmp_path)
+    w = writer(store)
+    good = ProjectRef(project_id="good", title="Good", programme="TSI", year=2022, countries=["HR"])
+    bad = ProjectRef(project_id="bad", title="Bad", programme="TSI", year=2022, countries=["HR"])
+    with runlog.open_run(tmp_path / "logs", "r1") as run:
+        out = w.run(run_id="r1", thin=[good, bad])
+    assert out["stats"]["thin"] == 1 and out["stats"]["write_failed"] == 1
+    assert store.get("good") is not None
+    assert store.get("bad") is None
+    assert run.counts["error:write_failed"] == 1
 
 
 def test_rewriting_a_record_merges_stored_aliases(tmp_path):

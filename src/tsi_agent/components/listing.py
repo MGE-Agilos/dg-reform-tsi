@@ -14,7 +14,7 @@ NAME = "SourceListingFetcher"
 class SourceListingFetcher:
     """Récupère toutes les pages de listing et les documents programme décrits dans `sources`."""
 
-    def __init__(self, sources: dict[str, Any], cache_dir: str = ".cache/http", min_interval_s: float = 1.0,
+    def __init__(self, sources: dict[str, Any], cache_dir: str = ".cache/http", min_interval_s: float = 2.0,
                  user_agent: str = DEFAULT_USER_AGENT):
         self.sources = sources
         self.cache_dir = cache_dir
@@ -46,6 +46,9 @@ class SourceListingFetcher:
                 result = self._get_fetcher().get(url)
             except FetchError as exc:
                 runlog.event(NAME, "error", url, "fetch_failed", kind=kind, key=key, error=str(exc))
+                continue
+            except OSError as exc:
+                runlog.event(NAME, "error", url, "fetch_failed", kind=kind, key=key, error=repr(exc))
                 continue
             pages.append(RawPage(kind=kind, key=key, url=url, content=result.content, title=title))
         runlog.event(NAME, "discover", None, "ok", pages=len(pages))

@@ -164,6 +164,50 @@ def test_unexpected_resolve_error_defers_instead_of_crashing():
                                    "https://reform-support.ec.europa.eu/what-we-do/x/busy_en"]
 
 
+def test_transient_failure_defers_fetcher_called_once_across_runs():
+    html = f"""<details class="ecl-accordion__item"><summary>2025</summary><div class="ecl-accordion__content">
+      <ul><li><a href="https://reform-support.ec.europa.eu/what-we-do/x/busy_en">Busy project</a></li></ul>
+      </div></details>""".encode()
+
+    class RateLimited(FakeFetcher):
+        def get(self, url):
+            self.calls.append(url)
+            raise FetchError(url, "HTTP 429")
+
+    disc = ProjectDiscoverer()
+    disc._fetcher = RateLimited()
+    page = RawPage(kind="factsheet", key="FR", url="https://x/france_en", content=html)
+    out1 = disc.run(pages=[page])
+    out2 = disc.run(pages=[page])
+    expected = ["busy", "tsi-2025-busy-project", "https://reform-support.ec.europa.eu/what-we-do/x/busy_en"]
+    assert out1["deferred_ids"] == expected
+    assert out2["deferred_ids"] == expected
+    assert disc._fetcher.calls == ["https://reform-support.ec.europa.eu/what-we-do/x/busy_en"]  # un seul appel
+
+
+def test_srsp_pdf_is_parsed_once_per_process(monkeypatch):
+    import tsi_agent.components.discoverer as discoverer_mod
+
+    calls = []
+
+    def fake_parse(content, url):
+        calls.append(1)
+        return [ProjectRef(project_id="srsp-x", title="X", programme="SRSP", year=2019, countries=["AT"])]
+
+    monkeypatch.setattr(discoverer_mod, "parse_srsp_pdf", fake_parse)
+    disc = ProjectDiscoverer()
+    disc._fetcher = FakeFetcher()
+    page = RawPage(kind="srsp_pdf", key="srsp", url="https://x/srsp.pdf", content=b"same bytes")
+    out1 = disc.run(pages=[page])
+    out2 = disc.run(pages=[page])
+    assert len(calls) == 1
+    assert [r.project_id for r in out1["refs"]] == ["srsp-x"]
+    assert [r.project_id for r in out2["refs"]] == ["srsp-x"]
+    # les refs renvoyees sont des copies independantes du cache
+    out1["refs"][0].title = "mutated"
+    assert out2["refs"][0].title == "X"
+
+
 def test_permanent_403_becomes_thin():
     html = f"""<details class="ecl-accordion__item"><summary>2025</summary><div class="ecl-accordion__content">
       <ul><li><a href="https://reform-support.ec.europa.eu/what-we-do/x/busy_en">Busy project</a></li></ul>

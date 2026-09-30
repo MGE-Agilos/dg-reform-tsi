@@ -18,6 +18,7 @@ from tsi_agent import runlog
 DEFAULT_USER_AGENT = "TSI-Extraction-Agent/0.1 (DG REFORM project; polite crawler)"
 COMPONENT = "PoliteFetcher"
 MAX_INTERVAL_S = 15.0  # le site renvoie des 429 au-delà d'environ 1 req/s ; on ralentit durablement après un 429
+RECOVER_AFTER = 50  # réponses réussies (non-429) d'affilée avant de retenter un débit plus rapide
 
 
 @dataclass
@@ -43,13 +44,15 @@ def _retry_after(resp: httpx.Response) -> float | None:
 
 
 class PoliteFetcher:
-    def __init__(self, cache_dir: str | Path, min_interval_s: float = 1.0, user_agent: str = DEFAULT_USER_AGENT,
+    def __init__(self, cache_dir: str | Path, min_interval_s: float = 2.0, user_agent: str = DEFAULT_USER_AGENT,
                  retries: int = 3, backoff_s: float = 2.0, rate_limit_backoff_s: float = 30.0, timeout_s: float = 30.0,
                  transport: httpx.BaseTransport | None = None, respect_robots: bool = True,
                  sleep: Callable[[float], None] = time.sleep):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.min_interval_s = min_interval_s
+        self._base_interval = min_interval_s
+        self._success_streak = 0
         self.user_agent = user_agent
         self.retries = retries
         self.backoff_s = backoff_s
@@ -93,6 +96,7 @@ class PoliteFetcher:
                     result = FetchResult(url, meta["final_url"], 200, body, True)
                     runlog.event(COMPONENT, "fetch", url, "not_modified", duration_ms=ms)
                     self._memo[url] = result
+                    self._on_success(url)
                     return result
                 if resp.status_code < 400:
                     result = FetchResult(url, str(resp.url), resp.status_code, resp.content, False)
@@ -100,6 +104,7 @@ class PoliteFetcher:
                     runlog.event(COMPONENT, "fetch", url, "ok", duration_ms=ms, status=resp.status_code,
                                  final_url=result.final_url, bytes=len(resp.content))
                     self._memo[url] = result
+                    self._on_success(url)
                     return result
                 if resp.status_code != 429 and resp.status_code < 500:
                     runlog.event(COMPONENT, "fetch", url, f"http_{resp.status_code}", duration_ms=ms)
@@ -107,6 +112,7 @@ class PoliteFetcher:
                 last_error = f"HTTP {resp.status_code}"
                 last_status = resp.status_code
                 if resp.status_code == 429:
+                    self._success_streak = 0
                     self._on_rate_limited(url)
                     wait_s = max(wait_s, self.rate_limit_backoff_s, _retry_after(resp) or 0)
             if attempt < self.retries:
@@ -131,6 +137,17 @@ class PoliteFetcher:
         if new_interval != self.min_interval_s:
             self.min_interval_s = new_interval
             runlog.event(COMPONENT, "throttle", url, "slowed_down", min_interval_s=self.min_interval_s)
+
+    def _on_success(self, url: str) -> None:
+        """Après une longue série sans 429, retente durablement un débit plus rapide."""
+        self._success_streak += 1
+        if self._success_streak < RECOVER_AFTER:
+            return
+        self._success_streak = 0
+        new_interval = max(self.min_interval_s / 2, self._base_interval)
+        if new_interval != self.min_interval_s:
+            self.min_interval_s = new_interval
+            runlog.event(COMPONENT, "throttle", url, "recovered", min_interval_s=self.min_interval_s)
 
     def _allowed(self, url: str) -> bool:
         if not self.respect_robots:
@@ -164,13 +181,18 @@ class PoliteFetcher:
             return None, None
 
     def _cache_write(self, url: str, result: FetchResult, headers: httpx.Headers) -> None:
-        meta_path, body_path = self._cache_paths(url)
-        body_path.write_bytes(result.content)
-        meta = {"url": url, "final_url": result.final_url, "etag": headers.get("etag"),
-                "last_modified": headers.get("last-modified")}
-        tmp = meta_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(meta), encoding="utf-8")
-        os.replace(tmp, meta_path)
+        try:
+            meta_path, body_path = self._cache_paths(url)
+            body_path.write_bytes(result.content)
+            meta = {"url": url, "final_url": result.final_url, "etag": headers.get("etag"),
+                    "last_modified": headers.get("last-modified")}
+            tmp = meta_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(meta), encoding="utf-8")
+            os.replace(tmp, meta_path)
+        except OSError as exc:
+            # Le disque cache est un confort (accélère les runs suivants) : une panne d'écriture
+            # ne doit jamais faire échouer la récupération elle-même.
+            runlog.event(COMPONENT, "error", url, "cache_write_failed", error=repr(exc))
 
 
 _shared: dict[tuple, PoliteFetcher] = {}

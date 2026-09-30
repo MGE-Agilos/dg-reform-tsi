@@ -163,3 +163,25 @@ def test_deferred_url_protects_project_with_that_source(tmp_path):
     known(d._store, detail("canonical-slug"), source_urls=[old_url])
     out = d.run(refs=[], run_id="r", scope=SCOPE, deferred_ids=["old-slug", old_url])
     assert out["delisted"] == []
+
+
+POLICY_URL = "https://reforms-investments.ec.europa.eu/technical-support-instrument-0/green-transition_en"
+
+
+def test_delist_scope_is_sources_actually_fetched_not_only_the_country(tmp_path):
+    # Le projet n'est liste que sur une page policy-area : si celle-ci n'a pas ete
+    # recuperee dans ce run, on ne peut pas savoir s'il y est toujours -> pas de delisting,
+    # meme si le factsheet de son pays, lui, a ete recupere.
+    d = detector(tmp_path)
+    known(d._store, thin("p"), source_urls=[POLICY_URL])
+    scope = {"countries": ["FR"], "srsp": False, "all_countries": False, "fetched": [FR_URL]}
+    assert d.run(refs=[], run_id="r", scope=scope)["delisted"] == []
+
+
+def test_delist_happens_once_its_listing_source_was_fetched(tmp_path):
+    # Meme projet, mais cette fois la page policy-area a bien ete recuperee dans ce run :
+    # elle ne le liste plus -> delisting.
+    d = detector(tmp_path)
+    known(d._store, thin("p"), source_urls=[POLICY_URL])
+    scope = {"countries": ["FR"], "srsp": False, "all_countries": False, "fetched": [POLICY_URL]}
+    assert d.run(refs=[], run_id="r", scope=scope)["delisted"] == ["p"]

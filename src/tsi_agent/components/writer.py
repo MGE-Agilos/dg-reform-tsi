@@ -116,29 +116,50 @@ class MarkdownProjectWriter:
         today = date.today().isoformat()
         store = self._get_store()
         written: list[str] = []
-        stats = {"detail": 0, "thin": 0, "refreshed": 0, "delisted": 0, "programme_docs": 0}
+        stats = {"detail": 0, "thin": 0, "refreshed": 0, "delisted": 0, "programme_docs": 0, "write_failed": 0}
+
+        def failed(pid: str, exc: OSError) -> None:
+            # Une erreur disque/OneDrive sur un projet ne doit pas faire perdre les autres.
+            runlog.event(NAME, "error", pid, "write_failed", error=repr(exc))
+            stats["write_failed"] += 1
+
         for rec in records or []:
-            written.append(self._write_record(rec, run_id, today))
-            stats["detail"] += 1
+            try:
+                written.append(self._write_record(rec, run_id, today))
+                stats["detail"] += 1
+            except OSError as exc:
+                failed(rec.ref.project_id, exc)
         for i, ref in enumerate(thin or [], start=1):
-            written.append(self._write_thin(ref, run_id, today))
-            stats["thin"] += 1
+            try:
+                written.append(self._write_thin(ref, run_id, today))
+                stats["thin"] += 1
+            except OSError as exc:
+                failed(ref.project_id, exc)
             if i % THIN_FLUSH_EVERY == 0:
                 store.flush()
         store.flush()
         for ref in unchanged or []:
-            self._replace_aliases(ref)  # thin écrit pendant que la page détail avait disparu
-            if self._refresh(ref.project_id, today, ref=ref):
-                stats["refreshed"] += 1
-                runlog.event(NAME, "write", ref.project_id, "refreshed_front_matter")
+            try:
+                self._replace_aliases(ref)  # thin écrit pendant que la page détail avait disparu
+                if self._refresh(ref.project_id, today, ref=ref):
+                    stats["refreshed"] += 1
+                    runlog.event(NAME, "write", ref.project_id, "refreshed_front_matter")
+            except OSError as exc:
+                failed(ref.project_id, exc)
         for pid in delisted or []:
-            if self._refresh(pid, today, listed=False):
-                stats["delisted"] += 1
-                runlog.event(NAME, "delist", pid)
+            try:
+                if self._refresh(pid, today, listed=False):
+                    stats["delisted"] += 1
+                    runlog.event(NAME, "delist", pid)
+            except OSError as exc:
+                failed(pid, exc)
         for doc in programme_docs or []:
-            if store.programme_hash(doc.doc_id) != doc.content_hash:
-                written.append(store.write_programme_doc(doc.doc_id, programme_doc_text(doc, run_id, today),
-                                                         doc.content_hash))
-                stats["programme_docs"] += 1
-                runlog.event(NAME, "write", doc.doc_id, "programme_doc")
+            try:
+                if store.programme_hash(doc.doc_id) != doc.content_hash:
+                    written.append(store.write_programme_doc(doc.doc_id, programme_doc_text(doc, run_id, today),
+                                                             doc.content_hash))
+                    stats["programme_docs"] += 1
+                    runlog.event(NAME, "write", doc.doc_id, "programme_doc")
+            except OSError as exc:
+                failed(doc.doc_id, exc)
         return {"written": written, "stats": stats}

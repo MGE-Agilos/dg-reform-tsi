@@ -1,4 +1,6 @@
-from tsi_agent.store import LocalProjectStore, StoreEntry
+import pytest
+
+from tsi_agent.store import REPLACE_ATTEMPTS, LocalProjectStore, StoreEntry
 
 
 def entry(pid, **kw):
@@ -77,6 +79,47 @@ def test_index_save_retries_transient_permission_error(tmp_path, monkeypatch):
     assert len(calls) == 3
     monkeypatch.setattr(store_mod.os, "replace", real_replace)
     assert LocalProjectStore(tmp_path).get("a") is not None
+
+
+def test_index_save_retries_the_tmp_write_too(tmp_path, monkeypatch):
+    """`_save` doit reessayer l'ecriture du fichier tmp, pas seulement le `os.replace` final."""
+    import pathlib
+
+    import tsi_agent.store as store_mod
+
+    real_write_text = pathlib.Path.write_text
+    calls = []
+
+    def flaky(self, *args, **kwargs):
+        if self.suffix == ".tmp":
+            calls.append(1)
+            if len(calls) < 3:
+                raise PermissionError("locked by OneDrive")
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", flaky)
+    monkeypatch.setattr(store_mod.time, "sleep", lambda s: None)
+    store = LocalProjectStore(tmp_path)
+    store.put(entry("a"))
+    assert len(calls) == 3
+    monkeypatch.setattr(pathlib.Path, "write_text", real_write_text)
+    assert LocalProjectStore(tmp_path).get("a") is not None
+
+
+def test_replace_attempts_is_eight(tmp_path, monkeypatch):
+    import tsi_agent.store as store_mod
+    calls = []
+
+    def always_locked(src, dst):
+        calls.append(1)
+        raise PermissionError("locked by OneDrive")
+
+    monkeypatch.setattr(store_mod.os, "replace", always_locked)
+    monkeypatch.setattr(store_mod.time, "sleep", lambda s: None)
+    store = LocalProjectStore(tmp_path)
+    with pytest.raises(PermissionError):
+        store.put(entry("a"))
+    assert len(calls) == REPLACE_ATTEMPTS == 8
 
 
 def test_project_file_write_retries_transient_lock(tmp_path, monkeypatch):
