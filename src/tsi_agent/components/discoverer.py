@@ -46,26 +46,77 @@ def combine(a: ProjectRef, b: ProjectRef) -> ProjectRef:
 
 
 def merge_refs(refs: list[ProjectRef]) -> list[ProjectRef]:
-    """Même projet = même URL détail ou même clé titre (programme, année, titre)."""
-    groups: list[ProjectRef] = []
-    by_url: dict[str, int] = {}
-    by_key: dict[str, int] = {}
+    """Même projet = même URL détail ou même clé titre (programme, année, titre), transitivement.
+
+    Union-find sur les indices d'entrée. Deux refs sont liées si elles partagent une URL détail
+    ou une clé titre ; le lien se propage (si A~B par URL et B~C par clé, alors A~B~C). Garde-fou :
+    on ne fusionne jamais deux groupes dont les URLs détail distinctes combinées seraient > 1
+    (deux pages détail différentes = deux projets différents, même si la clé titre correspond).
+
+    Cas des titres "flagship" partagés par plusieurs pays (même clé titre générique, mais chaque
+    pays pointe vers SA propre page détail) : une clé titre associée à > 1 URL détail distinctes
+    est dite ambiguë. Pour une clé ambiguë, les refs avec page détail ne se lient plus par la clé
+    (seulement par URL) ; seules les refs sans page détail (thin) se lient entre elles, sous un
+    espace de noms séparé, pour former le projet "thin" distinct des pages détail des pays.
+    """
+    n = len(refs)
+    parent = list(range(n))
+    members: dict[int, set[int]] = {i: {i} for i in range(n)}
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def detail_urls(root: int) -> set[str]:
+        return {refs[m].detail_url for m in members[root] if refs[m].detail_url}
+
+    urls_by_key: dict[str, set[str]] = {}
     for ref in refs:
         key = ref_title_key(ref)
-        idx = by_url.get(ref.detail_url) if ref.detail_url else None
-        if idx is None and key:
-            idx = by_key.get(key)
-        if idx is None:
-            groups.append(ref.model_copy(deep=True))
-            idx = len(groups) - 1
-        else:
-            groups[idx] = combine(groups[idx], ref)
-        merged = groups[idx]
-        if merged.detail_url:
-            by_url[merged.detail_url] = idx
-        for k in (key, ref_title_key(merged)):
-            if k:
-                by_key[k] = idx
+        if key and ref.detail_url:
+            urls_by_key.setdefault(key, set()).add(ref.detail_url)
+    ambiguous_keys = {k for k, urls in urls_by_key.items() if len(urls) > 1}
+    for k in sorted(ambiguous_keys):
+        runlog.event(NAME, "discover", k, "ambiguous_title", urls=sorted(urls_by_key[k]))
+
+    anchors: dict[tuple[str, str], int] = {}
+    for i, ref in enumerate(refs):
+        link_keys: list[tuple[str, str]] = []
+        if ref.detail_url:
+            link_keys.append(("url", ref.detail_url))
+        key = ref_title_key(ref)
+        if key:
+            if key not in ambiguous_keys:
+                link_keys.append(("key", key))
+            elif not ref.detail_url:
+                link_keys.append(("thin-key", key))
+        for link_key in link_keys:
+            other = anchors.setdefault(link_key, i)
+            if other == i:
+                continue
+            ri, rj = find(i), find(other)
+            if ri == rj:
+                continue
+            combined = detail_urls(ri) | detail_urls(rj)
+            if len(combined) > 1:
+                runlog.event(NAME, "discover", link_key[1], "merge_conflict", urls=sorted(combined))
+                continue
+            new_root, old_root = (ri, rj) if ri < rj else (rj, ri)
+            parent[old_root] = new_root
+            members[new_root] |= members[old_root]
+            del members[old_root]
+
+    groups: list[ProjectRef] = []
+    for root in sorted(members):
+        idxs = sorted(members[root])
+        merged = refs[idxs[0]].model_copy(deep=True)
+        for idx in idxs[1:]:
+            merged = combine(merged, refs[idx])
+        if merged.detail_url and ambiguous_keys:
+            merged.aliases = [a for a in merged.aliases if a not in ambiguous_keys]
+        groups.append(merged)
     return groups
 
 
@@ -96,7 +147,8 @@ class ProjectDiscoverer:
         try:
             final = self._get_fetcher().get(ref.detail_url).final_url
         except FetchError as exc:
-            if exc.status not in (404, 410):
+            permanent = exc.status is not None and 400 <= exc.status < 500 and exc.status not in (408, 429)
+            if not permanent:
                 deferred.extend([ref.project_id, *ref.aliases])
                 runlog.event(NAME, "resolve", ref.detail_url, "deferred", error=str(exc))
                 return None
@@ -132,7 +184,16 @@ class ProjectDiscoverer:
             refs += found
         scope["all_countries"] = set(scope["countries"]) == set(COUNTRIES)
         deferred: list[str] = []
-        resolved = [r for r in (self._resolve(r, deferred) for r in refs) if r is not None]
+        resolved: list[ProjectRef] = []
+        for r in refs:
+            try:
+                result = self._resolve(r, deferred)
+            except Exception as exc:  # une erreur inattendue ne doit ni planter le run ni perdre le projet
+                runlog.event(NAME, "resolve", r.detail_url, "deferred", error=repr(exc))
+                deferred.extend([r.project_id, *r.aliases])
+                continue
+            if result is not None:
+                resolved.append(result)
         for r in resolved:
             if r.detail_url and not r.policy_area:
                 r.policy_area = policy_area_from_url(r.detail_url)

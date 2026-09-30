@@ -1,5 +1,8 @@
+import itertools
+
 from conftest import FakeFetcher, fixture_bytes
 from tsi_agent.components.discoverer import ProjectDiscoverer, merge_refs
+from tsi_agent.http import FetchError
 from tsi_agent.models import ProjectRef, RawPage
 
 BASE = "https://reforms-investments.ec.europa.eu/technical-support-instrument-0"
@@ -26,6 +29,55 @@ def test_distinct_projects_stay_distinct():
     a = ProjectRef(project_id="tsi-2025-a", title="A", programme="TSI", year=2025, countries=["FR"])
     b = ProjectRef(project_id="tsi-2024-a", title="A", programme="TSI", year=2024, countries=["FR"])
     assert len(merge_refs([a, b])) == 2
+
+
+def test_merge_is_transitive_and_order_independent():
+    ref1 = ProjectRef(project_id="tsi-2025-academy", title="Academy", programme="TSI", year=2025,
+                      countries=["FR"])
+    ref2 = ProjectRef(project_id="academy", title="Academy Programme", detail_url="https://x/t/academy_en",
+                      countries=["IT"])
+    ref3 = ProjectRef(project_id="academy", title="Academy", programme="TSI", year=2025,
+                      detail_url="https://x/t/academy_en", countries=["DE"])
+    for perm in itertools.permutations([ref1, ref2, ref3]):
+        merged = merge_refs(list(perm))
+        assert len(merged) == 1, [r.project_id for r in merged]
+        m = merged[0]
+        assert m.project_id == "academy"
+        assert set(m.countries) == {"FR", "IT", "DE"}
+        assert "tsi-2025-academy" in m.aliases
+
+
+def test_two_detail_pages_with_same_title_key_stay_separate():
+    a = ProjectRef(project_id="a", title="Busy", programme="TSI", year=2025, detail_url="https://x/t/a_en",
+                   countries=["FR"])
+    b = ProjectRef(project_id="b", title="Busy", programme="TSI", year=2025, detail_url="https://x/t/b_en",
+                   countries=["DE"])
+    thin = ProjectRef(project_id="tsi-2025-busy", title="Busy", programme="TSI", year=2025, countries=["IT"])
+    merged = merge_refs([a, b, thin])
+    # Clé ambiguë (2 URLs détail distinctes) : le thin ne rejoint plus arbitrairement l'un des deux
+    # pays (ancien comportement dépendant de l'ordre) ; il reste un troisième groupe à part entière.
+    assert len(merged) == 3
+    assert sum(1 for r in merged if r.detail_url) == 2
+
+
+def test_flagship_title_shared_by_several_country_pages():
+    import itertools
+    base = dict(programme="TSI", year=2022, title="Support to the renovation wave", multi_country=True)
+    ee = ProjectRef(project_id="reno-estonia", detail_url="https://x/t/reno-estonia_en", countries=["EE"],
+                    aliases=["tsi-2022-support-to-the-renovation-wave"], **base)
+    ie = ProjectRef(project_id="reno-ireland", detail_url="https://x/t/reno-ireland_en", countries=["IE"],
+                    aliases=["tsi-2022-support-to-the-renovation-wave"], **base)
+    fr = ProjectRef(project_id="tsi-2022-support-to-the-renovation-wave", countries=["FR"], **base)
+    de = ProjectRef(project_id="tsi-2022-support-to-the-renovation-wave", countries=["DE"], **base)
+    results = set()
+    for perm in itertools.permutations([ee, ie, fr, de]):
+        groups = merge_refs(list(perm))
+        results.add(tuple(sorted((g.project_id, tuple(sorted(g.countries)), tuple(g.aliases)) for g in groups)))
+    assert results == {(
+        ("reno-estonia", ("EE",), ()),
+        ("reno-ireland", ("IE",), ()),
+        ("tsi-2022-support-to-the-renovation-wave", ("DE", "FR"), ()),
+    )}
 
 
 def test_resolves_non_canonical_links_and_builds_programme_docs():
@@ -81,3 +133,38 @@ def test_transient_resolve_failure_is_deferred_not_thin():
     out = disc.run(pages=[RawPage(kind="factsheet", key="FR", url="https://x/france_en", content=html)])
     assert out["refs"] == []
     assert out["deferred_ids"] == ["busy", "tsi-2025-busy-project"]
+
+
+def test_unexpected_resolve_error_defers_instead_of_crashing():
+    html = f"""<details class="ecl-accordion__item"><summary>2025</summary><div class="ecl-accordion__content">
+      <ul><li><a href="https://reform-support.ec.europa.eu/what-we-do/x/busy_en">Busy project</a></li></ul>
+      </div></details>""".encode()
+
+    class Broken(FakeFetcher):
+        def get(self, url):
+            raise ValueError("boom")
+
+    disc = ProjectDiscoverer()
+    disc._fetcher = Broken()
+    out = disc.run(pages=[RawPage(kind="factsheet", key="FR", url="https://x/france_en", content=html)])
+    assert out["refs"] == []
+    assert out["deferred_ids"] == ["busy", "tsi-2025-busy-project"]
+
+
+def test_permanent_403_becomes_thin():
+    html = f"""<details class="ecl-accordion__item"><summary>2025</summary><div class="ecl-accordion__content">
+      <ul><li><a href="https://reform-support.ec.europa.eu/what-we-do/x/busy_en">Busy project</a></li></ul>
+      </div></details>""".encode()
+
+    class Forbidden(FakeFetcher):
+        def get(self, url):
+            raise FetchError(url, "HTTP 403", 403)
+
+    disc = ProjectDiscoverer()
+    disc._fetcher = Forbidden()
+    out = disc.run(pages=[RawPage(kind="factsheet", key="FR", url="https://x/france_en", content=html)])
+    refs = out["refs"]
+    assert len(refs) == 1
+    assert refs[0].project_id == "tsi-2025-busy-project"
+    assert refs[0].detail_url is None
+    assert out["deferred_ids"] == []
