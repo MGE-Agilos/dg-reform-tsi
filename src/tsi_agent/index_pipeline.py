@@ -14,7 +14,7 @@ def default_embedder(settings: Settings) -> Any:
         from haystack_integrations.components.embedders.sentence_transformers import \
             SentenceTransformersDocumentEmbedder
     except ImportError as exc:
-        raise RuntimeError('embedder local absent : installer avec  pip install -e ".[local]"') from exc
+        raise RuntimeError('embedder local absent : installer avec pip install -e ".[local]"') from exc
     return SentenceTransformersDocumentEmbedder(model=settings.embedding_model, prefix="passage: ",
                                                 normalize_embeddings=True, meta_fields_to_embed=["context_header"],
                                                 batch_size=settings.embedding_batch_size, progress_bar=False)

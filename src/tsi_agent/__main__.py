@@ -50,8 +50,13 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings(args.settings)
     sources = load_sources(args.sources)
     if args.command == "export-yaml":
-        pipe = build_index_pipeline(settings) if args.index else build_pipeline(settings, sources)
-        Path(args.path).write_text(pipe.dumps(), encoding="utf-8")
+        try:
+            pipe = build_index_pipeline(settings) if args.index else build_pipeline(settings, sources)
+            Path(args.path).write_text(pipe.dumps(), encoding="utf-8")
+        except Exception as exc:
+            print(f"ERREUR : {exc!r}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return 2
         print(f"Pipeline exporté vers {args.path}")
         return 0
     if args.command == "index":

@@ -56,3 +56,13 @@ def test_export_index_yaml(tmp_path, monkeypatch):
     out = tmp_path / "index.yaml"
     assert cli.main(["export-yaml", "--index", str(out)]) == 0
     assert "VectorLayerWriter" in out.read_text(encoding="utf-8")
+
+
+def test_export_index_yaml_without_local_embedder_is_a_clean_error(tmp_path, monkeypatch, capsys):
+    def boom(settings):
+        raise RuntimeError('embedder local absent : installer avec pip install -e ".[local]"')
+    monkeypatch.setattr("tsi_agent.index_pipeline.default_embedder", boom)
+    out = tmp_path / "index.yaml"
+    assert cli.main(["export-yaml", "--index", str(out)]) == 2
+    assert "embedder local absent" in capsys.readouterr().err
+    assert not out.exists()
