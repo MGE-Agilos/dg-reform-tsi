@@ -6,7 +6,7 @@ from typing import Any
 import yaml
 
 from tsi_agent.countries import COUNTRIES, name_from_iso
-from tsi_agent.ids import clean_text, slugify
+from tsi_agent.ids import slugify
 from tsi_agent.models import ProgrammeDoc, ProjectContent, ProjectRef
 
 NOT_REPORTED = "Not reported on the source page."
