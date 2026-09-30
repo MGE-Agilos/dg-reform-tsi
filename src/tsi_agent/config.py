@@ -15,6 +15,10 @@ class Settings(BaseModel):
     llm_timeout_s: int = 180
     max_concurrency: int = 2
     chunk_size: int = 25
+    # Couche vectorisee (pipeline `index`).
+    vectors_dir: str = "output/vectors"
+    embedding_model: str = "intfloat/multilingual-e5-small"
+    embedding_batch_size: int = 32
     # $ par million de tokens, par préfixe de modèle ; sert quand le generator ne renvoie pas de coût (API OpenAI).
     pricing: dict[str, dict[str, float]] = Field(default_factory=dict)
 

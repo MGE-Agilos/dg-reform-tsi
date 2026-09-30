@@ -75,6 +75,70 @@ en conséquence (`null` si la page n'a pas de section résultats reconnue).
 Avec la souscription, `cost_usd` est un **coût équivalent API** (notionnel), calculé par le CLI.
 Il sert à estimer le budget du passage à l'API.
 
+## Couche vectorisée (préparation du RAG)
+
+Un second pipeline, `index`, découpe les fichiers de `output/projects` et `output/programme` en morceaux (un par
+section, redécoupé au-delà de 300 mots), les vectorise et les range dans `output/vectors/`. Les fichiers extraits
+ne sont pas modifiés : la couche vectorisée peut être supprimée et reconstruite à tout moment.
+
+```powershell
+# Une fois : embedder local (PyTorch CPU + modèle multilingual-e5-small, ~1 à 2 Go)
+.venv\Scripts\python -m pip install -e ".[local]"
+
+# Premier run : tout ; ensuite : seulement les fichiers nouveaux, modifiés ou supprimés
+.venv\Scripts\python -m tsi_agent index
+.venv\Scripts\python -m tsi_agent index --full
+
+# Export pour un index deepset
+.venv\Scripts\python -m tsi_agent export-yaml --index index.yaml
+```
+
+| Chemin | Contenu |
+|---|---|
+| `output/vectors/store.json` | Morceaux avec texte, métadonnées et vecteur (format `InMemoryDocumentStore.save_to_disk`) |
+| `output/vectors/state.json` | Hash de chaque fichier indexé et identifiants de ses morceaux. Ne pas éditer à la main. |
+
+Chaque morceau porte en métadonnées le projet (`doc_id`, titre, programme, année, pays, domaine, `detail_page`…),
+la section et `ai_generated` (vrai pour le résumé IA). Aucun LLM n'intervient : seul l'embedder travaille.
+Changer de modèle d'embedding ou de règles de découpage déclenche automatiquement un full. L'identifiant d'un
+morceau est `<chemin relatif sans .md>#<n>` (ex. `projects/energy-regulation-academy#0`) ; le `doc_id` du projet
+ou du document programme est conservé à part dans les métadonnées.
+
+Environ 5 000 morceaux au total (2 137 fichiers) : `store.json` pèse environ 50 Mo et est intégralement réécrit
+à chaque run qui modifie quelque chose (OneDrive le resynchronise donc en entier à ce moment-là).
+
+Dans deepset, l'embedder devient `OpenAIDocumentEmbedder` (même `meta_fields_to_embed`, sans préfixe), et on ajoute
+son tarif pour journaliser le coût :
+
+```yaml
+embedder:
+  type: haystack.components.embedders.openai_document_embedder.OpenAIDocumentEmbedder
+  init_parameters:
+    model: text-embedding-3-small
+    meta_fields_to_embed: [context_header]
+    api_key: {type: env_var, env_vars: [OPENAI_API_KEY], strict: true}
+```
+
+```yaml
+# config/settings.yaml
+pricing:
+  text-embedding-3-small: {input: 0.02}
+```
+
+Le chargeur local (`ProjectFileLoader`) et le writer local (`VectorLayerWriter`) sont remplacés dans deepset par
+l'entrée fichiers de l'index et un `DocumentWriter` vers le document store de l'espace de travail ; `ProjectChunker`
+reste identique.
+
+**À savoir pour deepset :**
+
+- `loader` (`ProjectFileLoader`) et `vector_writer` (`VectorLayerWriter`) sont **retirés** du YAML dans deepset,
+  pas édités : leurs paramètres d'init contiennent des chemins locaux et l'empreinte de l'embedder utilisé.
+- La connexion `embedder.meta → vector_writer.embed_meta` n'existe que si l'embedder a une sortie `meta`
+  (OpenAI : oui ; sentence-transformers : non). En exportant avec l'embedder local puis en passant à OpenAI dans
+  deepset, ajouter cette connexion pour garder un comptage de tokens exact (sinon le coût est estimé à partir du
+  nombre de mots). Dans l'autre sens (retour à un embedder local), la retirer, sinon le YAML ne se recharge pas.
+- Le futur pipeline de requête doit utiliser le même modèle d'embedding (en local, avec le préfixe `query: `).
+
 ## Planification (Windows)
 
 À exécuter depuis le dossier du dépôt (les chemins sont résolus en absolu à partir du dossier courant) :

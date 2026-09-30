@@ -8,3 +8,8 @@ model: sonnet
 llm_timeout_s: 180
 max_concurrency: 2
 chunk_size: 25
+
+# Couche vectorisée (python -m tsi_agent index)
+vectors_dir: output/vectors
+embedding_model: intfloat/multilingual-e5-small   # local, multilingue ; OpenAI text-embedding-3-small dans deepset
+embedding_batch_size: 32

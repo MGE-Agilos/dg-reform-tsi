@@ -6,6 +6,7 @@ from haystack import Pipeline
 
 from tsi_agent import runlog
 from tsi_agent.config import Settings
+from tsi_agent.index_pipeline import build_index_pipeline
 from tsi_agent.pipeline import build_pipeline
 
 PipelineFactory = Callable[..., Pipeline]
@@ -51,4 +52,16 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
                 run.extra["remaining_detail"] = det["remaining"]
                 break
         run.extra.update({"chunks": chunks, "quota_exceeded": quota, "written": written, "llm_pages": llm_pages})
+    return run.final_summary
+
+
+def run_index(settings: Settings, *, full: bool = False, embedder: Any = None, run_id: str | None = None,
+              pipeline_factory: PipelineFactory = build_index_pipeline) -> dict[str, Any]:
+    """Vectorise les fichiers extraits nouveaux ou modifies (tout, au premier run ou avec full)."""
+    with runlog.open_run(settings.logs_dir, run_id) as run:
+        pipeline = pipeline_factory(settings, embedder=embedder)
+        out = pipeline.run({"loader": {"full": full}},
+                           include_outputs_from={"loader", "chunker", "vector_writer"})
+        run.extra.update({"mode": "index", "full": out["loader"]["full"],
+                          "stats": out["vector_writer"]["stats"], "skipped": out["chunker"]["skipped"]})
     return run.final_summary
