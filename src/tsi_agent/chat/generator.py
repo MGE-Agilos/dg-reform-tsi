@@ -5,17 +5,11 @@ import time
 from typing import Any
 
 from haystack import component, default_from_dict, default_to_dict
-from haystack.core.serialization import allow_deserialization_module, component_to_dict
+from haystack.core.serialization import component_to_dict
 from haystack.dataclasses import ChatMessage
 from haystack.utils import deserialize_chatgenerator_inplace
 
 from tsi_agent import runlog
-
-# `from_dict` ci-dessous deserialise un chat_generator tsi_agent (ClaudeCliChatGenerator) hors d'un
-# `Pipeline.loads(..., allowed_modules=...)` : Haystack 3.2 (patch de securite) refuse sinon les modules hors de
-# son allowlist par defaut. Notre propre module est de confiance ; cf. ALLOWED_MODULES dans tsi_agent/pipeline.py
-# pour l'equivalent utilise par Pipeline.loads.
-allow_deserialization_module("tsi_agent")
 
 
 @component

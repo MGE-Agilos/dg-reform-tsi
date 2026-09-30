@@ -74,7 +74,9 @@ def test_logged_generator_uses_pricing_when_no_cost(tmp_path):
     assert run.final_summary["cost_usd"] == 0.15
 
 
-def test_logged_generator_round_trip():
+def test_logged_generator_round_trip(monkeypatch):
+    # from_dict direct (hors Pipeline.loads) : Haystack 3.2 exige que tsi_agent soit dans son allowlist.
+    monkeypatch.setenv("HAYSTACK_DESERIALIZATION_ALLOWLIST", "tsi_agent")
     gen = LoggedChatGenerator(chat_generator=ClaudeCliChatGenerator(model="sonnet"), pricing={"a": {"input": 1}})
     again = LoggedChatGenerator.from_dict(gen.to_dict())
     assert isinstance(again.chat_generator, ClaudeCliChatGenerator) and again.chat_generator.model == "sonnet"
