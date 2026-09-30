@@ -139,6 +139,48 @@ reste identique.
   nombre de mots). Dans l'autre sens (retour à un embedder local), la retirer, sinon le YAML ne se recharge pas.
 - Le futur pipeline de requête doit utiliser le même modèle d'embedding (en local, avec le préfixe `query: `).
 
+## Chatbot (agent RAG)
+
+Un troisième pipeline, `chat`, répond aux questions sur les projets à partir de la couche vectorisée. C'est un
+`Agent` Haystack qui dispose de trois outils :
+
+| Outil | Rôle |
+|---|---|
+| `search_projects` | Recherche sémantique dans les textes des projets, filtres pays, années, programme, domaine ; renvoie des passages numérotés [n] |
+| `list_projects` | Comptage et liste exacts des projets correspondant à des filtres, sur tout le corpus |
+| `get_project` | Texte complet d'un projet |
+
+```powershell
+# Prérequis : la couche vectorisée (python -m tsi_agent index) et l'extra local
+.venv\Scripts\python -m tsi_agent chat            # ouvre http://127.0.0.1:8765
+.venv\Scripts\python -m tsi_agent export-yaml --chat chat.yaml
+```
+
+Exemples de questions :
+- « Que fait le projet Energy Regulation Academy ? »
+- « Quels projets aident la Croatie à réformer son système de santé ? »
+- « Combien de projets TSI pour la Grèce en 2023 ? »
+- « Compare les projets santé de la Croatie et de la Slovénie. », puis « Et en Slovaquie ? »
+
+Chaque réponse cite ses sources [n] vers les pages de la Commission et signale ce qui vient d'un résumé IA. La page
+affiche les étapes de l'agent, la durée et le coût équivalent API. Chaque question est un run du journal
+(`logs/runs/`, `mode: chat`). En local, une réponse demande 2 à 4 appels au CLI `claude`, soit 20 à 60 s.
+
+`export-yaml --chat` construit le pipeline comme la commande `chat` : il exige donc la couche vectorisée déjà
+construite et l'extra `[local]` (embedder local pour `search_projects`).
+
+**Passage à deepset :** le `chat_generator` de l'Agent reste un `LoggedChatGenerator` (il journalise coût et
+tokens quel que soit le modèle appelé) ; seul le generator qu'il enveloppe change. Dans le YAML exporté,
+remplacer :
+- `agent.init_parameters.chat_generator.init_parameters.chat_generator` (le `ClaudeCliChatGenerator`) par un
+  `OpenAIChatGenerator`, qui appelle les outils nativement ;
+- le `text_embedder` de l'outil `search_projects` par un `OpenAITextEmbedder` (`text-embedding-3-small`, sans
+  préfixe), cohérent avec l'embedder de l'index ;
+- le `PersistedInMemoryDocumentStore`, qui apparaît dans les trois outils, par le document store de l'espace de
+  travail (et `InMemoryEmbeddingRetriever` par le retriever correspondant, par exemple `OpenSearchEmbeddingRetriever`).
+
+Les trois outils, le prompt et l'Agent ne changent pas.
+
 ## Planification (Windows)
 
 À exécuter depuis le dossier du dépôt (les chemins sont résolus en absolu à partir du dossier courant) :

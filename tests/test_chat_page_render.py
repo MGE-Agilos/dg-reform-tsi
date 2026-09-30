@@ -1,0 +1,90 @@
+"""Teste le rendu Markdown->HTML cote page (fonctions pures du <script> de index.html), via Node.
+
+On extrait uniquement les fonctions sans dependance au DOM (esc, inline, render, ...) : le reste du
+script (ecouteurs d'evenements, document.getElementById) n'est pas execute ici.
+"""
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+INDEX_HTML = Path(__file__).resolve().parent.parent / "src" / "tsi_agent" / "chat" / "static" / "index.html"
+
+pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node introuvable dans le PATH")
+
+
+def _pure_js() -> str:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    script = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    start = script.index("function esc(")
+    end = script.index("function addMessage")
+    return script[start:end]
+
+
+def render_js(text: str, sources: list | None = None) -> str:
+    payload = json.dumps({"text": text, "sources": sources or []})
+    node_src = _pure_js() + f"\nconst input = {payload};\nprocess.stdout.write(render(input.text, input.sources));\n"
+    result = subprocess.run(["node", "-e", node_src], capture_output=True, text=True, encoding="utf-8", check=True)
+    return result.stdout
+
+
+def test_render_heading_levels_map_to_h3_h4():
+    assert render_js("# T1") == "<h3>T1</h3>"
+    assert render_js("## T2") == "<h3>T2</h3>"
+    assert render_js("### T3") == "<h4>T3</h4>"
+    assert render_js("#### T4") == "<h4>T4</h4>"
+
+
+def test_render_table_with_header_and_separator():
+    md = "| A | B |\n|---|---|\n| 1 | 2 |"
+    assert render_js(md) == (
+        '<div class="table-wrap"><table><thead><tr><th>A</th><th>B</th></tr></thead><tbody>'
+        "<tr><td>1</td><td>2</td></tr></tbody></table></div>"
+    )
+
+
+def test_render_hr_and_blockquote():
+    assert render_js("---") == "<hr>"
+    assert render_js("> quoted") == "<blockquote>quoted</blockquote>"
+
+
+def test_render_ordered_and_bullet_lists():
+    assert render_js("1. a\n2. b") == "<ol><li>a</li><li>b</li></ol>"
+    assert render_js("3. a\n4. b") == '<ol start="3"><li>a</li><li>b</li></ol>'
+    assert render_js("- a\n- b") == "<ul><li>a</li><li>b</li></ul>"
+
+
+def test_render_bold_italic_code():
+    assert render_js("**bold**") == "<p><strong>bold</strong></p>"
+    assert render_js("*italic*") == "<p><em>italic</em></p>"
+    assert render_js("_italic_ word") == "<p><em>italic</em> word</p>"
+    assert render_js("`code`") == "<p><code>code</code></p>"
+
+
+def test_render_does_not_turn_underscores_inside_identifiers_into_italics():
+    assert render_js("snake_case_var stays") == "<p>snake_case_var stays</p>"
+
+
+def test_render_escapes_model_text_before_applying_markdown():
+    html = render_js("<script>alert(1)</script> and **bold**")
+    assert "<script>alert" not in html
+    assert "&lt;script&gt;" in html
+    assert "<strong>bold</strong>" in html
+
+
+def test_render_links_only_http_and_https_schemes():
+    html = render_js("See http://ok.example and javascript:alert(1) and data:text/html,x")
+    assert '<a href="http://ok.example"' in html
+    assert 'href="javascript' not in html
+    assert 'href="data:' not in html
+
+
+def test_render_ref_superscript_falls_back_to_hash_for_non_http_source_urls():
+    sources = [{"ref": 1, "url": "https://ok.example"}, {"ref": 2, "url": "javascript:alert(1)"}]
+    html = render_js("[1] and [2] and [3]", sources)
+    assert '<sup><a href="https://ok.example"' in html
+    assert '<sup><a href="#"' in html
+    assert "[3]" in html

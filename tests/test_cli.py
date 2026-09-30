@@ -66,3 +66,32 @@ def test_export_index_yaml_without_local_embedder_is_a_clean_error(tmp_path, mon
     assert cli.main(["export-yaml", "--index", str(out)]) == 2
     assert "embedder local absent" in capsys.readouterr().err
     assert not out.exists()
+
+
+def test_chat_command_starts_server(monkeypatch):
+    started = {}
+
+    class FakeApp:
+        def run(self, host, port, threaded):
+            started.update(host=host, port=port)
+    monkeypatch.setattr("tsi_agent.chat.web.create_app", lambda settings, **kw: FakeApp())
+    monkeypatch.setattr("webbrowser.open", lambda url: started.setdefault("url", url))
+    assert cli.main(["chat", "--port", "9999", "--no-browser"]) == 0
+    assert started == {"host": "127.0.0.1", "port": 9999}
+
+
+def test_chat_command_without_vector_layer(monkeypatch, capsys):
+    from tsi_agent.vector_state import VectorLayerError
+
+    def boom(settings, **kw):
+        raise VectorLayerError("couche vectorisee absente : lancez d'abord python -m tsi_agent index")
+    monkeypatch.setattr("tsi_agent.chat.web.create_app", boom)
+    assert cli.main(["chat", "--no-browser"]) == 2
+    assert "tsi_agent index" in capsys.readouterr().err
+
+
+def test_export_chat_yaml(tmp_path, monkeypatch):
+    from haystack import Pipeline
+    monkeypatch.setattr("tsi_agent.chat.pipeline.build_chat_pipeline", lambda settings, areas: Pipeline())
+    out = tmp_path / "chat.yaml"
+    assert cli.main(["export-yaml", "--chat", str(out)]) == 0 and out.exists()

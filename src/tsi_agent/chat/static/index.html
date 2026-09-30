@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TSI Projects Chat</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2433; --muted:#667085; --accent:#1f4e9e; --border:#dde2ea; --ai:#8a5a00; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12151b; --card:#1b2029; --text:#e6e9ef; --muted:#98a2b3; --accent:#7aa7ff; --border:#2c3441; --ai:#e0b458; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:14px 20px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; background:var(--card); }
+  header h1 { font-size:16px; margin:0; }
+  header small { color:var(--muted); }
+  button { font:inherit; cursor:pointer; border:1px solid var(--border); background:var(--card); color:var(--text); border-radius:8px; padding:6px 12px; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:default; }
+  main { max-width:900px; margin:0 auto; padding:20px 16px 140px; }
+  .msg { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:12px 16px; margin:12px 0; }
+  .msg.user { border-left:4px solid var(--accent); }
+  .msg .who { font-size:12px; color:var(--muted); margin-bottom:4px; }
+  .msg .body p { margin:.4em 0; }
+  .msg .body ul, .msg .body ol { margin:.4em 0; padding-left:1.3em; }
+  .msg .body h3 { font-size:16px; margin:.7em 0 .3em; }
+  .msg .body h4 { font-size:14px; margin:.7em 0 .3em; }
+  .msg .body hr { border:none; border-top:1px solid var(--border); margin:.8em 0; }
+  .msg .body blockquote { margin:.4em 0; padding:.2em .9em; border-left:3px solid var(--border); color:var(--muted); }
+  .msg .body code { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:1px 4px; font-size:.9em; }
+  .msg .body .table-wrap { overflow-x:auto; margin:.5em 0; }
+  .msg .body table { border-collapse:collapse; width:100%; font-size:14px; }
+  .msg .body th, .msg .body td { border:1px solid var(--border); padding:6px 10px; text-align:left; }
+  .msg .body th { background:var(--bg); font-weight:600; }
+  .msg sup a { text-decoration:none; }
+  .sources, details { margin-top:10px; font-size:13px; color:var(--muted); }
+  .sources ol { margin:4px 0; padding-left:1.4em; }
+  .sources a, .msg a { color:var(--accent); }
+  .ai { color:var(--ai); font-size:12px; }
+  details code { font-size:12px; }
+  .meta { font-size:12px; color:var(--muted); margin-top:6px; }
+  .error { border-color:#d92d20; color:#d92d20; }
+  form { position:fixed; bottom:0; left:0; right:0; background:var(--card); border-top:1px solid var(--border); padding:12px 16px; }
+  form .row { max-width:900px; margin:0 auto; display:flex; gap:8px; }
+  textarea { flex:1; resize:vertical; min-height:48px; max-height:200px; font:inherit; padding:10px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); }
+  .hint { max-width:900px; margin:6px auto 0; font-size:12px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <div><h1>Projets TSI / SRSP — assistant</h1><small>Réponses fondées sur les pages publiques de la Commission (DG REFORM)</small></div>
+  <button id="reset" type="button">Nouvelle conversation</button>
+</header>
+<main id="thread"></main>
+<form id="form">
+  <div class="row">
+    <textarea id="q" placeholder="Ex. : Quels projets aident la Croatie à réformer son système de santé ?" required></textarea>
+    <button class="primary" id="send" type="submit">Envoyer</button>
+  </div>
+  <div class="hint">Entrée pour envoyer, Maj+Entrée pour aller à la ligne. Une réponse prend 20 à 60 s en local.</div>
+</form>
+<script>
+const thread = document.getElementById("thread");
+const form = document.getElementById("form");
+const input = document.getElementById("q");
+const send = document.getElementById("send");
+let history = [];
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function isHttpUrl(u) {
+  return typeof u === "string" && /^https?:\/\//.test(u);
+}
+
+// Applies inline markdown to an already-escaped fragment (bold/italic/code/[n]/autolinks).
+// Never call on raw, unescaped model text.
+function inline(s, urls) {
+  const codes = [];
+  s = s.replace(/`([^`\n]+?)`/g, (m, c) => { codes.push(c); return "\u0000" + (codes.length - 1) + "\u0000"; });
+  s = s.replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/\*([^*\n]+?)\*/g, "<em>$1</em>");
+  s = s.replace(/\b_([^_\s][^_\n]*?)_\b/g, "<em>$1</em>");
+  s = s.replace(/(https?:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/\[(\d+)\]/g, (m, n) => urls[n] ? `<sup><a href="${urls[n]}" target="_blank" rel="noopener">[${n}]</a></sup>` : m);
+  s = s.replace(/\u0000(\d+)\u0000/g, (m, i) => "<code>" + codes[Number(i)] + "</code>");
+  return s;
+}
+
+function splitTableRow(line) {
+  let t = line.trim();
+  if (t.startsWith("|")) t = t.slice(1);
+  if (t.endsWith("|")) t = t.slice(0, -1);
+  return t.split("|").map(c => c.trim());
+}
+
+function isTableSeparator(line) {
+  return /^[\s|:-]+$/.test(line) && line.includes("-");
+}
+
+const HR_RE = /^(-{3,}|\*{3,}|_{3,})\s*$/;
+const HEADING_RE = /^(#{1,4})\s+(.*)$/;
+const QUOTE_RE = /^&gt;\s?/;
+const OLI_RE = /^\s*(\d+)\.\s+(.*)$/;
+const ULI_RE = /^\s*[-*] (.*)$/;
+
+function isSpecialLine(line, next) {
+  return HR_RE.test(line.trim()) || HEADING_RE.test(line) || QUOTE_RE.test(line) ||
+    OLI_RE.test(line) || ULI_RE.test(line) || (line.includes("|") && next !== undefined && isTableSeparator(next));
+}
+
+// Renders already-escaped model text (see esc()) as a small, dependency-free markdown subset.
+function render(text, sources) {
+  const urls = {};
+  (sources || []).forEach(s => { urls[s.ref] = isHttpUrl(s.url) ? esc(s.url) : "#"; });
+  const lines = esc(text).split("\n");
+  const out = [];
+  let i = 0;
+  let m;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+    if (HR_RE.test(line.trim())) { out.push("<hr>"); i++; continue; }
+    if ((m = HEADING_RE.exec(line))) {
+      const tag = m[1].length <= 2 ? "h3" : "h4";
+      out.push(`<${tag}>${inline(m[2], urls)}</${tag}>`);
+      i++; continue;
+    }
+    if (line.includes("|") && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      const header = splitTableRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].trim() && lines[i].includes("|")) {
+        rows.push(splitTableRow(lines[i])); i++;
+      }
+      let t = '<div class="table-wrap"><table><thead><tr>' +
+        header.map(c => `<th>${inline(c, urls)}</th>`).join("") + "</tr></thead><tbody>";
+      rows.forEach(r => { t += "<tr>" + r.map(c => `<td>${inline(c, urls)}</td>`).join("") + "</tr>"; });
+      out.push(t + "</tbody></table></div>");
+      continue;
+    }
+    if (QUOTE_RE.test(line)) {
+      const quote = [];
+      while (i < lines.length && QUOTE_RE.test(lines[i])) {
+        quote.push(inline(lines[i].replace(QUOTE_RE, ""), urls)); i++;
+      }
+      out.push("<blockquote>" + quote.join("<br>") + "</blockquote>");
+      continue;
+    }
+    if ((m = OLI_RE.exec(line))) {
+      const start = m[1];
+      const items = [];
+      while (i < lines.length && (m = OLI_RE.exec(lines[i]))) {
+        items.push(`<li>${inline(m[2], urls)}</li>`); i++;
+      }
+      out.push(`<ol${start !== "1" ? ` start="${start}"` : ""}>` + items.join("") + "</ol>");
+      continue;
+    }
+    if (ULI_RE.test(line)) {
+      const items = [];
+      while (i < lines.length && (m = ULI_RE.exec(lines[i]))) {
+        items.push(`<li>${inline(m[1], urls)}</li>`); i++;
+      }
+      out.push("<ul>" + items.join("") + "</ul>");
+      continue;
+    }
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !isSpecialLine(lines[i], lines[i + 1])) {
+      para.push(inline(lines[i], urls)); i++;
+    }
+    out.push("<p>" + para.join("<br>") + "</p>");
+  }
+  return out.join("");
+}
+
+function addMessage(role, html, extra) {
+  const div = document.createElement("div");
+  div.className = "msg " + role + (extra && extra.error ? " error" : "");
+  div.innerHTML = `<div class="who">${role === "user" ? "Vous" : "Assistant"}</div><div class="body">${html}</div>`;
+  if (extra && extra.after) div.insertAdjacentHTML("beforeend", extra.after);
+  thread.appendChild(div);
+  div.scrollIntoView({behavior: "smooth", block: "end"});
+  return div;
+}
+
+function details(res) {
+  let html = "";
+  if (res.sources && res.sources.length) {
+    html += '<div class="sources"><strong>Sources</strong><ol>' + res.sources.map(s =>
+      `<li value="${s.ref}"><a href="${isHttpUrl(s.url) ? esc(s.url) : "#"}" target="_blank" rel="noopener">${esc(s.title || s.doc_id)}</a>` +
+      (s.section ? ` — ${esc(s.section)}` : "") + (s.ai_generated ? ' <span class="ai">(résumé IA)</span>' : "") + "</li>").join("") +
+      "</ol></div>";
+  }
+  if (res.steps && res.steps.length) {
+    html += `<details><summary>${res.steps.length} étape(s) de l'agent</summary><ol>` + res.steps.map(s =>
+      `<li><code>${esc(s.tool)}</code> ${esc(JSON.stringify(s.arguments))}<br><small>${esc(s.summary)}</small></li>`).join("") +
+      "</ol></details>";
+  }
+  html += `<div class="meta">${res.duration_s} s · coût équivalent API ${Number(res.cost_usd).toFixed(4)} $ · run ${esc(res.run_id)}</div>`;
+  return html;
+}
+
+async function submit(question) {
+  addMessage("user", render(question));
+  const pending = addMessage("assistant", "<p><em>Recherche en cours…</em></p>");
+  send.disabled = true;
+  try {
+    const r = await fetch("/api/chat", {method: "POST", headers: {"Content-Type": "application/json"},
+                                        body: JSON.stringify({question, history})});
+    const res = await r.json();
+    pending.remove();
+    if (!r.ok) { addMessage("assistant", `<p>${esc(res.error || "Erreur")}</p>`, {error: true}); return; }
+    addMessage("assistant", render(res.answer, res.sources), {after: details(res)});
+    history.push({role: "user", text: question}, {role: "assistant", text: res.answer});
+  } catch (e) {
+    pending.remove();
+    addMessage("assistant", `<p>${esc(e)}</p>`, {error: true});
+  } finally {
+    send.disabled = false;
+    input.focus();
+  }
+}
+
+form.addEventListener("submit", e => {
+  e.preventDefault();
+  const q = input.value.trim();
+  if (!q || send.disabled) return;
+  input.value = "";
+  submit(q);
+});
+input.addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+});
+document.getElementById("reset").addEventListener("click", () => { history = []; thread.innerHTML = ""; input.focus(); });
+input.focus();
+</script>
+</body>
+</html>
