@@ -8,14 +8,21 @@ import json
 import re
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any
 
 from haystack import component
-from haystack.dataclasses import ChatMessage, ChatRole
+from haystack.dataclasses import ChatMessage, ChatRole, ToolCall
+from haystack.tools import Tool, flatten_tools_or_toolsets
 
 DEFAULT_SYSTEM_PROMPT = "You are a precise assistant. Follow the user's instructions exactly."
 _QUOTA = re.compile(r"rate.?limit|usage limit|limit reached|quota|too many requests|\b429\b", re.IGNORECASE)
+TOOLS_INTRO = ("You can call tools to gather information before answering. Available tools, with their "
+               "parameters as JSON schema:")
+TOOLS_INSTRUCTION = ("Reply with JSON only. Either put one or more tool calls in `tool_calls` (and leave "
+                     "`answer` empty) to gather more information, or leave `tool_calls` empty and put your final "
+                     "answer to the user in `answer`. Never invent tool results.")
 
 
 class LLMCallError(RuntimeError):
@@ -58,15 +65,15 @@ class ClaudeCliChatGenerator:
             cmd += ["--json-schema", json.dumps(self.json_schema, separators=(",", ":"))]
         return cmd
 
-    @component.output_types(replies=list[ChatMessage])
-    def run(self, messages: list[ChatMessage]) -> dict[str, list[ChatMessage]]:
-        # Le prompt système passe en argument (via cmd.exe sous Windows) : une seule ligne.
-        system = " ".join(" ".join(m.text.split()) for m in messages if m.is_from(ChatRole.SYSTEM) and m.text)
-        prompt = "\n\n".join(m.text for m in messages if not m.is_from(ChatRole.SYSTEM) and m.text)
+    def _invoke(self, system: str, prompt: str, json_schema: dict[str, Any] | None) -> tuple[dict[str, Any], dict]:
+        cmd = self._command(system or DEFAULT_SYSTEM_PROMPT)
+        if json_schema is not self.json_schema:  # schema propre a l'appel (outils) : remplace celui de l'init
+            if "--json-schema" in cmd:
+                del cmd[cmd.index("--json-schema"):cmd.index("--json-schema") + 2]
+            cmd += ["--json-schema", json.dumps(json_schema, separators=(",", ":"))]
         try:
-            proc = subprocess.run(self._command(system or DEFAULT_SYSTEM_PROMPT), input=prompt,
-                                  capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                  timeout=self.timeout_s)
+            proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
+                                  errors="replace", timeout=self.timeout_s)
         except subprocess.TimeoutExpired as exc:
             raise LLMCallError(f"timeout after {self.timeout_s}s") from exc
         except OSError as exc:
@@ -83,8 +90,6 @@ class ClaudeCliChatGenerator:
             if data.get("api_error_status") == 429 or _QUOTA.search(message):
                 raise LLMQuotaExceeded(message)
             raise LLMCallError(message)
-        structured = data.get("structured_output")
-        text = json.dumps(structured, ensure_ascii=False) if structured is not None else data.get("result", "")
         usage = data.get("usage") or {}
         # Avec --json-schema, le CLI ajoute un petit appel Haiku, liste en premier : on retient
         # le modele qui a coute le plus, c'est-a-dire celui qui a fait l'extraction.
@@ -103,4 +108,69 @@ class ClaudeCliChatGenerator:
             "num_turns": data.get("num_turns"),
             "session_id": data.get("session_id"),
         }
+        return data, meta
+
+    @staticmethod
+    def _system(messages: list[ChatMessage]) -> str:
+        # Le prompt systeme passe en argument de ligne de commande : une seule ligne.
+        return " ".join(" ".join(m.text.split()) for m in messages if m.is_from(ChatRole.SYSTEM) and m.text)
+
+    @component.output_types(replies=list[ChatMessage])
+    def run(self, messages: list[ChatMessage], tools: Any = None) -> dict[str, list[ChatMessage]]:
+        if tools:
+            return self._run_with_tools(messages, list(flatten_tools_or_toolsets(tools)))
+        prompt = "\n\n".join(m.text for m in messages if not m.is_from(ChatRole.SYSTEM) and m.text)
+        data, meta = self._invoke(self._system(messages), prompt, self.json_schema)
+        structured = data.get("structured_output")
+        text = json.dumps(structured, ensure_ascii=False) if structured is not None else data.get("result", "")
         return {"replies": [ChatMessage.from_assistant(text, meta=meta)]}
+
+    @staticmethod
+    def _tools_schema(tools: list[Tool]) -> dict[str, Any]:
+        call = {"type": "object", "properties": {"tool_name": {"type": "string", "enum": [t.name for t in tools]},
+                                                 "arguments": {"type": "object"}},
+                "required": ["tool_name", "arguments"]}
+        return {"type": "object", "properties": {"tool_calls": {"type": "array", "items": call},
+                                                 "answer": {"type": "string"}},
+                "required": ["tool_calls", "answer"]}
+
+    @staticmethod
+    def _transcript(messages: list[ChatMessage]) -> str:
+        parts: list[str] = []
+        for m in messages:
+            if m.is_from(ChatRole.SYSTEM):
+                continue
+            if m.is_from(ChatRole.USER):
+                parts.append(f"## User\n{m.text or ''}")
+            elif m.is_from(ChatRole.TOOL):
+                for r in m.tool_call_results:
+                    flag = " — ERROR" if r.error else ""
+                    parts.append(f"## Tool result ({r.origin.tool_name}){flag}\n{r.result}")
+            elif m.tool_calls:
+                calls = "\n".join(f"- {c.tool_name} {json.dumps(c.arguments, ensure_ascii=False)}"
+                                  for c in m.tool_calls)
+                parts.append(f"## Assistant (tool calls)\n{calls}")
+            else:
+                parts.append(f"## Assistant\n{m.text or ''}")
+        return "\n\n".join(parts)
+
+    def _run_with_tools(self, messages: list[ChatMessage], tools: list[Tool]) -> dict[str, list[ChatMessage]]:
+        """Le CLI n'appelle pas d'outils Python : on lui fait choisir, en JSON, entre appels d'outils et reponse."""
+        names = {t.name for t in tools}
+        described = "\n\n".join(f"### {t.name}\n{t.description}\nParameters: "
+                                f"{json.dumps(t.parameters, ensure_ascii=False)}" for t in tools)
+        prompt = (f"{TOOLS_INTRO}\n\n{described}\n\n# Conversation\n\n{self._transcript(messages)}\n\n"
+                  f"{TOOLS_INSTRUCTION}")
+        schema = self._tools_schema(tools)
+        for _ in range(2):  # une nouvelle tentative si la reponse n'est ni appel d'outil ni texte
+            data, meta = self._invoke(self._system(messages), prompt, schema)
+            out = data.get("structured_output") or {}
+            calls = [c for c in out.get("tool_calls") or [] if isinstance(c, dict) and c.get("tool_name") in names]
+            if calls:
+                tool_calls = [ToolCall(tool_name=c["tool_name"], arguments=c.get("arguments") or {},
+                                       id=f"call_{uuid.uuid4().hex[:12]}") for c in calls]
+                return {"replies": [ChatMessage.from_assistant(tool_calls=tool_calls, meta=meta)]}
+            answer = str(out.get("answer") or "").strip()
+            if answer:
+                return {"replies": [ChatMessage.from_assistant(answer, meta=meta)]}
+        raise LLMCallError("CLI reply has neither tool_calls nor answer")

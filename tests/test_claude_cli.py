@@ -2,7 +2,8 @@ import json
 import subprocess
 
 import pytest
-from haystack.dataclasses import ChatMessage
+from haystack.dataclasses import ChatMessage, ToolCall
+from haystack.tools import Tool
 
 from tsi_agent.components import claude_cli
 from tsi_agent.components.claude_cli import ClaudeCliChatGenerator, LLMCallError, LLMQuotaExceeded
@@ -134,3 +135,79 @@ def test_model_is_the_one_that_did_the_work_not_the_schema_side_call(fake_run):
                                            "claude-sonnet-4-6": {"costUSD": 0.006}}))
     reply = ClaudeCliChatGenerator(model="sonnet").run(messages=MESSAGES)["replies"][0]
     assert reply.meta["model"] == "claude-cli/claude-sonnet-4-6"
+
+
+SEARCH = Tool(name="search_projects", description="Semantic search.",
+              parameters={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+              function=lambda query: query)
+LISTER = Tool(name="list_projects", description="Count projects.",
+              parameters={"type": "object", "properties": {}}, function=lambda: "")
+
+
+@pytest.fixture
+def scripted_run(monkeypatch):
+    """subprocess.run renvoie successivement les structured_output donnes."""
+    calls = []
+
+    def install(*outputs):
+        queue = list(outputs)
+
+        def run(cmd, **kw):
+            calls.append({"cmd": cmd, "input": kw["input"]})
+            return subprocess.CompletedProcess(cmd, 0, stdout=cli_output(structured_output=queue.pop(0)), stderr="")
+        monkeypatch.setattr(claude_cli.subprocess, "run", run)
+        monkeypatch.setattr(claude_cli.shutil, "which", lambda exe: "C:/npm/claude.CMD")
+        return calls
+    return install
+
+
+def test_tool_call_reply(scripted_run):
+    calls = scripted_run({"tool_calls": [{"tool_name": "search_projects", "arguments": {"query": "santé"}}],
+                          "answer": ""})
+    reply = ClaudeCliChatGenerator().run(messages=MESSAGES, tools=[SEARCH, LISTER])["replies"][0]
+    assert reply.text is None and reply.tool_calls[0].tool_name == "search_projects"
+    assert reply.tool_calls[0].arguments == {"query": "santé"} and reply.tool_calls[0].id.startswith("call_")
+    schema = json.loads(calls[0]["cmd"][calls[0]["cmd"].index("--json-schema") + 1])
+    assert schema["properties"]["tool_calls"]["items"]["properties"]["tool_name"]["enum"] == \
+        ["search_projects", "list_projects"]
+    prompt = calls[0]["input"]
+    assert "### search_projects" in prompt and "Semantic search." in prompt and '"query"' in prompt
+    assert "## User\nHello\nworld" in prompt
+    assert reply.meta["usage"]["prompt_tokens"] == 4272
+
+
+def test_answer_reply(scripted_run):
+    scripted_run({"tool_calls": [], "answer": "Bonjour [1]"})
+    reply = ClaudeCliChatGenerator().run(messages=MESSAGES, tools=[SEARCH])["replies"][0]
+    assert reply.text == "Bonjour [1]" and not reply.tool_calls
+
+
+def test_transcript_includes_tool_calls_and_results(scripted_run):
+    call = ToolCall(tool_name="search_projects", arguments={"query": "x"}, id="c1")
+    messages = [ChatMessage.from_system("Sys."), ChatMessage.from_user("Q"),
+                ChatMessage.from_assistant(tool_calls=[call]), ChatMessage.from_tool("R1 text", origin=call),
+                ChatMessage.from_assistant("Previous answer")]
+    calls = scripted_run({"tool_calls": [], "answer": "ok"})
+    ClaudeCliChatGenerator().run(messages=messages, tools=[SEARCH])
+    prompt = calls[0]["input"]
+    assert '## Assistant (tool calls)\n- search_projects {"query": "x"}' in prompt
+    assert "## Tool result (search_projects)\nR1 text" in prompt
+    assert "## Assistant\nPrevious answer" in prompt
+    assert prompt.index("## User\nQ") < prompt.index("## Tool result")
+
+
+def test_invalid_reply_is_retried_once_then_fails(scripted_run):
+    calls = scripted_run({"tool_calls": [], "answer": ""}, {"tool_calls": [], "answer": "fine"})
+    assert ClaudeCliChatGenerator().run(messages=MESSAGES, tools=[SEARCH])["replies"][0].text == "fine"
+    assert len(calls) == 2
+    scripted_run({"tool_calls": [{"tool_name": "unknown", "arguments": {}}], "answer": ""},
+                 {"tool_calls": [], "answer": "  "})
+    with pytest.raises(LLMCallError, match="neither"):
+        ClaudeCliChatGenerator().run(messages=MESSAGES, tools=[SEARCH])
+
+
+def test_without_tools_behaviour_is_unchanged(scripted_run):
+    calls = scripted_run({"summary": "S"})
+    ClaudeCliChatGenerator(json_schema={"type": "object"}).run(messages=MESSAGES)
+    assert calls[0]["input"] == "Hello\nworld"
+    assert calls[0]["cmd"][calls[0]["cmd"].index("--json-schema") + 1] == '{"type":"object"}'
