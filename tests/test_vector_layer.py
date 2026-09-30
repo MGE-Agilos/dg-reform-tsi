@@ -1,8 +1,16 @@
+import shutil
+
+import pytest
+from haystack import Document
 from haystack.dataclasses import ByteStream
 
 from conftest import FIXTURES
 from tsi_agent import runlog
+from tsi_agent.chunking import CHUNKER_VERSION
 from tsi_agent.components.chunker import ProjectChunker
+from tsi_agent.components.file_loader import ProjectFileLoader
+from tsi_agent.vector_state import (FileState, VectorLayerError, VectorState, load_state, load_store, new_store,
+                                    save_state, save_store, store_path)
 
 
 def stream(name: str, rel: str) -> ByteStream:
@@ -21,3 +29,80 @@ def test_chunker_chunks_valid_files_and_skips_invalid(tmp_path):
 def test_chunker_accepts_deepset_file_name_meta():
     src = ByteStream(data=(FIXTURES / "vec_thin.md").read_bytes(), meta={"file_name": "thin.md"})
     assert ProjectChunker().run(sources=[src])["documents"][0].meta["source_file"] == "thin.md"
+
+
+def make_output(tmp_path):
+    out = tmp_path / "output"
+    (out / "projects").mkdir(parents=True)
+    (out / "programme").mkdir()
+    shutil.copy(FIXTURES / "vec_thin.md", out / "projects" / "thin.md")
+    shutil.copy(FIXTURES / "vec_detail_sections.md", out / "projects" / "detail.md")
+    shutil.copy(FIXTURES / "vec_programme.md", out / "programme" / "country-croatia.md")
+    return out
+
+
+def loader(out, embedder_id="mock:m"):
+    return ProjectFileLoader(output_dir=str(out), vectors_dir=str(out / "vectors"), embedder_id=embedder_id)
+
+
+def test_state_and_store_round_trip(tmp_path):
+    state = VectorState(embedder_id="e", chunker_version=1, files={"a.md": FileState(hash="h", chunk_ids=["a#0"])})
+    save_state(tmp_path, state)
+    assert load_state(tmp_path) == state
+    store = new_store()
+    store.write_documents([Document(id="a#0", content="x", embedding=[0.1, 0.2], meta={"k": 1})])
+    save_store(store, store_path(tmp_path))
+    loaded = load_store(store_path(tmp_path))
+    assert [d.id for d in loaded.filter_documents()] == ["a#0"]
+    assert loaded.filter_documents()[0].embedding == [0.1, 0.2]
+
+
+def test_unreadable_store_is_a_clear_error(tmp_path):
+    store_path(tmp_path).write_text("{not json", encoding="utf-8")
+    with pytest.raises(VectorLayerError, match="--full"):
+        load_store(store_path(tmp_path))
+
+
+def test_loader_first_run_is_full(tmp_path):
+    out = make_output(tmp_path)
+    res = loader(out).run()
+    assert res["full"] is True and res["removed"] == []
+    assert sorted(s.meta["file_path"] for s in res["sources"]) == [
+        "programme/country-croatia.md", "projects/detail.md", "projects/thin.md"]
+    assert all(s.meta["content_hash"].startswith("sha256:") for s in res["sources"])
+
+
+def indexed_state(out, embedder_id="mock:m", version=CHUNKER_VERSION):
+    """Etat tel qu'apres un run complet : tous les fichiers actuels indexes."""
+    files = {}
+    for s in loader(out).run(full=True)["sources"]:
+        files[s.meta["file_path"]] = FileState(hash=s.meta["content_hash"], chunk_ids=[s.meta["file_path"] + "#0"])
+    vdir = out / "vectors"
+    save_state(vdir, VectorState(embedder_id=embedder_id, chunker_version=version, files=files))
+    save_store(new_store(), store_path(vdir))
+
+
+def test_loader_incremental_new_changed_removed(tmp_path):
+    out = make_output(tmp_path)
+    indexed_state(out)
+    assert loader(out).run() == {"sources": [], "removed": [], "full": False}
+    (out / "projects" / "detail.md").write_bytes((out / "projects" / "detail.md").read_bytes() + b"\nmore\n")
+    shutil.copy(FIXTURES / "vec_detail_page_text.md", out / "projects" / "new.md")
+    (out / "programme" / "country-croatia.md").unlink()
+    with runlog.open_run(tmp_path / "logs", "r1") as run:
+        res = loader(out).run()
+    assert res["full"] is False
+    assert sorted(s.meta["file_path"] for s in res["sources"]) == ["projects/detail.md", "projects/new.md"]
+    assert res["removed"] == ["programme/country-croatia.md"]
+    counts = run.final_summary["counts"]
+    assert counts["load:new"] == 1 and counts["load:changed"] == 1 and counts["load:removed"] == 1
+
+
+@pytest.mark.parametrize("change", ["embedder", "chunker", "store", "flag"])
+def test_loader_forces_full(tmp_path, change):
+    out = make_output(tmp_path)
+    indexed_state(out, version=CHUNKER_VERSION - 1 if change == "chunker" else CHUNKER_VERSION)
+    if change == "store":
+        store_path(out / "vectors").unlink()
+    res = loader(out, embedder_id="other:m" if change == "embedder" else "mock:m").run(full=change == "flag")
+    assert res["full"] is True and len(res["sources"]) == 3 and res["removed"] == []

@@ -1,0 +1,71 @@
+# src/tsi_agent/components/file_loader.py
+"""Composant Haystack local : fichiers extraits nouveaux, modifies ou supprimes depuis le dernier index.
+
+Dans deepset, ce role est tenu par l'espace de travail (les fichiers ajoutes ou modifies sont indexes).
+"""
+
+import hashlib
+from pathlib import Path
+from typing import Any
+
+from haystack import component
+from haystack.dataclasses import ByteStream
+
+from tsi_agent import runlog
+from tsi_agent.chunking import CHUNKER_VERSION
+from tsi_agent.vector_state import load_state, store_path
+
+FOLDERS = ("projects", "programme")
+
+
+@component
+class ProjectFileLoader:
+    def __init__(self, output_dir: str = "output", vectors_dir: str = "output/vectors", embedder_id: str = "",
+                 chunker_version: int = CHUNKER_VERSION):
+        self.output_dir = output_dir
+        self.vectors_dir = vectors_dir
+        self.embedder_id = embedder_id
+        self.chunker_version = chunker_version
+
+    def _full_reason(self, full: bool) -> str | None:
+        state = load_state(self.vectors_dir)
+        if full:
+            return "requested"
+        if state is None:
+            return "no_state"
+        if not store_path(self.vectors_dir).exists():
+            return "no_store"
+        if state.embedder_id != self.embedder_id:
+            return "embedder_changed"
+        if state.chunker_version != self.chunker_version:
+            return "chunker_changed"
+        return None
+
+    @component.output_types(sources=list[ByteStream], removed=list[str], full=bool)
+    def run(self, full: bool = False) -> dict[str, Any]:
+        reason = self._full_reason(full)
+        if reason:
+            runlog.event("ProjectFileLoader", "full", None, reason)
+        state = load_state(self.vectors_dir)
+        known = {} if reason or state is None else state.files
+        root = Path(self.output_dir)
+        sources: list[ByteStream] = []
+        seen: set[str] = set()
+        unchanged = 0
+        for folder in FOLDERS:
+            for path in sorted((root / folder).glob("*.md")):
+                rel = path.relative_to(root).as_posix()
+                seen.add(rel)
+                data = path.read_bytes()
+                digest = "sha256:" + hashlib.sha256(data).hexdigest()
+                old = known.get(rel)
+                if old is not None and old.hash == digest:
+                    unchanged += 1
+                    continue
+                runlog.event("ProjectFileLoader", "load", rel, "changed" if old else "new")
+                sources.append(ByteStream(data=data, meta={"file_path": rel, "content_hash": digest}))
+        removed = sorted(set(known) - seen)
+        for rel in removed:
+            runlog.event("ProjectFileLoader", "load", rel, "removed")
+        runlog.event("ProjectFileLoader", "load", None, "unchanged", files=unchanged)
+        return {"sources": sources, "removed": removed, "full": reason is not None}
