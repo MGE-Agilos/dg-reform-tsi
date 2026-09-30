@@ -71,13 +71,16 @@ dans l'outil**, parce qu'un filtre sur un champ liste ne se comporte pas pareil 
   - section, `ai_generated`, URL source, score ;
   - le texte du morceau, tronqué à 1 200 caractères.
 - Ne renvoie que des morceaux de `doc_type == "project"`, sauf si `include_programme=true` (fiches pays et
-  domaines politiques, utiles pour « combien de projets la Croatie a-t-elle reçus selon la Commission »).
+  domaines politiques, utiles pour « combien de projets la Croatie a-t-elle reçus selon la Commission »). Les
+  fiches pays n'ont pas de champ `countries` en meta : le filtre pays les reconnaît par leur `doc_id`
+  (`country-<slug>`, par exemple `country-croatia` pour `HR`) ; les pages domaine politique ne correspondent
+  jamais à un filtre pays.
 
-### 3.2 `list_projects(filtres…, query_text?, limit=50)` — `ProjectLister`
+### 3.2 `list_projects(filtres…, title_contains?, limit=20)` — `ProjectLister`
 
 - Parcourt les métadonnées de tous les morceaux `doc_type == "project"` correspondant aux filtres portables,
   applique le filtre pays, et **dédoublonne par `doc_id`**.
-- `query_text` optionnel : filtre simple sans casse sur le titre (« energy », « tax »).
+- `title_contains` optionnel : filtre simple sans casse sur le titre (« energy », « tax »).
 - Renvoie le **nombre total** de projets correspondants, la répartition par programme et par année, puis au plus
   `limit` projets triés par année décroissante. Chaque projet est donné avec son `doc_id`, son titre, ses pays, son
   programme, son année, `detail_page` et son URL.

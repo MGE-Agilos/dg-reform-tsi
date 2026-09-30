@@ -14,10 +14,12 @@ from haystack.core.serialization import component_to_dict, import_class_by_name
 from haystack.utils import deserialize_component_inplace
 
 from tsi_agent import runlog
+from tsi_agent.countries import COUNTRIES, slug_from_iso
 
 SEARCH_CANDIDATES_WITH_COUNTRY = 100
 SNIPPET_CHARS = 1200
 READER_MAX_CHARS = 8000
+LISTER_DEFAULT_LIMIT = 20
 
 
 def build_filters(year_from: int | None = None, year_to: int | None = None, programme: str | None = None,
@@ -43,6 +45,10 @@ def _in_countries(doc: Document, countries: list[str] | None) -> bool:
     if not countries:
         return True
     wanted = {c.strip().upper() for c in countries}
+    doc_id = doc.meta.get("doc_id") or ""
+    if doc.meta.get("doc_type") == "programme" and doc_id.startswith("country-"):
+        # Fiche pays : pas de champ "countries" en meta, le pays vient de son doc_id ("country-<slug>").
+        return any(doc_id == f"country-{slug_from_iso(iso)}" for iso in wanted if iso in COUNTRIES)
     return bool(wanted & set(doc.meta.get("countries") or []))
 
 
@@ -113,10 +119,14 @@ class ProjectSearch:
         for i, doc in enumerate(docs, start=start + 1):
             ai = bool(doc.meta.get("ai_generated"))
             section = doc.meta.get("section")
-            sources.append(_source(i, doc, section, ai))
+            score = round(doc.score, 3) if doc.score is not None else None
+            source = _source(i, doc, section, ai)
+            source["score"] = score
+            sources.append(source)
             flag = " [AI-generated summary]" if ai else ""
-            blocks.append(f"[{i}] {_label(doc.meta)} — section: {section}{flag}\nURL: {doc.meta.get('source_url')}\n"
-                          f"{(doc.content or '')[:SNIPPET_CHARS]}")
+            score_txt = f" — score {score}" if score is not None else ""
+            blocks.append(f"[{i}] {_label(doc.meta)} — section: {section}{flag}{score_txt}\n"
+                          f"URL: {doc.meta.get('source_url')}\n{(doc.content or '')[:SNIPPET_CHARS]}")
         result = "\n\n".join(blocks) if blocks else "No matching passages found."
         runlog.event("ProjectSearch", "tool_call", "search_projects", query=query, countries=countries,
                      filters=filters, results=len(docs), duration_ms=round((time.monotonic() - t0) * 1000))
@@ -139,7 +149,7 @@ class ProjectLister:
     @component.output_types(result=str)
     def run(self, countries: list[str] | None = None, year_from: int | None = None, year_to: int | None = None,
             programme: str | None = None, policy_area: str | None = None, detail_only: bool = False,
-            title_contains: str | None = None, limit: int = 50) -> dict[str, Any]:
+            title_contains: str | None = None, limit: int = LISTER_DEFAULT_LIMIT) -> dict[str, Any]:
         """Count and list distinct projects matching filters, over the whole corpus. Use it for any number or list.
 
         :param countries: ISO country codes (e.g. ["GR"]); a project matches if it involves any of them.

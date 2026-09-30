@@ -74,7 +74,7 @@ def test_search_filters_countries_in_python_and_numbers_sources(store):
     assert [s["ref"] for s in out["sources"]] == list(range(4, 4 + len(out["sources"])))
     assert out["result"].startswith("[4] ")
     first = out["sources"][0]
-    assert set(first) >= {"ref", "doc_id", "title", "url", "section", "ai_generated"}
+    assert set(first) >= {"ref", "doc_id", "title", "url", "section", "ai_generated", "score"}
 
 
 def test_search_portable_filters_and_programme_docs(store):
@@ -83,6 +83,14 @@ def test_search_portable_filters_and_programme_docs(store):
     assert "country-croatia" not in {s["doc_id"] for s in search_tool(store).run(query="x")["sources"]}
     assert "country-croatia" in {s["doc_id"] for s in
                                  search_tool(store).run(query="x", include_programme=True)["sources"]}
+
+
+def test_search_matches_country_factsheet_by_id(store):
+    # country-croatia n'a pas de champ "countries" en meta : le pays vient de son doc_id.
+    out = search_tool(store).run(query="x", countries=["HR"], include_programme=True)
+    assert "country-croatia" in {s["doc_id"] for s in out["sources"]}
+    out_fr = search_tool(store).run(query="x", countries=["FR"], include_programme=True)
+    assert "country-croatia" not in {s["doc_id"] for s in out_fr["sources"]}
 
 
 def test_search_top_k_and_empty(store):
