@@ -25,6 +25,10 @@ class Settings(BaseModel):
     chat_model: str = "sonnet"
     chat_max_steps: int = 6
     chat_port: int = 8765
+    # Etage livrables (pipeline `deliverables`).
+    deliverables_dir: str = "output/deliverables"
+    deliverables_max_words: int = 15000
+    deliverables_max_pdf_mb: float = 50
 
 
 def load_settings(path: str | Path = "config/settings.yaml") -> Settings:

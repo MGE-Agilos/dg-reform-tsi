@@ -9,9 +9,10 @@ from pathlib import Path
 
 from tsi_agent.config import load_settings, load_sources
 from tsi_agent.countries import COUNTRIES
+from tsi_agent.deliverables_pipeline import build_deliverables_pipeline
 from tsi_agent.index_pipeline import build_index_pipeline
 from tsi_agent.pipeline import build_pipeline
-from tsi_agent.runner import run_extraction, run_index
+from tsi_agent.runner import run_deliverables, run_extraction, run_index
 
 
 def _countries(value: str) -> list[str]:
@@ -37,6 +38,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--model")
     index = sub.add_parser("index", help="vectoriser les fichiers extraits nouveaux ou modifiés (couche RAG)")
     index.add_argument("--full", action="store_true", help="revectoriser tous les fichiers")
+    deliv = sub.add_parser("deliverables", help="livrables des projets (publications PDF) : texte et résumé IA")
+    deliv.add_argument("--full", action="store_true", help="retraiter toutes les publications")
+    deliv.add_argument("--limit", type=int, help="nombre maximal de publications envoyées au LLM")
+    deliv.add_argument("--chunk-size", type=int)
+    deliv.add_argument("--model")
     chat = sub.add_parser("chat", help="chatbot local sur la couche vectorisée (page web)")
     chat.add_argument("--port", type=int, help="port local (défaut : chat_port des réglages)")
     chat.add_argument("--no-browser", action="store_true", help="ne pas ouvrir le navigateur")
@@ -44,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
     export.add_argument("--chat", action="store_true", help="exporter le pipeline du chatbot")
+    export.add_argument("--deliverables", action="store_true", help="exporter le pipeline des livrables")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -55,7 +62,9 @@ def main(argv: list[str] | None = None) -> int:
     sources = load_sources(args.sources)
     if args.command == "export-yaml":
         try:
-            if args.chat:
+            if args.deliverables:
+                pipe = build_deliverables_pipeline(settings)
+            elif args.chat:
                 from tsi_agent.chat import pipeline as chat_pipeline
                 pipe = chat_pipeline.build_chat_pipeline(settings, sources.get("policy_areas") or [])
             elif args.index:
@@ -86,6 +95,16 @@ def main(argv: list[str] | None = None) -> int:
             webbrowser.open(url)
         app.run(host="127.0.0.1", port=port, threaded=True)
         return 0
+    if args.command == "deliverables":
+        try:
+            summary = run_deliverables(settings, full=args.full, limit=args.limit, chunk_size=args.chunk_size,
+                                       model=args.model)
+        except Exception as exc:
+            print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return 2
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        return 1 if summary.get("quota_exceeded") else 0
     if args.command == "index":
         try:
             summary = run_index(settings, full=args.full)

@@ -7,11 +7,15 @@ from tsi_agent import runlog
 from tsi_agent.components.claude_cli import LLMQuotaExceeded
 from tsi_agent.components.deliverables import (DeliverableSummarizer, DeliverableTextExtractor, DeliverableWriter,
                                                PublicationDiscoverer, PublicationFetcher)
+from tsi_agent.config import Settings
+from tsi_agent.deliverables_pipeline import build_deliverables_pipeline
 from tsi_agent.deliverables_state import DeliverableEntry, DeliverableStore
 from tsi_agent.models import (DeliverableContent, DeliverableFileText, DeliverableRecord, DeliverableText,
                               Publication, PublicationFile)
+from tsi_agent.pipeline import load_pipeline
 from tsi_agent.render import (DELIVERABLES_HEADING, deliverables_section, parse_front_matter, render,
                               replace_deliverables_section, with_deliverables_count)
+from tsi_agent.runner import run_deliverables
 from tsi_agent.store import LocalProjectStore, StoreEntry
 
 SITE = "https://reforms-investments.ec.europa.eu"
@@ -243,3 +247,54 @@ def test_writer_moves_section_when_project_list_changes(tmp_path):
     assert w.run(records=[], unchanged=[moved])["stats"]["projects_updated"] == 2
     assert "## Deliverables" not in store.read_project_file("slo")
     assert "## Deliverables (AI-generated summary)" in store.read_project_file("other")
+
+
+def pipeline_settings(tmp_path):
+    return Settings(output_dir=str(tmp_path), deliverables_dir=str(tmp_path / "deliverables"),
+                    logs_dir=str(tmp_path / "logs"), chunk_size=1)
+
+
+def wired_pipeline(settings, gen, tmp_path):
+    p = build_deliverables_pipeline(settings, chat_generator=gen)
+    store = project_store(tmp_path)
+    project_file(store, "slo")
+    fake = FakeFetcher(pages={SLO_PUB: fixture_bytes("pub_one_file.html"),
+                              PDF_URL: fixture_bytes("deliverable_small.pdf")},
+                       cached_pages={SLO_DETAIL: fixture_bytes("detail_with_publication.html")})
+    for name in ("discoverer", "publications", "texts"):
+        p.get_component(name)._fetcher = fake
+    p.get_component("discoverer")._store = store
+    p.get_component("writer")._store = store
+    return p, store
+
+
+def test_run_deliverables_end_to_end_then_incremental(tmp_path):
+    s = pipeline_settings(tmp_path)
+    gen = FakeChatGenerator(replies=[CONTENT])
+    built = {}
+
+    def factory(settings, **kw):
+        built["p"], built["store"] = wired_pipeline(settings, gen, tmp_path)
+        return built["p"]
+    summary = run_deliverables(s, run_id="d1", pipeline_factory=factory)
+    assert summary["status"] == "ok" and summary["quota_exceeded"] is False
+    assert summary["written"]["publications"] == 1 and summary["remaining_publications"] == 0
+    assert "## Deliverables (AI-generated summary)" in built["store"].read_project_file("slo")
+    again = run_deliverables(s, run_id="d2", pipeline_factory=factory)
+    assert again["written"]["publications"] == 0 and len(gen.calls) == 1
+
+
+def test_run_deliverables_stops_on_quota(tmp_path):
+    s = pipeline_settings(tmp_path)
+    gen = FakeChatGenerator(error=LLMQuotaExceeded("usage limit reached"))
+    summary = run_deliverables(s, run_id="q1", pipeline_factory=lambda settings, **kw:
+                               wired_pipeline(settings, gen, tmp_path)[0])
+    assert summary["quota_exceeded"] is True
+
+
+def test_deliverables_pipeline_yaml_round_trip(tmp_path):
+    text = build_deliverables_pipeline(pipeline_settings(tmp_path)).dumps()
+    for name in ("PublicationDiscoverer", "PublicationFetcher", "DeliverableTextExtractor",
+                 "DeliverableSummarizer", "DeliverableWriter", "ClaudeCliChatGenerator"):
+        assert name in text
+    assert load_pipeline(text).get_component("summarizer").max_words == 15000
