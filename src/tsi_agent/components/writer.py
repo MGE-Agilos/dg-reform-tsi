@@ -87,7 +87,9 @@ class MarkdownProjectWriter:
         first_seen = self._first_seen(ref, today)
         fm = front_matter(ref, content_hash=None, first_seen=first_seen, last_updated=today,
                           run_id=run_id, model="none")
-        file = store.write_project_file(ref.project_id, render(fm, thin_body(ref)))
+        entries = self._deliverable_entries(ref.project_id)
+        body = replace_deliverables_section(thin_body(ref), deliverables_section(entries))
+        file = store.write_project_file(ref.project_id, render(with_deliverables_count(fm, len(entries)), body))
         store.put(self._entry(ref, file, first_seen, today, None, ref.listing_hash()), save=False)
         runlog.event(NAME, "write", ref.project_id, "thin", file=file)
         return file
