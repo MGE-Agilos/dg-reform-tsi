@@ -45,6 +45,12 @@ class DeliverableStore:
     def put(self, entry: DeliverableEntry) -> None:
         self._entries[entry.publication_id] = entry
 
+    def remove(self, publication_id: str) -> None:
+        self._entries.pop(publication_id, None)
+
+    def all(self) -> dict[str, DeliverableEntry]:
+        return dict(self._entries)
+
     def for_project(self, project_id: str) -> list[DeliverableEntry]:
         """Publications d'un projet, la plus recente d'abord."""
         found = [e for e in self._entries.values() if project_id in e.project_ids]

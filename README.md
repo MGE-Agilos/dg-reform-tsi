@@ -114,10 +114,19 @@ de publication peut lister une traduction nationale d'un document à côté de s
 version anglaise est retenue si elle existe, sinon la version principale de la page.
 
 Le texte envoyé au LLM pour le résumé est limité au début des documents (`deliverables_max_words`, 15 000 mots
-par défaut) ; au-delà, le texte est tronqué et le prompt le signale. Comme pour l'extraction, aucune clé API
-n'est nécessaire en local : le résumé passe par le CLI `claude` de la souscription. Les PDF ne passent jamais
-par le cache HTTP (ils ne changent pas d'URL quand on les retélécharge, et un cache de plusieurs centaines de
-PDF n'apporterait rien) ; seules les pages HTML (détail, publication) sont mises en cache.
+par défaut) ; au-delà, le texte est tronqué et le prompt le signale. Ces prompts étant longs, le délai d'appel
+au CLI `claude` a son propre réglage, plus large que celui de l'extraction (`deliverables_llm_timeout_s`,
+600 s par défaut). Comme pour l'extraction, aucune clé API n'est nécessaire en local : le résumé passe par le
+CLI `claude` de la souscription. Les PDF ne passent jamais par le cache HTTP (ils ne changent pas d'URL quand
+on les retélécharge, et un cache de plusieurs centaines de PDF n'apporterait rien) ; seules les pages HTML
+(détail, publication) sont mises en cache.
+
+Une publication qui n'est plus liée depuis aucune page détail (document retiré du site) est nettoyée : son
+entrée disparaît de `output/state/deliverables.json`, et sa sous-section disparaît du fichier des projets qui
+la citaient (le compteur `deliverables` suit). Son texte intégral reste dans `output/deliverables/` (fichier
+orphelin, sans effet). Ce nettoyage ne se déclenche que lorsque la découverte a pu lire toutes les pages détail
+en cache pendant le run ; s'il en manque une (page pas encore récupérée par `run`), rien n'est supprimé par
+prudence, et le nettoyage sera retenté au run suivant.
 
 Premier run complet : de l'ordre de 500 publications à récupérer et résumer, soit environ 45 minutes dominées
 par le débit limité du site (voir le throttling adaptatif plus haut) et autant d'appels LLM que de

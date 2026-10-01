@@ -58,7 +58,7 @@ class PublicationDiscoverer(_Http):
         self._fetcher = None
         self._store: ProjectStore | None = None
 
-    @component.output_types(publications=list[Publication])
+    @component.output_types(publications=list[Publication], complete=bool)
     def run(self) -> dict[str, Any]:
         store = self._store if self._store is not None else shared_store(self.output_dir)
         fetcher = self._get_fetcher()
@@ -84,7 +84,7 @@ class PublicationDiscoverer(_Http):
         publications = list(by_url.values())
         runlog.event("PublicationDiscoverer", "discover", None, publications=len(publications),
                      projects_with_publications=projects, missing_pages=len(missing))
-        return {"publications": publications}
+        return {"publications": publications, "complete": not missing}
 
 
 @component
@@ -380,7 +380,8 @@ class DeliverableWriter:
         self._store: ProjectStore | None = None
 
     @component.output_types(stats=dict[str, int])
-    def run(self, records: list[DeliverableRecord], unchanged: list[Publication] | None = None) -> dict[str, Any]:
+    def run(self, records: list[DeliverableRecord], unchanged: list[Publication] | None = None,
+            discovered: list[Publication] | None = None, complete: bool = False) -> dict[str, Any]:
         state = DeliverableStore(self.output_dir)
         today = date.today().isoformat()
         affected: set[str] = set()
@@ -400,6 +401,15 @@ class DeliverableWriter:
             if old is not None and sorted(old.project_ids) != sorted(pub.project_ids):
                 affected |= set(old.project_ids) | set(pub.project_ids)
                 state.put(old.model_copy(update={"project_ids": list(pub.project_ids)}))
+        orphans_removed = 0
+        if complete and discovered is not None:
+            discovered_ids = {p.publication_id for p in discovered}
+            for pid, old in state.all().items():
+                if pid not in discovered_ids:
+                    affected |= set(old.project_ids)
+                    state.remove(pid)
+                    orphans_removed += 1
+                    runlog.event("DeliverableWriter", "write", pid, "orphan_removed")
         state.save()
         store = self._store if self._store is not None else shared_store(self.output_dir)
         updated = 0
@@ -415,4 +425,5 @@ class DeliverableWriter:
                 store.write_project_file(project_id, new)
                 updated += 1
                 runlog.event("DeliverableWriter", "write", project_id, "project_section", deliverables=len(entries))
-        return {"stats": {"publications": len(records), "projects_updated": updated}}
+        return {"stats": {"publications": len(records), "projects_updated": updated,
+                          "orphans_removed": orphans_removed}}

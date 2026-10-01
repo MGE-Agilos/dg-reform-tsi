@@ -8,7 +8,7 @@ from tsi_agent.components.claude_cli import LLMQuotaExceeded
 from tsi_agent.components.deliverables import (DeliverableSummarizer, DeliverableTextExtractor, DeliverableWriter,
                                                PublicationDiscoverer, PublicationFetcher)
 from tsi_agent.config import Settings
-from tsi_agent.deliverables_pipeline import build_deliverables_pipeline
+from tsi_agent.deliverables_pipeline import build_deliverables_pipeline, default_deliverables_generator
 from tsi_agent.deliverables_state import DeliverableEntry, DeliverableStore
 from tsi_agent.models import (DeliverableContent, DeliverableFileText, DeliverableRecord, DeliverableText,
                               Publication, PublicationFile)
@@ -93,7 +93,8 @@ def test_discoverer_reads_detail_pages_from_cache(tmp_path):
     d._fetcher = FakeFetcher(cached_pages={SLO_DETAIL: fixture_bytes("detail_with_publication.html"),
                                            HEMS_DETAIL: fixture_bytes("detail_hems_croatia.html")})
     with runlog.open_run(tmp_path / "logs", "r1") as run:
-        pubs = d.run()["publications"]
+        out = d.run()
+        pubs = out["publications"]
     assert {p.url: p.project_ids for p in pubs} == {
         SLO_PUB: ["slo"],
         f"{SITE}/publications-0/establishment-helicopter-emergency-medical-services-croatia_en": ["hems"]}
@@ -101,6 +102,18 @@ def test_discoverer_reads_detail_pages_from_cache(tmp_path):
                                       "establishment-helicopter-emergency-medical-services-croatia"}
     assert d._fetcher.calls == []                       # aucune requete reseau
     assert any("not in the HTTP cache" in a for a in run.final_summary["alerts"])
+    assert out["complete"] is False                      # la page detail de "gone" n'est pas en cache
+
+
+def test_discoverer_complete_when_no_detail_page_is_missing(tmp_path):
+    d = PublicationDiscoverer(output_dir=str(tmp_path))
+    store = LocalProjectStore(tmp_path)
+    store.put(StoreEntry(project_id="slo", file="projects/slo.md", detail_page=True, source_urls=[SLO_DETAIL],
+                         first_seen="d", last_updated="d"), save=False)
+    store.flush()
+    d._store = store
+    d._fetcher = FakeFetcher(cached_pages={SLO_DETAIL: fixture_bytes("detail_with_publication.html")})
+    assert d.run()["complete"] is True
 
 
 def fetcher_component(tmp_path, pages):
@@ -224,7 +237,7 @@ def test_writer_updates_state_and_project_files(tmp_path):
     w = DeliverableWriter(output_dir=str(tmp_path))
     w._store = store
     stats = w.run(records=[record_for()])["stats"]
-    assert stats == {"publications": 1, "projects_updated": 1}
+    assert stats == {"publications": 1, "projects_updated": 1, "orphans_removed": 0}
     fm, body = parse_front_matter(store.read_project_file("slo"))
     assert fm["deliverables"] == 1 and list(fm).index("deliverables") == list(fm).index("results") + 1
     assert body.index("## Context") < body.index("## Deliverables (AI-generated summary)") < body.index("## Sources")
@@ -247,6 +260,31 @@ def test_writer_moves_section_when_project_list_changes(tmp_path):
     assert w.run(records=[], unchanged=[moved])["stats"]["projects_updated"] == 2
     assert "## Deliverables" not in store.read_project_file("slo")
     assert "## Deliverables (AI-generated summary)" in store.read_project_file("other")
+
+
+def test_writer_removes_orphan_publications_when_discovery_is_complete(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    project_file(store, "slo")
+    w = DeliverableWriter(output_dir=str(tmp_path))
+    w._store = store
+    w.run(records=[record_for()])
+    out = w.run(records=[], discovered=[], complete=True)   # plus aucun lien vers cette publication
+    assert out["stats"]["orphans_removed"] == 1
+    assert DeliverableStore(tmp_path).get("developing-ehealth-healthier-society-slovenia") is None
+    fm, body = parse_front_matter(store.read_project_file("slo"))
+    assert "deliverables" not in fm and "## Deliverables" not in body
+
+
+def test_writer_keeps_publications_when_discovery_is_incomplete(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    project_file(store, "slo")
+    w = DeliverableWriter(output_dir=str(tmp_path))
+    w._store = store
+    w.run(records=[record_for()])
+    out = w.run(records=[], discovered=[], complete=False)  # une page detail manquait au cache : pas de nettoyage
+    assert out["stats"]["orphans_removed"] == 0
+    assert DeliverableStore(tmp_path).get("developing-ehealth-healthier-society-slovenia") is not None
+    assert "## Deliverables (AI-generated summary)" in store.read_project_file("slo")
 
 
 def pipeline_settings(tmp_path):
@@ -298,3 +336,7 @@ def test_deliverables_pipeline_yaml_round_trip(tmp_path):
                  "DeliverableSummarizer", "DeliverableWriter", "ClaudeCliChatGenerator"):
         assert name in text
     assert load_pipeline(text).get_component("summarizer").max_words == 15000
+
+
+def test_default_deliverables_generator_uses_its_own_timeout():
+    assert default_deliverables_generator(Settings()).timeout_s == 600

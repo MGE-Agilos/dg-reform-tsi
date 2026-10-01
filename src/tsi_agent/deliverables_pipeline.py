@@ -12,7 +12,7 @@ from tsi_agent.models import DeliverableContent
 
 
 def default_deliverables_generator(settings: Settings, model: str | None = None) -> Any:
-    return ClaudeCliChatGenerator(model=model or settings.model, timeout_s=settings.llm_timeout_s,
+    return ClaudeCliChatGenerator(model=model or settings.model, timeout_s=settings.deliverables_llm_timeout_s,
                                   json_schema=DeliverableContent.model_json_schema())
 
 
@@ -35,4 +35,6 @@ def build_deliverables_pipeline(settings: Settings, *, chat_generator: Any = Non
     p.connect("texts.texts", "summarizer.texts")
     p.connect("summarizer.records", "writer.records")
     p.connect("publications.unchanged", "writer.unchanged")
+    p.connect("discoverer.publications", "writer.discovered")
+    p.connect("discoverer.complete", "writer.complete")
     return p
