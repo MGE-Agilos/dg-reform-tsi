@@ -95,3 +95,26 @@ def test_export_chat_yaml(tmp_path, monkeypatch):
     monkeypatch.setattr("tsi_agent.chat.pipeline.build_chat_pipeline", lambda settings, areas: Pipeline())
     out = tmp_path / "chat.yaml"
     assert cli.main(["export-yaml", "--chat", str(out)]) == 0 and out.exists()
+
+
+def test_deliverables_command_exit_codes(monkeypatch, capsys):
+    seen = {}
+
+    def fake(settings, **kw):
+        seen.update(kw)
+        return {"quota_exceeded": False}
+    monkeypatch.setattr(cli, "run_deliverables", fake)
+    assert cli.main(["deliverables", "--full", "--limit", "3"]) == 0 and seen["full"] and seen["limit"] == 3
+    monkeypatch.setattr(cli, "run_deliverables", lambda *a, **k: {"quota_exceeded": True})
+    assert cli.main(["deliverables"]) == 1
+
+    def boom(*a, **k):
+        raise RuntimeError("kaput")
+    monkeypatch.setattr(cli, "run_deliverables", boom)
+    assert cli.main(["deliverables"]) == 2 and "kaput" in capsys.readouterr().err
+
+
+def test_export_deliverables_yaml(tmp_path):
+    out = tmp_path / "d.yaml"
+    assert cli.main(["export-yaml", "--deliverables", str(out)]) == 0
+    assert "DeliverableSummarizer" in out.read_text(encoding="utf-8")

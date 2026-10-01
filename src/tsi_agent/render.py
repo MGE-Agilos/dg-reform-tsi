@@ -10,6 +10,7 @@ from tsi_agent.ids import slugify
 from tsi_agent.models import ProgrammeDoc, ProjectRecord, ProjectRef
 
 SUMMARY_HEADING = "## Summary (AI-generated)"
+DELIVERABLES_HEADING = "## Deliverables (AI-generated summary)"
 
 
 def source_urls(ref: ProjectRef) -> list[str]:
@@ -104,6 +105,49 @@ def replace_listing_tail(body: str, ref: ProjectRef) -> str:
         return f"{head}\n\n{listing_tail(ref)}"
     head = "\n".join(lines[:cut]).rstrip("\n")
     return f"{head}\n\n{listing_tail(ref)}"
+
+
+def deliverables_section(entries: list[Any]) -> str | None:
+    """Section des livrables d'un projet (entrees DeliverableEntry, la plus recente d'abord) ; None si aucune."""
+    if not entries:
+        return None
+    parts = [DELIVERABLES_HEADING]
+    for e in entries:
+        files = " · ".join(f"[{f.get('document') or f.get('filename')} ({(f.get('language') or '?').upper()}, "
+                           f"{f.get('pages')} p.)]({f.get('url')})" for f in e.files)
+        block = [f"### {e.title}" + (f" ({e.date})" if e.date else ""), f"Files: {files}",
+                 f"Full text: {e.full_text_path}", e.content.summary.strip()]
+        for label, items in (("Key outputs", e.content.key_outputs), ("Results", e.content.results),
+                             ("Key figures", e.content.figures)):
+            if items:
+                block.append(f"{label}:\n" + "\n".join(f"- {item}" for item in items))
+        parts.append("\n\n".join(block))
+    return "\n\n".join(parts)
+
+
+def replace_deliverables_section(body: str, section: str | None) -> str:
+    """Retire la section livrables existante et insere `section` juste avant la partie listing (ou a la fin)."""
+    lines = body.split("\n")
+    if DELIVERABLES_HEADING in lines:
+        start = lines.index(DELIVERABLES_HEADING)
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+        lines = lines[:start] + lines[end:]
+    cut = next((i for i, line in enumerate(lines) if line in _TAIL_HEADINGS), len(lines))
+    head = "\n".join(lines[:cut]).strip("\n")
+    tail = "\n".join(lines[cut:]).strip("\n")
+    return "\n\n".join(p for p in (head, section, tail) if p)
+
+
+def with_deliverables_count(fm: dict[str, Any], count: int) -> dict[str, Any]:
+    """`deliverables: <n>` place juste apres `results` (ordre fixe du front matter) ; cle retiree si n == 0."""
+    out: dict[str, Any] = {}
+    for key, value in fm.items():
+        if key == "deliverables":
+            continue
+        out[key] = value
+        if key == "results" and count:
+            out["deliverables"] = count
+    return out
 
 
 def detail_body(ref: ProjectRef, rec: ProjectRecord) -> str:

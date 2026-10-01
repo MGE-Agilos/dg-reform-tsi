@@ -6,6 +6,7 @@ from haystack import Pipeline
 
 from tsi_agent import runlog
 from tsi_agent.config import Settings
+from tsi_agent.deliverables_pipeline import build_deliverables_pipeline
 from tsi_agent.index_pipeline import build_index_pipeline
 from tsi_agent.pipeline import build_pipeline
 
@@ -64,4 +65,37 @@ def run_index(settings: Settings, *, full: bool = False, embedder: Any = None, r
                            include_outputs_from={"loader", "chunker", "vector_writer"})
         run.extra.update({"mode": "index", "full": out["loader"]["full"],
                           "stats": out["vector_writer"]["stats"], "skipped": out["chunker"]["skipped"]})
+    return run.final_summary
+
+
+def run_deliverables(settings: Settings, *, full: bool = False, limit: int | None = None,
+                     chunk_size: int | None = None, model: str | None = None, run_id: str | None = None,
+                     pipeline_factory: PipelineFactory = build_deliverables_pipeline) -> dict[str, Any]:
+    """Livrables des projets, par lots : chaque lot est ecrit avant le suivant (reprise sur limite de souscription)."""
+    chunk = chunk_size if chunk_size is not None else settings.chunk_size
+    with runlog.open_run(settings.logs_dir, run_id) as run:
+        pipeline = pipeline_factory(settings, model=model)
+        budget = limit
+        chunks = 0
+        quota = False
+        remaining = 0
+        written: dict[str, int] = {}
+        failed: list[str] = []
+        while True:
+            n = chunk if budget is None else min(chunk, budget)
+            out = pipeline.run({"publications": {"full": full, "limit": n}},
+                               include_outputs_from={"publications", "texts", "summarizer", "writer"})
+            chunks += 1
+            sent = len(out["publications"]["to_process"])
+            remaining = out["publications"]["remaining"]
+            for key, value in out["writer"]["stats"].items():
+                written[key] = written.get(key, 0) + value
+            failed += out["publications"]["failed"] + out["texts"]["failed"] + out["summarizer"]["failed"]
+            quota = bool(out["summarizer"]["quota_exceeded"])
+            if budget is not None:
+                budget -= sent
+            if quota or remaining == 0 or sent == 0 or (budget is not None and budget <= 0):
+                break
+        run.extra.update({"mode": "deliverables", "chunks": chunks, "quota_exceeded": quota, "written": written,
+                          "remaining_publications": remaining, "failed": sorted(set(failed))})
     return run.final_summary

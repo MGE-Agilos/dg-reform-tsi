@@ -18,3 +18,9 @@ embedding_batch_size: 32
 chat_model: sonnet
 chat_max_steps: 6     # appels LLM maximum par question
 chat_port: 8765
+
+# Livrables des projets (python -m tsi_agent deliverables)
+deliverables_dir: output/deliverables
+deliverables_max_words: 15000   # debut des documents envoye au LLM pour le resume
+deliverables_max_pdf_mb: 50
+deliverables_llm_timeout_s: 600   # prompts longs, jusqu'a 15 000 mots

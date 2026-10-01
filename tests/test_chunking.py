@@ -5,6 +5,15 @@ from tsi_agent.chunking import (CHUNKER_VERSION, INTRO, SUMMARY, chunk_file, con
                                 split_words)
 
 
+def test_deliverables_section_is_ai_generated():
+    text = read("vec_detail_sections.md").replace(
+        "## Sources", "## Deliverables (AI-generated summary)\n\n### Report (1 May 2025)\n\nDelivered X.\n\n## Sources")
+    docs = chunk_file("projects/x.md", text)
+    deliv = [d for d in docs if d.meta["section"] == "Deliverables (AI-generated summary)"]
+    assert len(deliv) == 1 and deliv[0].meta["ai_generated"] is True and "Delivered X." in deliv[0].content
+    assert CHUNKER_VERSION == 2
+
+
 def read(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
 

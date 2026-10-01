@@ -24,14 +24,19 @@ class FakeFetcher:
     """Remplace PoliteFetcher : `pages` url -> contenu, `redirects` url -> url finale, `default` pour le reste."""
 
     def __init__(self, pages: dict[str, bytes] | None = None, redirects: dict[str, str] | None = None,
-                 default: Callable[[str], bytes | None] | None = None):
+                 default: Callable[[str], bytes | None] | None = None,
+                 cached_pages: dict[str, bytes] | None = None):
         self.pages = pages or {}
         self.redirects = redirects or {}
         self.default = default
+        self.cached_pages = cached_pages or {}
         self.calls: list[str] = []
+        self.uncached_calls: list[str] = []
 
-    def get(self, url: str) -> FetchResult:
+    def get(self, url: str, cache: bool = True) -> FetchResult:
         self.calls.append(url)
+        if not cache:
+            self.uncached_calls.append(url)
         final = self.redirects.get(url, url)
         content = self.pages.get(final)
         if content is None and self.default is not None:
@@ -39,6 +44,9 @@ class FakeFetcher:
         if content is None:
             raise FetchError(url, "HTTP 404", 404)
         return FetchResult(url, final, 200, content, False)
+
+    def cached(self, url: str) -> bytes | None:
+        return self.cached_pages.get(url)
 
 
 CONTENT_JSON = json.dumps({

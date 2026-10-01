@@ -103,3 +103,58 @@ class ProgrammeDoc(BaseModel):
     @property
     def content_hash(self) -> str:
         return sha256_text(self.text)
+
+
+class PublicationFile(BaseModel):
+    document: str  # titre du document sur la page de publication (ex. "Final Report")
+    url: str
+    language: str | None = None  # code ISO 639-1 lu dans l'URL (/document/download/<uuid>_<lang>)
+    filename: str = ""
+    size_label: str = ""  # ex. "(569.01 KB - PDF)"
+
+
+class PublicationParse(BaseModel):
+    title: str
+    date: str | None = None
+    meta: dict[str, str] = Field(default_factory=dict)
+    documents: list[list[PublicationFile]] = Field(default_factory=list)  # par document : version principale d'abord
+
+
+class Publication(BaseModel):
+    publication_id: str
+    url: str
+    project_ids: list[str] = Field(default_factory=list)
+    title: str = ""
+    date: str | None = None
+    meta: dict[str, str] = Field(default_factory=dict)
+    files: list[PublicationFile] = Field(default_factory=list)  # fichiers retenus (anglais en priorite)
+    files_key: str | None = None
+
+
+class DeliverableFileText(BaseModel):
+    file: PublicationFile
+    pages: int
+    words: int
+    text: str
+
+
+class DeliverableText(BaseModel):
+    publication: Publication
+    files: list[DeliverableFileText]
+    full_text_path: str  # relatif a output_dir, ex. "deliverables/<id>.md"
+
+
+class DeliverableContent(BaseModel):
+    # Docstring en ASCII : le schema JSON est passe en argument de ligne de commande.
+    """Content generated from the deliverables (final reports, presentations, factsheets) of a project."""
+
+    summary: str
+    key_outputs: list[str] = Field(default_factory=list)
+    results: list[str] = Field(default_factory=list)
+    figures: list[str] = Field(default_factory=list)
+
+
+class DeliverableRecord(BaseModel):
+    text: DeliverableText
+    content: DeliverableContent
+    model: str

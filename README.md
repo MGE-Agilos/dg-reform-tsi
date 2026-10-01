@@ -37,6 +37,9 @@ Pour l'exécution locale, le CLI `claude` doit être installé et connecté à u
 .venv\Scripts\python -m tsi_agent export-yaml pipeline.yaml
 ```
 
+Ordre recommandé pour un cycle complet : `run` (extraction des projets), puis `deliverables` (livrables des
+projets), puis `index` (couche vectorisée) — chaque étage dépend des fichiers écrits par le précédent.
+
 Un run interrompu (Ctrl-C, limite de souscription) reprend là où il s'était arrêté au run suivant.
 
 `--limit` compte les projets réellement envoyés au LLM : les pages inchangées depuis le dernier run ne l'entament pas.
@@ -74,6 +77,67 @@ en conséquence (`null` si la page n'a pas de section résultats reconnue).
 
 Avec la souscription, `cost_usd` est un **coût équivalent API** (notionnel), calculé par le CLI.
 Il sert à estimer le budget du passage à l'API.
+
+## Livrables des projets
+
+Un second pipeline, `deliverables`, parcourt les pages détail déjà en cache HTTP (celles rafraîchies par le
+dernier `run`), relève leurs liens vers des pages de publication (`/publications-0/...`), télécharge les
+documents qui y sont listés (rapport final, présentation, factsheet…) et en extrait le texte pour produire,
+par publication, un résumé généré par IA inséré dans le fichier du ou des projets concernés.
+
+```powershell
+# Pilote : 3 publications envoyées au LLM au maximum
+.venv\Scripts\python -m tsi_agent deliverables --limit 3
+
+# Run complet incrémental (seules les publications nouvelles ou dont les fichiers ont changé sont retraitées)
+.venv\Scripts\python -m tsi_agent deliverables
+
+# Tout retraiter, même les publications inchangées
+.venv\Scripts\python -m tsi_agent deliverables --full
+
+# Exporter le pipeline pour deepset Studio
+.venv\Scripts\python -m tsi_agent export-yaml --deliverables deliverables.yaml
+```
+
+Cet étage se place après `run` (il lit le cache HTTP des pages détail que `run` vient de rafraîchir) et avant
+`index` (pour que la section générée soit vectorisée avec le reste du projet).
+
+| Chemin | Contenu |
+|---|---|
+| `output/deliverables/<publication_id>.md` | Texte intégral des documents d'une publication, tel que publié (non vectorisé), avec un front matter (titre, URL, date, projets concernés, fichiers) |
+| `output/state/deliverables.json` | État utilisé pour l'incrémental (une entrée par publication traitée, `files_key` pour détecter un fichier ajouté ou remplacé). Ne pas éditer à la main. |
+
+Le fichier de chaque projet concerné reçoit une section « Deliverables (AI-generated summary) » (une
+sous-section par publication, la plus récente d'abord, avec liens vers les fichiers et vers le texte intégral)
+insérée juste avant les sections listing/sources, et le front matter gagne un champ `deliverables: N`. Une page
+de publication peut lister une traduction nationale d'un document à côté de sa version anglaise : seule la
+version anglaise est retenue si elle existe, sinon la version principale de la page.
+
+Le texte envoyé au LLM pour le résumé est limité au début des documents (`deliverables_max_words`, 15 000 mots
+par défaut) ; au-delà, le texte est tronqué et le prompt le signale. Ces prompts étant longs, le délai d'appel
+au CLI `claude` a son propre réglage, plus large que celui de l'extraction (`deliverables_llm_timeout_s`,
+600 s par défaut). Comme pour l'extraction, aucune clé API n'est nécessaire en local : le résumé passe par le
+CLI `claude` de la souscription. Les PDF ne passent jamais par le cache HTTP (ils ne changent pas d'URL quand
+on les retélécharge, et un cache de plusieurs centaines de PDF n'apporterait rien) ; seules les pages HTML
+(détail, publication) sont mises en cache.
+
+Une publication qui n'est plus liée depuis aucune page détail (document retiré du site) est nettoyée : son
+entrée disparaît de `output/state/deliverables.json`, et sa sous-section disparaît du fichier des projets qui
+la citaient (le compteur `deliverables` suit). Son texte intégral reste dans `output/deliverables/` (fichier
+orphelin, sans effet). Ce nettoyage ne se déclenche que lorsque la découverte a pu lire toutes les pages détail
+en cache pendant le run ; s'il en manque une (page pas encore récupérée par `run`), rien n'est supprimé par
+prudence, et le nettoyage sera retenté au run suivant.
+
+Premier run complet : de l'ordre de 500 publications à récupérer et résumer, soit environ 45 minutes dominées
+par le débit limité du site (voir le throttling adaptatif plus haut) et autant d'appels LLM que de
+publications. Comme pour `run`, un arrêt sur la limite de la souscription est repris au run suivant sans
+retraiter ce qui a déjà été écrit.
+
+Codes de sortie : identiques à `run` (`0` terminé, `1` arrêt sur la limite de la souscription, `2` erreur
+inattendue).
+
+**Passage à deepset :** comme pour `extractor`, le `chat_generator` du composant `summarizer` est remplacé par
+un `OpenAIChatGenerator` dans le YAML exporté (voir la section dédiée plus bas).
 
 ## Couche vectorisée (préparation du RAG)
 
@@ -187,10 +251,15 @@ Les trois outils, le prompt et l'Agent ne changent pas.
 
 ```powershell
 $repo = (Get-Location).Path
-$action = New-ScheduledTaskAction -Execute "$repo\.venv\Scripts\python.exe" -Argument "-m tsi_agent run" -WorkingDirectory $repo
+$python = "$repo\.venv\Scripts\python.exe"
+$chain = "& '$python' -m tsi_agent run; & '$python' -m tsi_agent deliverables; & '$python' -m tsi_agent index"
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -Command `"$chain`"" -WorkingDirectory $repo
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 7am
 Register-ScheduledTask -TaskName "TSI Extraction Agent" -Action $action -Trigger $trigger
 ```
+
+Les trois commandes s'enchaînent dans cet ordre (`run`, puis `deliverables`, puis `index`) : chacune dépend des
+fichiers écrits par la précédente.
 
 Le journal du run planifié est dans `logs/` (`logs/runs/<run_id>.jsonl` et `.summary.json`), comme pour un run
 manuel. Code de sortie `1` : le run s'est arrêté sur la limite de la souscription, et le suivant reprendra.
