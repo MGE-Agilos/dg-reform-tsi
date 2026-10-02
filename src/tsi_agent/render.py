@@ -107,14 +107,19 @@ def replace_listing_tail(body: str, ref: ProjectRef) -> str:
     return f"{head}\n\n{listing_tail(ref)}"
 
 
+def _file_link(f: dict[str, Any]) -> str:
+    """[Document (EN, 12 p.)](url) ; « DOCX » a la place des pages pour un document Word."""
+    size = f"{f.get('pages')} p." if f.get("pages") else "DOCX"
+    return f"[{f.get('document') or f.get('filename')} ({(f.get('language') or '?').upper()}, {size})]({f.get('url')})"
+
+
 def deliverables_section(entries: list[Any]) -> str | None:
     """Section des livrables d'un projet (entrees DeliverableEntry, la plus recente d'abord) ; None si aucune."""
     if not entries:
         return None
     parts = [DELIVERABLES_HEADING]
     for e in entries:
-        files = " · ".join(f"[{f.get('document') or f.get('filename')} ({(f.get('language') or '?').upper()}, "
-                           f"{f.get('pages')} p.)]({f.get('url')})" for f in e.files)
+        files = " · ".join(_file_link(f) for f in e.files)
         block = [f"### {e.title}" + (f" ({e.date})" if e.date else ""), f"Files: {files}",
                  f"Full text: {e.full_text_path}", e.content.summary.strip()]
         for label, items in (("Key outputs", e.content.key_outputs), ("Results", e.content.results),

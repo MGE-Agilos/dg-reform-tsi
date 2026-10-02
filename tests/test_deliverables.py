@@ -340,3 +340,46 @@ def test_deliverables_pipeline_yaml_round_trip(tmp_path):
 
 def test_default_deliverables_generator_uses_its_own_timeout():
     assert default_deliverables_generator(Settings()).timeout_s == 600
+
+
+DOCX_URL = f"{SITE}/document/download/af4c71d4-66a3-446a-8aab-c1772d4ce68c_en?filename=Narrative%20Report.docx"
+
+
+def test_extractor_reads_word_documents_with_tables(tmp_path):
+    pub = pub_with_file(DOCX_URL).model_copy(update={"files": [
+        PublicationFile(document="Narrative report", url=DOCX_URL, language="en", filename="Narrative Report.docx")]})
+    out = extractor(tmp_path, {DOCX_URL: fixture_bytes("deliverable_small.docx")}).run(publications=[pub])
+    assert out["failed"] == [] and len(out["texts"]) == 1
+    f = out["texts"][0].files[0]
+    assert f.pages == 0 and f.words > 800                        # le texte est surtout dans des tableaux
+    assert f.text.startswith("NARRATIVE REPORT") and "This project aimed to enhance the capacity" in f.text
+
+
+def test_section_label_for_word_documents():
+    e = entry()
+    e.files[0].update({"filename": "r.docx", "pages": 0})
+    assert "[Final Report (EN, DOCX)](https://x/d/1_en)" in deliverables_section([e])
+
+
+def test_recently_processed_publications_are_not_rechecked(tmp_path):
+    from datetime import date, timedelta
+    ds = DeliverableStore(tmp_path)
+    ds.put(entry(pid="developing-ehealth-healthier-society-slovenia", projects=("slo",)).model_copy(
+        update={"processed": date.today().isoformat()}))
+    ds.save()
+    f = fetcher_component(tmp_path, {SLO_PUB: fixture_bytes("pub_one_file.html")})
+    out = f.run(publications=[slo_pub()])
+    assert out["to_process"] == [] and [p.publication_id for p in out["unchanged"]] == [
+        "developing-ehealth-healthier-society-slovenia"]
+    assert f._fetcher.calls == []                                 # aucune requete
+    assert out["unchanged"][0].project_ids == ["slo"]
+    old = (date.today() - timedelta(days=30)).isoformat()
+    ds.put(ds.get("developing-ehealth-healthier-society-slovenia").model_copy(update={"processed": old}))
+    ds.save()
+    g = fetcher_component(tmp_path, {SLO_PUB: fixture_bytes("pub_one_file.html")})
+    assert len(g.run(publications=[slo_pub()])["to_process"]) == 1 and g._fetcher.calls == [SLO_PUB]
+    h = fetcher_component(tmp_path, {SLO_PUB: fixture_bytes("pub_one_file.html")})
+    ds.put(ds.get("developing-ehealth-healthier-society-slovenia").model_copy(
+        update={"processed": date.today().isoformat()}))
+    ds.save()
+    assert len(h.run(publications=[slo_pub()], full=True)["to_process"]) == 1

@@ -117,9 +117,16 @@ Le texte envoyé au LLM pour le résumé est limité au début des documents (`d
 par défaut) ; au-delà, le texte est tronqué et le prompt le signale. Ces prompts étant longs, le délai d'appel
 au CLI `claude` a son propre réglage, plus large que celui de l'extraction (`deliverables_llm_timeout_s`,
 600 s par défaut). Comme pour l'extraction, aucune clé API n'est nécessaire en local : le résumé passe par le
-CLI `claude` de la souscription. Les PDF ne passent jamais par le cache HTTP (ils ne changent pas d'URL quand
-on les retélécharge, et un cache de plusieurs centaines de PDF n'apporterait rien) ; seules les pages HTML
-(détail, publication) sont mises en cache.
+CLI `claude` de la souscription. Les fichiers lus sont les PDF (pdfplumber) et les documents Word `.docx`
+(python-docx : paragraphes et tableaux, dans l'ordre du document) ; les autres formats sont ignorés avec une
+alerte. Les fichiers ne passent jamais par le cache HTTP (ils ne changent pas d'URL quand on les retélécharge,
+et un cache de plusieurs centaines de PDF n'apporterait rien) ; seules les pages HTML (détail, publication)
+sont mises en cache.
+
+Une publication traitée depuis moins de `deliverables_recheck_days` jours (7 par défaut) n'est pas revérifiée :
+sa page de publication n'est même pas récupérée. Les relances rapprochées (reprise après une limite de
+souscription) repartent donc directement sur les publications restantes. Un run hebdomadaire revérifie tout,
+et `--full` force le retraitement.
 
 Une publication qui n'est plus liée depuis aucune page détail (document retiré du site) est nettoyée : son
 entrée disparaît de `output/state/deliverables.json`, et sa sous-section disparaît du fichier des projets qui
@@ -128,10 +135,12 @@ orphelin, sans effet). Ce nettoyage ne se déclenche que lorsque la découverte 
 en cache pendant le run ; s'il en manque une (page pas encore récupérée par `run`), rien n'est supprimé par
 prudence, et le nettoyage sera retenté au run suivant.
 
-Premier run complet : de l'ordre de 500 publications à récupérer et résumer, soit environ 45 minutes dominées
-par le débit limité du site (voir le throttling adaptatif plus haut) et autant d'appels LLM que de
-publications. Comme pour `run`, un arrêt sur la limite de la souscription est repris au run suivant sans
-retraiter ce qui a déjà été écrit.
+Premier run complet (mesuré du 30 septembre au 2 octobre 2026) : 498 publications, 806 fichiers, 13,7 millions
+de mots de texte intégral, 473 appels LLM pour 57 $ en équivalent API (Sonnet). Sur la souscription, il a fallu
+une vingtaine de reprises après la limite d'usage, soit environ deux jours. Comme pour `run`, un arrêt sur la
+limite est repris au run suivant sans retraiter ce qui a déjà été écrit. Pour un run de plusieurs heures,
+lancer la commande dans un terminal qui reste ouvert, avec une boucle de reprise (par exemple : relancer après
+30 minutes tant que le code de sortie vaut `1`).
 
 Codes de sortie : identiques à `run` (`0` terminé, `1` arrêt sur la limite de la souscription, `2` erreur
 inattendue).

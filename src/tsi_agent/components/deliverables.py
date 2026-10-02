@@ -7,7 +7,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -92,11 +92,13 @@ class PublicationFetcher(_Http):
     """Pages de publication ; seules les publications nouvelles ou dont les fichiers ont change sont retraitees."""
 
     def __init__(self, output_dir: str = "output", cache_dir: str = ".cache/http", min_interval_s: float = 2.0,
-                 user_agent: str = DEFAULT_USER_AGENT):
+                 user_agent: str = DEFAULT_USER_AGENT, recheck_days: int = 7):
+        """:param recheck_days: une publication traitee depuis moins de N jours n'est pas reverifiee (sauf full)."""
         self.output_dir = output_dir
         self.cache_dir = cache_dir
         self.min_interval_s = min_interval_s
         self.user_agent = user_agent
+        self.recheck_days = recheck_days
         self._fetcher = None
         self._offered: set[str] = set()  # deja proposees pendant ce run (boucle par lots du runner)
 
@@ -104,12 +106,21 @@ class PublicationFetcher(_Http):
                             remaining=int)
     def run(self, publications: list[Publication], full: bool = False, limit: int | None = None) -> dict[str, Any]:
         known = DeliverableStore(self.output_dir)
+        # Les relances rapprochees (reprise apres limite de souscription) ne reverifient pas les pages deja vues.
+        recent_since = (date.today() - timedelta(days=self.recheck_days)).isoformat()
         to_process: list[Publication] = []
         unchanged: list[Publication] = []
         failed: list[str] = []
         remaining = 0
         for pub in publications:
             if pub.url in self._offered:
+                continue
+            entry = known.get(pub.publication_id)
+            if entry is not None and not full and entry.processed >= recent_since:
+                self._offered.add(pub.url)
+                unchanged.append(pub.model_copy(update={"title": entry.title, "date": entry.date,
+                                                        "files_key": entry.files_key}))
+                runlog.event("PublicationFetcher", "classify", pub.publication_id, "recent")
                 continue
             if limit is not None and len(to_process) >= limit:
                 remaining += 1
@@ -128,7 +139,6 @@ class PublicationFetcher(_Http):
             if not files:
                 runlog.event("PublicationFetcher", "classify", pub.publication_id, "no_files")
                 continue
-            entry = known.get(pub.publication_id)
             if entry is not None and entry.files_key == pub.files_key and not full:
                 unchanged.append(pub)
                 continue
@@ -145,9 +155,31 @@ def pdf_text(data: bytes) -> tuple[int, str]:
     return len(pages), "\n\n".join(pages)
 
 
+def docx_text(data: bytes) -> tuple[int, str]:
+    """(0, texte) d'un document Word : paragraphes et tableaux dans l'ordre du document (pas de notion de page)."""
+    from docx import Document as WordDocument
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    doc = WordDocument(io.BytesIO(data))
+    parts: list[str] = []
+    for child in doc.element.body.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            text = Paragraph(child, doc).text.strip()
+            if text:
+                parts.append(text)
+        elif tag == "tbl":
+            for row in Table(child, doc).rows:
+                cells = list(dict.fromkeys(c.text.strip() for c in row.cells if c.text.strip()))  # cellules fusionnees
+                if cells:
+                    parts.append(" | ".join(cells))
+    return 0, "\n\n".join(parts)
+
+
 @component
 class DeliverableTextExtractor(_Http):
-    """Telecharge les PDF retenus (sans cache HTTP), extrait le texte, ecrit output/deliverables/<id>.md."""
+    """Telecharge les fichiers retenus (PDF, Word ; sans cache HTTP), extrait le texte, ecrit output/deliverables/<id>.md."""
 
     def __init__(self, output_dir: str = "output", deliverables_dir: str = "output/deliverables",
                  cache_dir: str = ".cache/http", min_interval_s: float = 2.0, user_agent: str = DEFAULT_USER_AGENT,
@@ -173,13 +205,17 @@ class DeliverableTextExtractor(_Http):
         if len(data) > self.max_pdf_mb * 1024 * 1024:
             self._alert(pub, url, f"too large: {len(data) // 1024} KB")
             return None
-        if not data.startswith(b"%PDF"):
-            self._alert(pub, url, "not a PDF")
+        if data.startswith(b"%PDF"):
+            reader, kind = pdf_text, "PDF"
+        elif data.startswith(b"PK") and ".docx" in url.lower():
+            reader, kind = docx_text, "DOCX"
+        else:
+            self._alert(pub, url, "unsupported format (neither PDF nor DOCX)")
             return None
         try:
-            pages, text = pdf_text(data)
-        except Exception as exc:  # pdfplumber/pdfminer levent des types varies sur un PDF abime
-            self._alert(pub, url, f"unreadable PDF: {type(exc).__name__}")
+            pages, text = reader(data)
+        except Exception as exc:  # pdfplumber/python-docx levent des types varies sur un fichier abime
+            self._alert(pub, url, f"unreadable {kind}: {type(exc).__name__}")
             return None
         runlog.event("DeliverableTextExtractor", "download", url, bytes=len(data), pages=pages,
                      words=len(text.split()))

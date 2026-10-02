@@ -29,6 +29,7 @@ class Settings(BaseModel):
     deliverables_dir: str = "output/deliverables"
     deliverables_max_words: int = 15000
     deliverables_max_pdf_mb: float = 50
+    deliverables_recheck_days: int = 7  # relances : pas de reverification des publications recentes
     deliverables_llm_timeout_s: int = 600  # prompts longs, jusqu'a 15 000 mots
 
 
