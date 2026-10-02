@@ -43,7 +43,7 @@ aujourd'hui (`BOILERPLATE_HEADINGS` du parser détail).
 - **Étage séparé** : pipeline `deliverables`, lancé entre `run` et `index`. L'extraction reste rapide, et les appels
   LLM des livrables ont leur propre reprise sur limite de souscription.
 
-Hors périmètre : OCR des PDF scannés, formats autres que PDF, vectorisation du texte intégral, masquage des données
+Hors périmètre : OCR des PDF scannés, formats autres que PDF et Word (.docx, ajouté le 2026-10-02), vectorisation du texte intégral, masquage des données
 personnelles.
 
 ## 3. Architecture
@@ -189,3 +189,13 @@ Key figures:
 - Chunking : la section est vectorisée avec `ai_generated`.
 - Pipeline : aller-retour YAML.
 - Manuel (réel) : 3 publications (dont la Slovénie), avec durée, coût et relecture des résumés.
+
+## 7. Ajouts du 2026-10-02 (retour du premier run complet)
+
+- **Documents Word** : 26 fichiers `.docx` (comptes rendus, rapports narratifs) étaient ignorés. Ils sont lus avec
+  `python-docx`, paragraphes et tableaux dans l'ordre du document (le texte de ces rapports est surtout dans des
+  tableaux). Pas de notion de page : le lien affiche « DOCX » à la place du nombre de pages.
+- **Pas de revérification des publications récentes** (`deliverables_recheck_days`, 7 par défaut) : pendant le
+  premier run, chaque reprise après la limite de souscription revérifiait d'abord toutes les pages de publication
+  déjà traitées, jusqu'à une heure par tentative. Une publication traitée depuis moins de N jours est maintenant
+  classée inchangée sans requête ; `--full` force le retraitement.
