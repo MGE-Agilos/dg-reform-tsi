@@ -11,8 +11,8 @@ from tsi_agent.chunking import CHUNKER_VERSION
 from tsi_agent.components.chunker import ProjectChunker
 from tsi_agent.components.file_loader import ProjectFileLoader
 from tsi_agent.components.vector_writer import VectorLayerWriter
-from tsi_agent.vector_state import (FileState, VectorLayerError, VectorState, load_state, load_store, new_store,
-                                    save_state, save_store, store_path)
+from tsi_agent.qdrant_local import LocalQdrantDocumentStore, LocalQdrantEmbeddingRetriever, open_store
+from tsi_agent.vector_state import FileState, VectorLayerError, VectorState, load_state, save_state
 
 
 def stream(name: str, rel: str) -> ByteStream:
@@ -47,22 +47,46 @@ def loader(out, embedder_id="mock:m"):
     return ProjectFileLoader(output_dir=str(out), vectors_dir=str(out / "vectors"), embedder_id=embedder_id)
 
 
-def test_state_and_store_round_trip(tmp_path):
+def vstore(out):
+    return open_store(str(out / "vectors"), 8)
+
+
+def test_state_round_trip(tmp_path):
     state = VectorState(embedder_id="e", chunker_version=1, files={"a.md": FileState(hash="h", chunk_ids=["a#0"])})
     save_state(tmp_path, state)
     assert load_state(tmp_path) == state
-    store = new_store()
-    store.write_documents([Document(id="a#0", content="x", embedding=[0.1, 0.2], meta={"k": 1})])
-    save_store(store, store_path(tmp_path))
-    loaded = load_store(store_path(tmp_path))
-    assert [d.id for d in loaded.filter_documents()] == ["a#0"]
-    assert loaded.filter_documents()[0].embedding == [0.1, 0.2]
 
 
-def test_unreadable_store_is_a_clear_error(tmp_path):
-    store_path(tmp_path).write_text("{not json", encoding="utf-8")
-    with pytest.raises(VectorLayerError, match="--full"):
-        load_store(store_path(tmp_path))
+def test_store_round_trip_keeps_text_ids_meta_and_embedding(tmp_path):
+    store = open_store(str(tmp_path), 2)
+    store.write_documents([Document(id="projects/a#0", content="x", embedding=[0.1, 0.2], meta={"k": 1})])
+    loaded = store.filter_documents()
+    assert [d.id for d in loaded] == ["projects/a#0"] and loaded[0].meta["k"] == 1
+
+
+def test_two_stores_on_same_folder_share_the_client(tmp_path):
+    first = open_store(str(tmp_path), 8)
+    first.write_documents([Document(id="a#0", content="x", embedding=[0.1] * 8)])
+    second = open_store(str(tmp_path), 8)
+    assert second.count_documents() == first.count_documents() == 1
+    assert first._client is second._client
+
+
+def test_store_and_retriever_yaml_round_trip(tmp_path):
+    from haystack import Pipeline
+
+    store = open_store(str(tmp_path), 8)
+    store.write_documents([Document(id="a#0", content="x", embedding=[0.1] * 8, meta={"doc_type": "project"})])
+    pipe = Pipeline()
+    pipe.add_component("retriever", LocalQdrantEmbeddingRetriever(document_store=store, top_k=3))
+    text = pipe.dumps()
+    assert "LocalQdrantEmbeddingRetriever" in text and "LocalQdrantDocumentStore" in text
+    from tsi_agent.pipeline import load_pipeline
+    again = load_pipeline(text).get_component("retriever")
+    assert isinstance(again, LocalQdrantEmbeddingRetriever) and isinstance(again._document_store,
+                                                                           LocalQdrantDocumentStore)
+    docs = again.run(query_embedding=[0.1] * 8)["documents"]
+    assert [d.id for d in docs] == ["a#0"] and again._top_k == 3
 
 
 def test_loader_first_run_is_full(tmp_path):
@@ -74,14 +98,15 @@ def test_loader_first_run_is_full(tmp_path):
     assert all(s.meta["content_hash"].startswith("sha256:") for s in res["sources"])
 
 
-def indexed_state(out, embedder_id="mock:m", version=CHUNKER_VERSION):
+def indexed_state(out, embedder_id="mock:m", version=CHUNKER_VERSION, with_store=True):
     """Etat tel qu'apres un run complet : tous les fichiers actuels indexes."""
     files = {}
     for s in loader(out).run(full=True)["sources"]:
         files[s.meta["file_path"]] = FileState(hash=s.meta["content_hash"], chunk_ids=[s.meta["file_path"] + "#0"])
     vdir = out / "vectors"
     save_state(vdir, VectorState(embedder_id=embedder_id, chunker_version=version, files=files))
-    save_store(new_store(), store_path(vdir))
+    if with_store:
+        vstore(out).write_documents([Document(id="x#0", content="x", embedding=[0.1] * 8)])  # cree la collection
 
 
 def test_loader_incremental_new_changed_removed(tmp_path):
@@ -103,9 +128,8 @@ def test_loader_incremental_new_changed_removed(tmp_path):
 @pytest.mark.parametrize("change", ["embedder", "chunker", "store", "flag"])
 def test_loader_forces_full(tmp_path, change):
     out = make_output(tmp_path)
-    indexed_state(out, version=CHUNKER_VERSION - 1 if change == "chunker" else CHUNKER_VERSION)
-    if change == "store":
-        store_path(out / "vectors").unlink()
+    indexed_state(out, version=CHUNKER_VERSION - 1 if change == "chunker" else CHUNKER_VERSION,
+                  with_store=change != "store")  # "store" : state.json present mais pas de collection Qdrant
     res = loader(out, embedder_id="other:m" if change == "embedder" else "mock:m").run(full=change == "flag")
     assert res["full"] is True and len(res["sources"]) == 3 and res["removed"] == []
 
@@ -116,13 +140,14 @@ def index_once(out, *, full=False, embedder_id="MockDocumentEmbedder:mock", pric
                                embedder_id=embedder_id).run(full=full)
     chunked = ProjectChunker().run(sources=loaded["sources"])
     embedded = MockDocumentEmbedder(model="mock", dimension=8).run(documents=chunked["documents"])
-    writer = VectorLayerWriter(vectors_dir=str(out / "vectors"), embedder_id=embedder_id, pricing=pricing)
+    writer = VectorLayerWriter(document_store=vstore(out), vectors_dir=str(out / "vectors"), embedder_id=embedder_id,
+                               pricing=pricing)
     return writer.run(documents=embedded["documents"], sources=loaded["sources"], removed=loaded["removed"],
                       full=loaded["full"], skipped=chunked["skipped"], embed_meta=embedded["meta"])["stats"]
 
 
 def stored_ids(out):
-    return sorted(d.id for d in load_store(store_path(out / "vectors")).filter_documents())
+    return sorted(d.id for d in vstore(out).filter_documents())
 
 
 def test_writer_full_then_incremental(tmp_path):
@@ -134,7 +159,7 @@ def test_writer_full_then_incremental(tmp_path):
     state = load_state(out / "vectors")
     assert state.embedder_id == "MockDocumentEmbedder:mock" and state.chunker_version == CHUNKER_VERSION
     assert state.files["projects/thin.md"].chunk_ids == ["projects/thin#0"]
-    loaded_docs = load_store(store_path(out / "vectors")).filter_documents()
+    loaded_docs = vstore(out).filter_documents()
     assert loaded_docs and all(d.meta["embedder"] == "MockDocumentEmbedder:mock" for d in loaded_docs)
 
     assert index_once(out) == {"files_indexed": 0, "files_removed": 0, "chunks_written": 0, "chunks_deleted": 0,
@@ -156,7 +181,7 @@ def test_writer_changed_file_replaces_its_chunks(tmp_path):
     stats = index_once(out)
     assert stats["files_indexed"] == 1 and stats["chunks_deleted"] == stats["chunks_written"]
     assert stored_ids(out) == before
-    ctx = [d for d in load_store(store_path(out / "vectors")).filter_documents()
+    ctx = [d for d in vstore(out).filter_documents()
            if d.meta["section"] == "Context"][0]
     assert ctx.content.startswith("New first line.")
 
@@ -191,9 +216,10 @@ def test_writer_logs_embedding_tokens_and_cost(tmp_path):
 
 
 def test_writer_estimates_tokens_without_usage(tmp_path):
-    docs = [Document(id="a#0", content="one two three", meta={"source_file": "a.md", "context_header": "T"})]
+    docs = [Document(id="a#0", content="one two three", embedding=[0.1] * 8, meta={"source_file": "a.md", "context_header": "T"})]
     with runlog.open_run(tmp_path / "logs", "r1") as run:
-        VectorLayerWriter(vectors_dir=str(tmp_path / "v"), embedder_id="x").run(
+        VectorLayerWriter(document_store=open_store(str(tmp_path / "v"), 8), vectors_dir=str(tmp_path / "v"),
+                          embedder_id="x").run(
             documents=docs, sources=[ByteStream(data=b"", meta={"file_path": "a.md", "content_hash": "h"})],
             removed=[], full=True)
     assert run.final_summary["tokens"]["input_tokens"] == round(4 * 1.33)
@@ -217,7 +243,7 @@ def test_two_files_with_same_project_id_dont_collide(tmp_path):
 
 
 def test_writer_recovers_from_interruption_before_state_save(tmp_path, monkeypatch):
-    """Panne entre save_store et save_state (spec 3.4) : le run suivant reconcilie sans doublon ni orphelin."""
+    """Panne entre l'ecriture du store et save_state (spec 3.4) : le run suivant reconcilie sans doublon ni orphelin."""
     import tsi_agent.components.vector_writer as vector_writer_module
 
     out = make_output(tmp_path)
@@ -231,12 +257,12 @@ def test_writer_recovers_from_interruption_before_state_save(tmp_path, monkeypat
     detail.write_text(before + "## Sources" + rest, encoding="utf-8")
 
     def boom(*args, **kwargs):
-        raise RuntimeError("simulated crash after save_store")
+        raise RuntimeError("simulated crash after the store write")
 
     monkeypatch.setattr(vector_writer_module, "save_state", boom)
     with pytest.raises(RuntimeError, match="simulated crash"):
         index_once(out)
-    monkeypatch.undo()  # store.json a ete sauvegarde avec les 4 nouveaux morceaux ; state.json est reste l'ancien
+    monkeypatch.undo()  # le store a ete ecrit avec les 4 nouveaux morceaux ; state.json est reste l'ancien
 
     # Run normal suivant : doit reconcilier, sans doublon ni morceau orphelin.
     index_once(out)
@@ -246,7 +272,6 @@ def test_writer_recovers_from_interruption_before_state_save(tmp_path, monkeypat
     assert ids_after_recovery == expected_ids
 
     # Doit correspondre a un full index frais sur le meme contenu.
-    shutil.rmtree(out / "vectors")
     index_once(out, full=True)
     assert stored_ids(out) == ids_after_recovery
 

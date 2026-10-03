@@ -13,14 +13,15 @@ from haystack.dataclasses import ByteStream
 
 from tsi_agent import runlog
 from tsi_agent.chunking import CHUNKER_VERSION
-from tsi_agent.vector_state import VectorState, load_state, store_path
+from tsi_agent.qdrant_local import collection_exists
+from tsi_agent.vector_state import VectorState, load_state
 
 FOLDERS = ("projects", "programme")
 
 
 @component
 class ProjectFileLoader:
-    def __init__(self, output_dir: str = "output", vectors_dir: str = "output/vectors", embedder_id: str = "",
+    def __init__(self, output_dir: str = "output", vectors_dir: str = "~/tsi-vectors", embedder_id: str = "",
                  chunker_version: int = CHUNKER_VERSION):
         self.output_dir = output_dir
         self.vectors_dir = vectors_dir
@@ -32,7 +33,7 @@ class ProjectFileLoader:
             return "requested"
         if state is None:
             return "no_state"
-        if not store_path(self.vectors_dir).exists():
+        if not collection_exists(self.vectors_dir):
             return "no_store"
         if state.embedder_id != self.embedder_id:
             return "embedder_changed"
@@ -44,7 +45,7 @@ class ProjectFileLoader:
     def run(self, full: bool = False) -> dict[str, Any]:
         # En --full l'ancien etat ne sert a rien : on ne le lit pas, un state.json corrompu ne doit pas bloquer
         # le run. Sinon on ne le lit qu'une fois (evite de lire deux fois, et de lever deux fois une erreur).
-        state = None if full else load_state(self.vectors_dir)
+        state = None if full else load_state(Path(self.vectors_dir).expanduser())
         reason = self._full_reason(full, state)
         if reason:
             runlog.event("ProjectFileLoader", "full", None, reason)

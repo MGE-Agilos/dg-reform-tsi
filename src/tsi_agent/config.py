@@ -16,7 +16,8 @@ class Settings(BaseModel):
     max_concurrency: int = 2
     chunk_size: int = 25
     # Couche vectorisee (pipeline `index`).
-    vectors_dir: str = "output/vectors"
+    vectors_dir: str = "~/tsi-vectors"  # hors OneDrive : base Qdrant locale ; `~` developpe a l'usage
+    embedding_dim: int = 384
     embedding_model: str = "intfloat/multilingual-e5-small"
     embedding_batch_size: int = 32
     # $ par million de tokens, par préfixe de modèle ; sert quand le generator ne renvoie pas de coût (API OpenAI).

@@ -1,5 +1,5 @@
 # src/tsi_agent/components/vector_writer.py
-"""Composant Haystack local : ecrit les morceaux vectorises dans output/vectors (store.json puis state.json).
+"""Composant Haystack local : ecrit les morceaux vectorises dans le document store (Qdrant local) puis state.json.
 
 Dans deepset, remplace par un DocumentWriter vers le document store de l'espace de travail.
 """
@@ -9,27 +9,40 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from haystack import Document, component
+from haystack import Document, component, default_from_dict, default_to_dict
+from haystack.core.serialization import component_to_dict, import_class_by_name
 from haystack.dataclasses import ByteStream
 from haystack.document_stores.types import DuplicatePolicy
 
 from tsi_agent import runlog
 from tsi_agent.chunking import CHUNKER_VERSION
-from tsi_agent.vector_state import FileState, VectorState, load_state, load_store, new_store, save_state, \
-    save_store, store_path
+from tsi_agent.vector_state import FileState, VectorState, load_state, save_state
 
 TOKENS_PER_WORD = 1.33
 
 
 @component
 class VectorLayerWriter:
-    def __init__(self, vectors_dir: str = "output/vectors", embedder_id: str = "",
+    def __init__(self, document_store: Any, vectors_dir: str = "~/tsi-vectors", embedder_id: str = "",
                  chunker_version: int = CHUNKER_VERSION, pricing: dict[str, dict[str, float]] | None = None):
-        """:param pricing: $ par million de tokens par prefixe de modele, ex. {"text-embedding-3-small": {"input": 0.02}}."""
+        """:param document_store: store des morceaux (Qdrant local ; state.json est ecrit dans vectors_dir).
+        :param pricing: $ par million de tokens par prefixe de modele, ex. {"text-embedding-3-small": {"input": 0.02}}."""
+        self.document_store = document_store
         self.vectors_dir = vectors_dir
         self.embedder_id = embedder_id
         self.chunker_version = chunker_version
         self.pricing = pricing or {}
+
+    def to_dict(self) -> dict[str, Any]:
+        return default_to_dict(self, document_store=component_to_dict(obj=self.document_store, name="document_store"),
+                               vectors_dir=self.vectors_dir, embedder_id=self.embedder_id,
+                               chunker_version=self.chunker_version, pricing=self.pricing)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "VectorLayerWriter":
+        store = data["init_parameters"]["document_store"]
+        data["init_parameters"]["document_store"] = import_class_by_name(store["type"]).from_dict(store)
+        return default_from_dict(cls, data)
 
     def _cost(self, model: str, tokens: int) -> float:
         for prefix, price in sorted(self.pricing.items(), key=lambda kv: len(kv[0]), reverse=True):
@@ -58,12 +71,13 @@ class VectorLayerWriter:
         # d'embedder sans dependre uniquement de state.json.
         documents = [replace(d, meta={**d.meta, "embedder": self.embedder_id}) for d in documents]
 
-        vdir = Path(self.vectors_dir)
+        vdir = Path(self.vectors_dir).expanduser()
+        store = self.document_store
         state = None if full else load_state(vdir)
         if state is None:
-            state, store = VectorState(), new_store()
-        else:
-            store = load_store(store_path(vdir))
+            # Full : on repart d'un store vide (ids orphelins d'un run interrompu compris).
+            state = VectorState()
+            store.delete_all_documents()
         state.embedder_id, state.chunker_version = self.embedder_id, self.chunker_version
 
         touched = [str(s.meta["file_path"]) for s in sources] + list(removed)
@@ -88,8 +102,7 @@ class VectorLayerWriter:
 
         self._log_embedding(documents, embed_meta)
         if full or sources or removed:
-            save_store(store, store_path(vdir))  # store d'abord : un arret ici laisse l'ancien etat, retente
-            save_state(vdir, state)
+            save_state(vdir, state)  # le store est deja ecrit : un arret avant ceci laisse l'ancien etat, retente
         stats = {"files_indexed": len(sources) - len(skipped_set & {str(s.meta["file_path"]) for s in sources}),
                  "files_removed": len(removed), "chunks_written": len(documents), "chunks_deleted": len(stale),
                  "chunks_total": store.count_documents()}

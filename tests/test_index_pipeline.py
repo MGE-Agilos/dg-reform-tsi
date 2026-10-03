@@ -18,7 +18,7 @@ def settings_for(tmp_path) -> Settings:
     (out / "programme").mkdir()
     shutil.copy(FIXTURES / "vec_thin.md", out / "projects" / "thin.md")
     shutil.copy(FIXTURES / "vec_detail_sections.md", out / "projects" / "detail.md")
-    return Settings(output_dir=str(out), vectors_dir=str(out / "vectors"), logs_dir=str(tmp_path / "logs"))
+    return Settings(output_dir=str(out), vectors_dir=str(out / "vectors"), embedding_dim=8, logs_dir=str(tmp_path / "logs"))
 
 
 def mock():
@@ -75,15 +75,16 @@ def test_real_model_finds_project_from_french_question(tmp_path):
     from haystack_integrations.components.embedders.sentence_transformers import SentenceTransformersTextEmbedder
 
     from tsi_agent.index_pipeline import default_embedder
-    from tsi_agent.vector_state import load_store, store_path
+    from tsi_agent.qdrant_local import LocalQdrantEmbeddingRetriever, open_store
 
     s = settings_for(tmp_path)
+    s.embedding_dim = 384  # dimension du vrai modele e5-small
     shutil.copy(FIXTURES / "vec_detail_long_section.md", tmp_path / "output" / "projects" / "skills.md")
     run_index(s, embedder=default_embedder(s), run_id="it1")
-    store = load_store(store_path(s.vectors_dir))
+    retriever = LocalQdrantEmbeddingRetriever(document_store=open_store(s.vectors_dir, s.embedding_dim), top_k=3)
     query = SentenceTransformersTextEmbedder(model=s.embedding_model, prefix="query: ", normalize_embeddings=True)
     vec = query.run(text="formation des régulateurs de l'électricité")["embedding"]
-    results = store.embedding_retrieval(query_embedding=vec, top_k=3)
+    results = retriever.run(query_embedding=vec)["documents"]
     if results[0].meta["doc_id"] != "energy-regulation-academy":
         lines = "\n".join(f"{i + 1}. {r.meta['doc_id']} (score={r.score:.4f})" for i, r in enumerate(results))
         pytest.fail(f"top-1 n'est pas energy-regulation-academy ; top-3 :\n{lines}")

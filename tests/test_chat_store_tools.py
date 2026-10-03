@@ -1,56 +1,71 @@
 import pytest
-from haystack.components.embedders import MockTextEmbedder
-from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
+from haystack import Document
+from haystack.components.embedders import MockDocumentEmbedder, MockTextEmbedder
 
 from conftest import make_vector_store
-from tsi_agent import runlog, vector_state
-from tsi_agent.chat.store import PersistedInMemoryDocumentStore
-from tsi_agent.chat.tools import ProjectLister, ProjectReader, ProjectSearch, build_filters
+from tsi_agent import runlog
+from tsi_agent.chat.pipeline import build_chat_pipeline, open_vector_store
+from tsi_agent.chat.tools import DeliverableSearch, ProjectLister, ProjectReader, ProjectSearch, build_filters
+from tsi_agent.config import Settings
+from tsi_agent.qdrant_local import LocalQdrantEmbeddingRetriever, open_store
 from tsi_agent.vector_state import VectorLayerError
 
 
-def test_persisted_store_loads_and_serializes_as_path(tmp_path):
-    path = make_vector_store(tmp_path)
-    store = PersistedInMemoryDocumentStore(path=str(path))
+def test_open_vector_store_reads_the_indexed_layer(tmp_path):
+    vdir = make_vector_store(tmp_path)
+    store = open_vector_store(Settings(vectors_dir=str(vdir), embedding_dim=8))
     assert store.count_documents() > 5
-    assert store.to_dict() == {"type": "tsi_agent.chat.store.PersistedInMemoryDocumentStore",
-                               "init_parameters": {"path": str(path)}}
-    again = PersistedInMemoryDocumentStore.from_dict(store.to_dict())
-    assert again.count_documents() == store.count_documents()
 
 
-def test_second_instance_shares_storage_without_reloading(tmp_path, monkeypatch):
-    path = make_vector_store(tmp_path)
-    first = PersistedInMemoryDocumentStore(path=str(path))
-    calls = []
-    monkeypatch.setattr("tsi_agent.chat.store.read_documents", lambda p: calls.append(p) or [])
-    second = PersistedInMemoryDocumentStore(path=str(path))
-    assert calls == [] and second.count_documents() == first.count_documents()
-
-
-def test_missing_store_is_a_clear_error(tmp_path):
+def test_missing_layer_is_a_clear_error(tmp_path):
     with pytest.raises(VectorLayerError, match="tsi_agent index"):
-        PersistedInMemoryDocumentStore(path=str(tmp_path / "nope" / "store.json"))
+        open_vector_store(Settings(vectors_dir=str(tmp_path / "nope"), embedding_dim=8))
+    assert not (tmp_path / "nope").exists()  # rien n'est cree
 
 
-def test_read_documents_round_trip(tmp_path):
-    path = make_vector_store(tmp_path)
-    docs = vector_state.read_documents(path)
-    assert docs and all(d.embedding for d in docs)
+def test_empty_layer_is_a_clear_error(tmp_path):
+    open_store(str(tmp_path), 8).count_documents()  # cree la collection, vide
+    with pytest.raises(VectorLayerError, match="tsi_agent index"):
+        open_vector_store(Settings(vectors_dir=str(tmp_path), embedding_dim=8))
 
 
 ENERGY = "energy-regulation-academy"
 THIN = "srsp-2016-technical-support-for-the-property-tax-reform"
 
+DELIVERABLES = [
+    # (publication, projets lies, pays, annee, document, page, texte)
+    ("pub-energy", ["energy-regulation-academy"], ["GR"], 2026, "Final report.pdf", 3,
+     "The survey covered 120 regulators and the response rate reached 80 percent."),
+    ("pub-energy", ["energy-regulation-academy"], ["GR"], 2026, "Final report.pdf", 4,
+     "Recommendations: harmonise the training curriculum across national regulators."),
+    ("pub-energy", ["energy-regulation-academy"], ["GR"], 2026, "Slides.pptx", 1, "Overview of the academy."),
+    ("pub-tax", ["srsp-2016-technical-support-for-the-property-tax-reform"], ["HR"], 2016, "Tax study.pdf", 2,
+     "The cadastre covers 2 million parcels."),
+]
+
+
+def add_deliverables(store):
+    docs = []
+    for n, (pub, projects, countries, year, section, page, text) in enumerate(DELIVERABLES):
+        docs.append(Document(id=f"deliverables/{pub}#{n}", content=text, meta={
+            "doc_id": pub, "doc_type": "deliverable", "title": f"Publication {pub}", "section": section,
+            "page": page, "source_url": f"https://example.org/{pub}.pdf", "projects": projects,
+            "countries": countries, "year": year, "programme": "TSI" if year >= 2021 else "SRSP",
+            "policy_area": None, "ai_generated": False, "chunk_index": n}))
+    embedded = MockDocumentEmbedder(model="mock", dimension=8).run(documents=docs)["documents"]
+    store.write_documents(embedded)
+
 
 @pytest.fixture
 def store(tmp_path):
-    return PersistedInMemoryDocumentStore(path=str(make_vector_store(tmp_path)))
+    s = open_store(str(make_vector_store(tmp_path)), 8)
+    add_deliverables(s)
+    return s
 
 
 def search_tool(store, top_k=50):
     return ProjectSearch(text_embedder=MockTextEmbedder(model="mock", dimension=8),
-                         retriever=InMemoryEmbeddingRetriever(document_store=store), top_k=top_k)
+                         retriever=LocalQdrantEmbeddingRetriever(document_store=store), top_k=top_k)
 
 
 def test_build_filters():
@@ -139,3 +154,67 @@ def test_reader_rebuilds_project_text(store):
 def test_reader_unknown_id(store):
     out = ProjectReader(document_store=store).run(doc_id="nope")
     assert out["sources"] == [] and "No project" in out["result"]
+
+
+def deliverable_tool(store, top_k=50):
+    return DeliverableSearch(text_embedder=MockTextEmbedder(model="mock", dimension=8),
+                             retriever=LocalQdrantEmbeddingRetriever(document_store=store), top_k=top_k)
+
+
+def test_project_search_never_returns_deliverable_chunks(store):
+    ids = {s["doc_id"] for s in search_tool(store).run(query="x", include_programme=True)["sources"]}
+    assert ids and not ids & {"pub-energy", "pub-tax"}
+    assert {"country-croatia"} <= ids
+
+
+def test_lister_ignores_deliverable_chunks(store):
+    assert ProjectLister(document_store=store).run()["result"].startswith("Total matching projects: 4 ")
+
+
+def test_deliverable_search_labels_pages_and_numbers_sources(store):
+    out = deliverable_tool(store).run(query="survey", known_sources=[{"ref": 1}] * 2)
+    assert {s["doc_id"] for s in out["sources"]} == {"pub-energy", "pub-tax"}
+    assert [s["ref"] for s in out["sources"]] == [3, 4, 5, 6]
+    assert out["result"].startswith("[3] Publication ")
+    first = out["sources"][0]
+    assert set(first) >= {"ref", "doc_id", "title", "url", "section", "ai_generated", "score"}
+    assert first["ai_generated"] is False and ", p. " in first["section"]
+    block = next(b for b in out["result"].split("\n\n") if "survey covered" in b)
+    assert block.startswith("[") and block.endswith("response rate reached 80 percent.")
+    assert ("Publication pub-energy — Final report.pdf, p. 3 — TSI 2026 — GR\n"
+            "URL: https://example.org/pub-energy.pdf\n") in block
+
+
+def test_deliverable_search_filters(store):
+    tool = deliverable_tool(store)
+    assert {s["doc_id"] for s in tool.run(query="x", publication_id="pub-tax")["sources"]} == {"pub-tax"}
+    assert {s["doc_id"] for s in tool.run(query="x", project_id=ENERGY)["sources"]} == {"pub-energy"}
+    assert {s["doc_id"] for s in tool.run(query="x", countries=["hr"])["sources"]} == {"pub-tax"}
+    assert {s["doc_id"] for s in tool.run(query="x", year_from=2020)["sources"]} == {"pub-energy"}
+    assert {s["doc_id"] for s in tool.run(query="x", programme="SRSP")["sources"]} == {"pub-tax"}
+    empty = tool.run(query="x", countries=["FR"])
+    assert empty["sources"] == [] and "No matching" in empty["result"]
+    assert len(deliverable_tool(store, top_k=2).run(query="x")["sources"]) == 2
+
+
+def test_deliverable_search_logs_tool_call(store, tmp_path):
+    with runlog.open_run(tmp_path / "l", "r1") as run:
+        deliverable_tool(store).run(query="x")
+    assert run.final_summary["counts"]["tool_call:ok"] == 1
+
+
+def test_pipeline_has_four_tools_and_deliverable_tool_runs(tmp_path):
+    vdir = make_vector_store(tmp_path)
+    add_deliverables(open_store(str(vdir), 8))
+    s = Settings(vectors_dir=str(vdir), embedding_dim=8, logs_dir=str(tmp_path / "logs"))
+    pipe = build_chat_pipeline(s, [], chat_generator=_gen(),
+                               text_embedder=MockTextEmbedder(model="mock", dimension=8))
+    tools = {t.name: t for t in pipe.get_component("agent").tools}
+    assert list(tools) == ["search_projects", "search_deliverables", "list_projects", "get_project"]
+    out = tools["search_deliverables"].invoke(query="survey", publication_id="pub-tax")
+    assert out["sources"][0]["doc_id"] == "pub-tax"
+
+
+def _gen():
+    from test_chat_agent import ScriptedGenerator
+    return ScriptedGenerator([])

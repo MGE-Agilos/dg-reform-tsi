@@ -77,7 +77,7 @@ class FakeChatGenerator:
 
 
 def make_vector_store(tmp_path: Path) -> Path:
-    """Couche vectorisee de test : 4 projets (fixtures vec_*) + 1 document programme, embedder factice (dim 8)."""
+    """Dossier `vectors_dir` d'une couche vectorisee de test (Qdrant local) : 4 projets (fixtures vec_*) + 1 document programme, embedder factice (dim 8)."""
     import shutil
 
     from haystack.components.embedders import MockDocumentEmbedder
@@ -94,7 +94,8 @@ def make_vector_store(tmp_path: Path) -> Path:
                       ("vec_thin.md", "projects/srsp-2016-property-tax.md"),
                       ("vec_programme.md", "programme/country-croatia.md")]:
         shutil.copy(FIXTURES / name, out / rel)
-    settings = Settings(output_dir=str(out), vectors_dir=str(out / "vectors"), logs_dir=str(tmp_path / "logs"))
+    settings = Settings(output_dir=str(out), vectors_dir=str(out / "vectors"), embedding_dim=8,
+                        logs_dir=str(tmp_path / "logs"))
     run_index(settings, embedder=MockDocumentEmbedder(model="mock", dimension=8,
                                                       meta_fields_to_embed=["context_header"]))
-    return out / "vectors" / "store.json"
+    return out / "vectors"
