@@ -9,7 +9,7 @@ from tsi_agent.countries import COUNTRIES, name_from_iso
 from tsi_agent.render import parse_front_matter
 
 # A incrementer a chaque changement des regles ci-dessous : force une revectorisation complete.
-CHUNKER_VERSION = 2  # 2 : section Deliverables (resume IA des livrables)
+CHUNKER_VERSION = 3  # 2 : section Deliverables (resume IA) ; 3 : texte integral des livrables, un morceau par page
 SPLIT_THRESHOLD_WORDS = 300
 WINDOW_WORDS = 250
 OVERLAP_WORDS = 40
@@ -26,6 +26,9 @@ PROJECT_FIELDS = ("title", "programme", "year", "countries", "multi_country", "p
 
 _TITLE = re.compile(r"\A# [^\n]*(?:\n|\Z)")
 _HEADING = re.compile(r"^## (.+?)[ \t]*$", re.MULTILINE)
+_DOCUMENT = re.compile(r"^## (.+?)[ \t]*\n\nSource: (.*?)[ \t]*$", re.MULTILINE)
+_PAGE = re.compile(r"^--- page (\d+) ---[ \t]*$", re.MULTILINE)
+MIN_PAGE_WORDS = 5
 _SENTENCE_END = re.compile(r"[.!?][\"')\]]*$")
 
 
@@ -68,11 +71,50 @@ def context_header(fm: dict[str, Any]) -> str:
     return " — ".join(p for p in parts if p)
 
 
+def split_pages(text: str) -> list[tuple[int | None, str]]:
+    """(numero de page, texte) d'apres les marqueurs `--- page N ---` ; sans marqueur (Word) : un bloc, page None."""
+    parts = _PAGE.split(text)
+    if len(parts) == 1:
+        return [(None, text.strip())]
+    return [(int(parts[i]), parts[i + 1].strip()) for i in range(1, len(parts), 2)]
+
+
+def chunk_deliverable(rel_path: str, fm: dict[str, Any], body: str) -> list[Document]:
+    """Texte integral d'une publication : un ou plusieurs morceaux par page de chaque document."""
+    countries = [name_from_iso(c) if c in COUNTRIES else str(c) for c in fm.get("countries") or []]
+    programme_year = " ".join(str(v) for v in (fm.get("programme"), fm.get("year")) if v)
+    title = str(fm.get("title") or "").strip()
+    base: dict[str, Any] = {
+        "doc_id": fm["publication_id"], "doc_type": "deliverable", "source_file": rel_path, "title": fm.get("title"),
+        "date": fm.get("date"), "projects": list(fm.get("projects") or []), "ai_generated": False,
+        "countries": fm.get("countries"), "year": fm.get("year"), "programme": fm.get("programme"),
+        "policy_area": fm.get("policy_area"), "detail_page": None,
+    }
+    stem = rel_path.removesuffix(".md")
+    parts = _DOCUMENT.split(_TITLE.sub("", body.lstrip("\n"), count=1))
+    docs: list[Document] = []
+    for i in range(1, len(parts), 3):
+        document, url, text = parts[i].strip(), parts[i + 1], parts[i + 2]
+        for page, page_text in split_pages(text):
+            if len(page_text.split()) < MIN_PAGE_WORDS:
+                continue
+            where = f"{document}, p. {page}" if page is not None else document
+            header = " — ".join(p for p in (title, where, programme_year, ", ".join(countries)) if p)
+            for piece in split_words(page_text):
+                index = len(docs)
+                docs.append(Document(id=f"{stem}#{index}", content=piece,
+                                     meta={**base, "section": document, "page": page, "source_url": url or None,
+                                           "chunk_index": index, "context_header": header}))
+    return docs
+
+
 def chunk_file(rel_path: str, text: str) -> list[Document]:
-    """Morceaux d'un fichier projet ou programme. ValueError si le front matter est absent ou invalide."""
+    """Morceaux d'un fichier projet, programme ou livrable. ValueError si le front matter est absent ou invalide."""
     fm, body = parse_front_matter(text.replace("\r\n", "\n"))
     if not isinstance(fm, dict):
         raise ValueError("front matter is not a mapping")
+    if fm.get("publication_id"):
+        return chunk_deliverable(rel_path, fm, body)
     doc_id = fm.get("project_id") or fm.get("doc_id")
     if not doc_id:
         raise ValueError("front matter has no project_id or doc_id")

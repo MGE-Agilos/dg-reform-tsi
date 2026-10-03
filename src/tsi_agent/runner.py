@@ -2,13 +2,19 @@
 
 from typing import Any, Callable
 
+from pathlib import Path
+
 from haystack import Pipeline
 
 from tsi_agent import runlog
+from tsi_agent.components.deliverables import META_FIELDS, project_meta
 from tsi_agent.config import Settings
+from tsi_agent.deliverables_state import DeliverableStore
 from tsi_agent.deliverables_pipeline import build_deliverables_pipeline
 from tsi_agent.index_pipeline import build_index_pipeline
 from tsi_agent.pipeline import build_pipeline
+from tsi_agent.render import parse_front_matter, render
+from tsi_agent.store import _retry_on_lock, shared_store
 
 PipelineFactory = Callable[..., Pipeline]
 
@@ -99,3 +105,29 @@ def run_deliverables(settings: Settings, *, full: bool = False, limit: int | Non
         run.extra.update({"mode": "deliverables", "chunks": chunks, "quota_exceeded": quota, "written": written,
                           "remaining_publications": remaining, "failed": sorted(set(failed))})
     return run.final_summary
+
+
+def refresh_deliverables_metadata(settings: Settings, run_id: str | None = None) -> dict[str, Any]:
+    """Met a jour pays, annee, programme et domaine dans le front matter des textes integraux (ni LLM ni reseau)."""
+    with runlog.open_run(settings.logs_dir, run_id) as run:
+        root = Path(settings.output_dir)
+        projects = shared_store(settings.output_dir)
+        files = updated = 0
+        for entry in DeliverableStore(settings.output_dir).all().values():
+            path = root / entry.full_text_path
+            if not path.exists():
+                runlog.event("refresh_deliverables_metadata", "alert", entry.publication_id, "warning",
+                             message=f"full text file missing: {entry.full_text_path}")
+                continue
+            files += 1
+            text = path.read_text(encoding="utf-8")
+            fm, body = parse_front_matter(text.replace("\r\n", "\n"))
+            meta = project_meta(entry.project_ids, projects)
+            if all(fm.get(k) == meta[k] for k in META_FIELDS) and all(k in fm for k in META_FIELDS):
+                continue
+            fm.update({k: meta[k] for k in META_FIELDS})
+            _retry_on_lock(lambda: path.write_text(render(fm, body), encoding="utf-8"))
+            updated += 1
+            runlog.event("refresh_deliverables_metadata", "write", entry.publication_id, "updated")
+        run.extra.update({"mode": "refresh_metadata", "files": files, "updated": updated})
+    return {"files": files, "updated": updated}

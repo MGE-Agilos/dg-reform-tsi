@@ -11,7 +11,7 @@ def test_deliverables_section_is_ai_generated():
     docs = chunk_file("projects/x.md", text)
     deliv = [d for d in docs if d.meta["section"] == "Deliverables (AI-generated summary)"]
     assert len(deliv) == 1 and deliv[0].meta["ai_generated"] is True and "Delivered X." in deliv[0].content
-    assert CHUNKER_VERSION == 2
+    assert CHUNKER_VERSION == 3
 
 
 def read(name: str) -> str:
@@ -116,3 +116,40 @@ def test_chunk_ids_are_scoped_by_file_path_not_doc_id():
     docs_b = chunk_file("projects/b.md", text)
     assert docs_a[0].id == "projects/a#0" and docs_b[0].id == "projects/b#0"
     assert docs_a[0].meta["doc_id"] == docs_b[0].meta["doc_id"]
+
+
+def test_deliverable_is_chunked_per_page_with_project_meta():
+    docs = chunk_file("deliverables/greece.md", read("vec_deliverable.md"))
+    assert [(d.meta["section"], d.meta["page"]) for d in docs] == [
+        ("Project public brief", 1), ("Project public brief", 2), ("Project public brief", 3),
+        ("Factsheet", 1), ("Factsheet", 2), ("Factsheet", 3)]  # page 4 vide ignoree
+    assert [d.id for d in docs] == [f"deliverables/greece#{i}" for i in range(6)]
+    assert len({d.id for d in docs}) == 6 and [d.meta["chunk_index"] for d in docs] == list(range(6))
+    first, factsheet = docs[0], docs[5]
+    assert "Financing sustainability in Greece" in first.content and "--- page" not in first.content
+    assert "FACTSHEET" in factsheet.content
+    m = first.meta
+    assert m["doc_type"] == "deliverable" and m["doc_id"] == "financing-sustainability-greece-public-policy-instruments"
+    assert m["title"] == "Financing sustainability in Greece with public policy instruments"
+    assert m["projects"] == ["financing-sustainability-greece-public-policy-instruments"]
+    assert (m["countries"], m["year"], m["programme"]) == (["GR"], 2022, "TSI")
+    assert m["policy_area"] == "financial-sector-and-access-finance" and m["detail_page"] is None
+    assert m["ai_generated"] is False and m["source_file"] == "deliverables/greece.md"
+    assert m["source_url"].startswith("https://reforms-investments.ec.europa.eu/document/download/845cc088")
+    assert factsheet.meta["source_url"].startswith("https://reforms-investments.ec.europa.eu/document/download/8814d1dc")
+    assert m["context_header"] == ("Financing sustainability in Greece with public policy instruments — "
+                                   "Project public brief, p. 1 — TSI 2022 — Greece")
+
+
+def test_deliverable_long_page_is_windowed_and_word_document_has_no_page():
+    long_page = " ".join(f"w{i}" + ("." if i % 20 == 19 else "") for i in range(620))
+    text = ("---\npublication_id: p\ntitle: T\nprojects: [a]\n---\n\n# T\n\n## Report\n\nSource: https://x/r\n\n"
+            f"--- page 7 ---\n{long_page}\n\n## Word file\n\nSource: https://x/w.docx\n\nSome plain words here ok.\n")
+    docs = chunk_file("deliverables/p.md", text)
+    assert [d.meta["page"] for d in docs] == [7, 7, 7, None]
+    assert docs[3].meta["section"] == "Word file" and docs[3].meta["context_header"] == "T — Word file"
+    assert docs[3].meta["countries"] is None and docs[3].meta["year"] is None
+
+
+def test_deliverable_front_matter_without_publication_id_is_still_a_project():
+    assert chunk_file("projects/x.md", read("vec_thin.md"))[0].meta["doc_type"] == "project"

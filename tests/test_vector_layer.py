@@ -289,3 +289,15 @@ def test_loader_full_ignores_corrupted_state(tmp_path):
     (out / "vectors" / "state.json").write_text("{not json", encoding="utf-8")
     res = loader(out).run(full=True)
     assert res["full"] is True and len(res["sources"]) == 3 and res["removed"] == []
+
+
+def test_deliverable_full_texts_are_indexed_with_their_meta(tmp_path):
+    out = make_output(tmp_path)
+    (out / "deliverables").mkdir()
+    shutil.copy(FIXTURES / "vec_deliverable.md", out / "deliverables" / "greece.md")
+    stats = index_once(out)
+    docs = [d for d in vstore(out).filter_documents() if d.meta["doc_type"] == "deliverable"]
+    assert len(docs) == 6 and stats["chunks_total"] == len(vstore(out).filter_documents())
+    assert {d.meta["page"] for d in docs} == {1, 2, 3}
+    assert all(d.meta["projects"] == ["financing-sustainability-greece-public-policy-instruments"] for d in docs)
+    assert all(d.id.startswith("deliverables/greece#") for d in docs)

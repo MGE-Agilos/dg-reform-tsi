@@ -170,7 +170,7 @@ class DeliverableSearch(ProjectSearch):
         blocks: list[str] = []
         for i, doc in enumerate(docs, start=start + 1):
             meta = doc.meta
-            where = f"{meta.get('section')}, p. {meta.get('page')}"
+            where = f"{meta.get('section')}, p. {meta['page']}" if meta.get("page") is not None else str(meta.get("section"))
             score = round(doc.score, 3) if doc.score is not None else None
             sources.append({"ref": i, "doc_id": meta.get("doc_id"), "title": meta.get("title") or meta.get("doc_id"),
                             "url": meta.get("source_url"), "section": where, "ai_generated": False, "score": score})

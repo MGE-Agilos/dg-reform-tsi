@@ -12,7 +12,7 @@ from tsi_agent.countries import COUNTRIES
 from tsi_agent.deliverables_pipeline import build_deliverables_pipeline
 from tsi_agent.index_pipeline import build_index_pipeline
 from tsi_agent.pipeline import build_pipeline
-from tsi_agent.runner import run_deliverables, run_extraction, run_index
+from tsi_agent.runner import refresh_deliverables_metadata, run_deliverables, run_extraction, run_index
 
 
 def _countries(value: str) -> list[str]:
@@ -43,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
     deliv.add_argument("--limit", type=int, help="nombre maximal de publications envoyées au LLM")
     deliv.add_argument("--chunk-size", type=int)
     deliv.add_argument("--model")
+    deliv.add_argument("--refresh-metadata", action="store_true",
+                       help="mettre à jour pays, année, programme et domaine des textes intégraux (ni LLM ni réseau)")
     chat = sub.add_parser("chat", help="chatbot local sur la couche vectorisée (page web)")
     chat.add_argument("--port", type=int, help="port local (défaut : chat_port des réglages)")
     chat.add_argument("--no-browser", action="store_true", help="ne pas ouvrir le navigateur")
@@ -97,6 +99,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "deliverables":
         try:
+            if args.refresh_metadata:
+                print(json.dumps(refresh_deliverables_metadata(settings), indent=2, ensure_ascii=False))
+                return 0
             summary = run_deliverables(settings, full=args.full, limit=args.limit, chunk_size=args.chunk_size,
                                        model=args.model)
         except Exception as exc:

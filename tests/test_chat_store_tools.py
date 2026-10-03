@@ -218,3 +218,22 @@ def test_pipeline_has_four_tools_and_deliverable_tool_runs(tmp_path):
 def _gen():
     from test_chat_agent import ScriptedGenerator
     return ScriptedGenerator([])
+
+
+def test_deliverable_search_on_chunks_built_from_a_real_full_text(tmp_path):
+    from conftest import FIXTURES
+    from tsi_agent.chunking import chunk_file
+
+    pid = "financing-sustainability-greece-public-policy-instruments"
+    chunks = chunk_file("deliverables/greece.md", (FIXTURES / "vec_deliverable.md").read_text(encoding="utf-8"))
+    store = open_store(str(tmp_path), 8)
+    store.write_documents(MockDocumentEmbedder(model="mock", dimension=8).run(documents=chunks)["documents"])
+    tool = deliverable_tool(store)
+    out = tool.run(query="factsheet", project_id=pid, countries=["gr"], year_from=2022, programme="TSI",
+                   publication_id=pid)
+    assert len(out["sources"]) == 6 and {s["doc_id"] for s in out["sources"]} == {pid}
+    assert {s["section"] for s in out["sources"]} >= {"Factsheet, p. 3", "Project public brief, p. 1"}
+    assert out["result"].startswith("[1] Financing sustainability in Greece")
+    assert "TSI 2022 — GR\nURL: https://reforms-investments.ec.europa.eu/document/download/" in out["result"]
+    assert tool.run(query="x", project_id="other")["sources"] == []
+    assert tool.run(query="x", countries=["FR"])["sources"] == []
