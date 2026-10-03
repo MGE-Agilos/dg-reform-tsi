@@ -20,7 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 # Embedder local (PyTorch CPU + modele). Pas installe dans deepset, qui passe par l'API OpenAI.
-local = ["sentence-transformers-haystack>=0.1.2", "flask>=3"]
+local = ["sentence-transformers-haystack>=0.1.2", "flask>=3", "qdrant-haystack>=11"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

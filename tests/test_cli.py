@@ -118,3 +118,13 @@ def test_export_deliverables_yaml(tmp_path):
     out = tmp_path / "d.yaml"
     assert cli.main(["export-yaml", "--deliverables", str(out)]) == 0
     assert "DeliverableSummarizer" in out.read_text(encoding="utf-8")
+
+
+def test_deliverables_refresh_metadata_needs_no_llm(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "refresh_deliverables_metadata", lambda settings: {"files": 3, "updated": 1})
+
+    def no_run(*a, **k):
+        raise AssertionError("run_deliverables must not be called")
+    monkeypatch.setattr(cli, "run_deliverables", no_run)
+    assert cli.main(["deliverables", "--refresh-metadata"]) == 0
+    assert '"updated": 1' in capsys.readouterr().out

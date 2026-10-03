@@ -1,4 +1,5 @@
-"""Outils de l'agent chatbot : recherche semantique, liste/comptage de projets, lecture d'un projet.
+"""Outils de l'agent chatbot : recherche semantique (projets, texte integral des livrables), liste/comptage
+de projets, lecture d'un projet.
 
 Composants Haystack exposes via ComponentTool. Les filtres annee/programme/domaine/detail passent par les
 filtres Haystack standards (meme comportement InMemory et OpenSearch) ; le filtre pays est applique ici en
@@ -16,7 +17,7 @@ from haystack.utils import deserialize_component_inplace
 from tsi_agent import runlog
 from tsi_agent.countries import COUNTRIES, slug_from_iso
 
-SEARCH_CANDIDATES_WITH_COUNTRY = 100
+SEARCH_CANDIDATES_WITH_FILTER = 100
 SNIPPET_CHARS = 1200
 READER_MAX_CHARS = 8000
 LISTER_DEFAULT_LIMIT = 20
@@ -24,10 +25,14 @@ LISTER_DEFAULT_LIMIT = 20
 
 def build_filters(year_from: int | None = None, year_to: int | None = None, programme: str | None = None,
                   policy_area: str | None = None, detail_only: bool = False,
-                  doc_type: str | None = "project") -> dict[str, Any] | None:
+                  doc_type: str | list[str] | None = "project", countries: list[str] | None = None,
+                  project_id: str | None = None) -> dict[str, Any] | None:
     conditions: list[dict[str, Any]] = []
     if doc_type:
-        conditions.append({"field": "meta.doc_type", "operator": "==", "value": doc_type})
+        if isinstance(doc_type, str):
+            conditions.append({"field": "meta.doc_type", "operator": "==", "value": doc_type})
+        else:
+            conditions.append({"field": "meta.doc_type", "operator": "in", "value": list(doc_type)})
     if year_from is not None:
         conditions.append({"field": "meta.year", "operator": ">=", "value": int(year_from)})
     if year_to is not None:
@@ -38,6 +43,12 @@ def build_filters(year_from: int | None = None, year_to: int | None = None, prog
         conditions.append({"field": "meta.policy_area", "operator": "==", "value": policy_area})
     if detail_only:
         conditions.append({"field": "meta.detail_page", "operator": "==", "value": True})
+    # Champs liste : `in` avec une liste correspond si l'un des elements du champ est dans la liste (Qdrant, OpenSearch).
+    if countries:
+        conditions.append({"field": "meta.countries", "operator": "in",
+                           "value": [c.strip().upper() for c in countries]})
+    if project_id:
+        conditions.append({"field": "meta.projects", "operator": "in", "value": [project_id]})
     return {"operator": "AND", "conditions": conditions} if conditions else None
 
 
@@ -108,9 +119,11 @@ class ProjectSearch:
         """
         t0 = time.monotonic()
         embedding = self.text_embedder.run(text=query)["embedding"]
+        # Les fiches pays (include_programme) n'ont pas de champ countries : pays filtre en Python dans ce cas.
         filters = build_filters(year_from, year_to, programme, policy_area, detail_only,
-                                doc_type=None if include_programme else "project")
-        candidates = SEARCH_CANDIDATES_WITH_COUNTRY if countries else self.top_k * 3
+                                doc_type=["project", "programme"] if include_programme else "project",
+                                countries=None if include_programme else countries)
+        candidates = SEARCH_CANDIDATES_WITH_FILTER if (countries and include_programme) else self.top_k * 3
         docs = self.retriever.run(query_embedding=embedding, filters=filters, top_k=candidates)["documents"]
         docs = [d for d in docs if _in_countries(d, countries)][: self.top_k]
         start = len(known_sources or [])
@@ -130,6 +143,55 @@ class ProjectSearch:
         result = "\n\n".join(blocks) if blocks else "No matching passages found."
         runlog.event("ProjectSearch", "tool_call", "search_projects", query=query, countries=countries,
                      filters=filters, results=len(docs), duration_ms=round((time.monotonic() - t0) * 1000))
+        return {"result": result, "sources": sources}
+
+
+@component
+class DeliverableSearch(ProjectSearch):
+    @component.output_types(result=str, sources=list[dict])
+    def run(self, query: str, countries: list[str] | None = None, year_from: int | None = None,
+            year_to: int | None = None, programme: str | None = None, policy_area: str | None = None,
+            publication_id: str | None = None, project_id: str | None = None,
+            known_sources: list[dict] | None = None) -> dict[str, Any]:
+        """Semantic search in the full text of the projects' deliverables (reports, presentations). Returns numbered
+        passages [n] with the document and page, to cite.
+
+        :param query: What to look for, in any language (e.g. "survey sample size and response rate").
+        :param countries: ISO country codes of the related projects (e.g. ["HR", "SI"]; Greece is "GR").
+        :param year_from: Keep deliverables of projects from this year on.
+        :param year_to: Keep deliverables of projects up to this year.
+        :param programme: "TSI" (2021 onwards) or "SRSP" (2017-2020).
+        :param policy_area: Policy area slug (e.g. "green-transition").
+        :param publication_id: Keep only this publication (id as returned in earlier results).
+        :param project_id: Keep only deliverables linked to this project id.
+        """
+        t0 = time.monotonic()
+        embedding = self.text_embedder.run(text=query)["embedding"]
+        filters = build_filters(year_from, year_to, programme, policy_area, doc_type="deliverable",
+                                countries=countries, project_id=project_id)
+        if publication_id:
+            filters["conditions"].append({"field": "meta.doc_id", "operator": "==", "value": publication_id})
+        candidates = self.top_k * 3
+        docs = self.retriever.run(query_embedding=embedding, filters=filters, top_k=candidates)["documents"]
+        docs = [d for d in docs if _in_countries(d, countries)
+                and (not project_id or project_id in (d.meta.get("projects") or []))][: self.top_k]
+        start = len(known_sources or [])
+        sources: list[dict[str, Any]] = []
+        blocks: list[str] = []
+        for i, doc in enumerate(docs, start=start + 1):
+            meta = doc.meta
+            where = f"{meta.get('section')}, p. {meta['page']}" if meta.get("page") is not None else str(meta.get("section"))
+            score = round(doc.score, 3) if doc.score is not None else None
+            sources.append({"ref": i, "doc_id": meta.get("doc_id"), "title": meta.get("title") or meta.get("doc_id"),
+                            "url": meta.get("source_url"), "section": where, "ai_generated": False, "score": score})
+            programme_year = " ".join(str(v) for v in (meta.get("programme"), meta.get("year")) if v)
+            head = " — ".join(p for p in (meta.get("title") or meta.get("doc_id"), where, programme_year,
+                                          ", ".join(meta.get("countries") or [])) if p)
+            blocks.append(f"[{i}] {head}\nURL: {meta.get('source_url')}\n{(doc.content or '')[:SNIPPET_CHARS]}")
+        result = "\n\n".join(blocks) if blocks else "No matching passages found."
+        runlog.event("DeliverableSearch", "tool_call", "search_deliverables", query=query, countries=countries,
+                     publication_id=publication_id, project_id=project_id, filters=filters, results=len(docs),
+                     duration_ms=round((time.monotonic() - t0) * 1000))
         return {"result": result, "sources": sources}
 
 
@@ -162,7 +224,7 @@ class ProjectLister:
         :param limit: Maximum number of projects to list (the total is always given).
         """
         t0 = time.monotonic()
-        filters = build_filters(year_from, year_to, programme, policy_area, detail_only)
+        filters = build_filters(year_from, year_to, programme, policy_area, detail_only, countries=countries)
         projects: dict[str, dict[str, Any]] = {}
         for doc in self.document_store.filter_documents(filters=filters):
             doc_id = doc.meta.get("doc_id")

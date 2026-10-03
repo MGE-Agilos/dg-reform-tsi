@@ -177,6 +177,33 @@ def docx_text(data: bytes) -> tuple[int, str]:
     return 0, "\n\n".join(parts)
 
 
+META_FIELDS = ("countries", "year", "programme", "policy_area")
+
+
+def project_meta(project_ids: list[str], store: ProjectStore) -> dict[str, Any]:
+    """Metadonnees des projets lies, reprises dans le texte integral : pays (union), plus petite annee, 1res valeurs."""
+    countries: set[str] = set()
+    years: list[int] = []
+    programme = policy_area = None
+    for project_id in project_ids:
+        text = store.read_project_file(project_id)
+        if text is None:
+            continue
+        try:
+            fm, _ = parse_front_matter(text)
+        except ValueError:
+            continue
+        if not isinstance(fm, dict):
+            continue
+        countries.update(str(c) for c in fm.get("countries") or [])
+        if isinstance(fm.get("year"), int):
+            years.append(fm["year"])
+        programme = programme or fm.get("programme") or None
+        policy_area = policy_area or fm.get("policy_area") or None
+    return {"countries": sorted(countries), "year": min(years) if years else None, "programme": programme,
+            "policy_area": policy_area}
+
+
 @component
 class DeliverableTextExtractor(_Http):
     """Telecharge les fichiers retenus (PDF, Word ; sans cache HTTP), extrait le texte, ecrit output/deliverables/<id>.md."""
@@ -191,6 +218,7 @@ class DeliverableTextExtractor(_Http):
         self.user_agent = user_agent
         self.max_pdf_mb = max_pdf_mb
         self._fetcher = None
+        self._store: ProjectStore | None = None
 
     def _alert(self, pub: Publication, url: str, reason: str) -> None:
         runlog.event("DeliverableTextExtractor", "alert", url, "warning",
@@ -229,6 +257,8 @@ class DeliverableTextExtractor(_Http):
                  "projects": list(pub.project_ids),
                  "files": [{"document": f.file.document, "filename": f.file.filename, "language": f.file.language,
                             "url": f.file.url, "pages": f.pages, "words": f.words} for f in files]}
+        store = self._store if self._store is not None else shared_store(self.output_dir)
+        front.update(project_meta(list(pub.project_ids), store))
         body = f"# {pub.title}\n\n" + "\n\n".join(
             f"## {f.file.document or f.file.filename}\n\nSource: {f.file.url}\n\n{f.text}" for f in files)
         _retry_on_lock(lambda: path.write_text(render(front, body), encoding="utf-8"))

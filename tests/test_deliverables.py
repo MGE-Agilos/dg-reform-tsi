@@ -6,7 +6,7 @@ from conftest import FakeChatGenerator, FakeFetcher, fixture_bytes
 from tsi_agent import runlog
 from tsi_agent.components.claude_cli import LLMQuotaExceeded
 from tsi_agent.components.deliverables import (DeliverableSummarizer, DeliverableTextExtractor, DeliverableWriter,
-                                               PublicationDiscoverer, PublicationFetcher)
+                                               PublicationDiscoverer, PublicationFetcher, project_meta)
 from tsi_agent.config import Settings
 from tsi_agent.deliverables_pipeline import build_deliverables_pipeline, default_deliverables_generator
 from tsi_agent.deliverables_state import DeliverableEntry, DeliverableStore
@@ -15,7 +15,7 @@ from tsi_agent.models import (DeliverableContent, DeliverableFileText, Deliverab
 from tsi_agent.pipeline import load_pipeline
 from tsi_agent.render import (DELIVERABLES_HEADING, deliverables_section, parse_front_matter, render,
                               replace_deliverables_section, with_deliverables_count)
-from tsi_agent.runner import run_deliverables
+from tsi_agent.runner import refresh_deliverables_metadata, run_deliverables
 from tsi_agent.store import LocalProjectStore, StoreEntry
 
 SITE = "https://reforms-investments.ec.europa.eu"
@@ -383,3 +383,45 @@ def test_recently_processed_publications_are_not_rechecked(tmp_path):
         update={"processed": date.today().isoformat()}))
     ds.save()
     assert len(h.run(publications=[slo_pub()], full=True)["to_process"]) == 1
+
+
+def project_with_meta(store, pid, **fm):
+    store.write_project_file(pid, render({"project_id": pid, **fm}, "# T\n"))
+
+
+def test_project_meta_unions_countries_and_takes_first_values(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    project_with_meta(store, "a", countries=["HR", "AT"], year=2024, programme="TSI", policy_area=None)
+    project_with_meta(store, "b", countries=["AT", "SI"], year=2022, programme="SRSP", policy_area="tax")
+    assert project_meta(["a", "b", "missing"], store) == {
+        "countries": ["AT", "HR", "SI"], "year": 2022, "programme": "TSI", "policy_area": "tax"}
+    assert project_meta([], store) == {"countries": [], "year": None, "programme": None, "policy_area": None}
+
+
+def test_extractor_adds_project_meta_to_front_matter(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    project_with_meta(store, "slo", countries=["SI"], year=2023, programme="TSI", policy_area="health")
+    x = extractor(tmp_path, {PDF_URL: fixture_bytes("deliverable_small.pdf")})
+    x._store = store
+    t = x.run(publications=[pub_with_file()])["texts"][0]
+    fm, _ = parse_front_matter((tmp_path / t.full_text_path).read_text(encoding="utf-8"))
+    assert (fm["countries"], fm["year"], fm["programme"], fm["policy_area"]) == (["SI"], 2023, "TSI", "health")
+
+
+def test_refresh_metadata_updates_existing_full_texts(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    project_with_meta(store, "hems", countries=["HR"], year=2021, programme="TSI", policy_area="energy")
+    ds = DeliverableStore(tmp_path)
+    ds.put(entry("pub-a", projects=("hems",)))
+    ds.put(entry("pub-b", projects=("hems",)))  # fichier absent : ignore avec alerte
+    ds.save()
+    path = tmp_path / "deliverables" / "pub-a.md"
+    path.parent.mkdir()
+    path.write_text(render({"publication_id": "pub-a", "projects": ["hems"]}, "# T\n\n## Doc\n\nBody."),
+                    encoding="utf-8")
+    settings = Settings(output_dir=str(tmp_path), logs_dir=str(tmp_path / "logs"))
+    assert refresh_deliverables_metadata(settings) == {"files": 1, "updated": 1}
+    fm, body = parse_front_matter(path.read_text(encoding="utf-8"))
+    assert (fm["countries"], fm["year"], fm["programme"], fm["policy_area"]) == (["HR"], 2021, "TSI", "energy")
+    assert fm["projects"] == ["hems"] and body.startswith("# T") and body.rstrip().endswith("Body.")
+    assert refresh_deliverables_metadata(settings) == {"files": 1, "updated": 0}  # idempotent

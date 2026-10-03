@@ -95,6 +95,9 @@ par publication, un résumé généré par IA inséré dans le fichier du ou des
 # Tout retraiter, même les publications inchangées
 .venv\Scripts\python -m tsi_agent deliverables --full
 
+# Recopier pays, année, programme et domaine des projets liés dans les textes intégraux existants (sans LLM ni réseau)
+.venv\Scripts\python -m tsi_agent deliverables --refresh-metadata
+
 # Exporter le pipeline pour deepset Studio
 .venv\Scripts\python -m tsi_agent export-yaml --deliverables deliverables.yaml
 ```
@@ -151,8 +154,11 @@ un `OpenAIChatGenerator` dans le YAML exporté (voir la section dédiée plus ba
 ## Couche vectorisée (préparation du RAG)
 
 Un second pipeline, `index`, découpe les fichiers de `output/projects` et `output/programme` en morceaux (un par
-section, redécoupé au-delà de 300 mots), les vectorise et les range dans `output/vectors/`. Les fichiers extraits
-ne sont pas modifiés : la couche vectorisée peut être supprimée et reconstruite à tout moment.
+section, redécoupé au-delà de 300 mots), les vectorise et les range dans une base Qdrant locale, `~/tsi-vectors` (réglage `vectors_dir`, hors OneDrive).
+Les fichiers extraits ne sont pas modifiés : la couche vectorisée peut être supprimée et reconstruite à tout moment.
+
+**Un seul processus à la fois sur la base locale** : Qdrant verrouille son dossier. Arrêter le chatbot pendant `index`
+(et inversement) ; le message d'erreur le rappelle.
 
 ```powershell
 # Une fois : embedder local (PyTorch CPU + modèle multilingual-e5-small, ~1 à 2 Go)
@@ -168,8 +174,8 @@ ne sont pas modifiés : la couche vectorisée peut être supprimée et reconstru
 
 | Chemin | Contenu |
 |---|---|
-| `output/vectors/store.json` | Morceaux avec texte, métadonnées et vecteur (format `InMemoryDocumentStore.save_to_disk`) |
-| `output/vectors/state.json` | Hash de chaque fichier indexé et identifiants de ses morceaux. Ne pas éditer à la main. |
+| `~/tsi-vectors/qdrant/` | Base Qdrant locale (collection `tsi`, similarité cosinus, `embedding_dim: 384`) : morceaux avec texte, métadonnées et vecteur. Plus de `store.json`. |
+| `~/tsi-vectors/state.json` | Hash de chaque fichier indexé et identifiants de ses morceaux. Ne pas éditer à la main. |
 
 Chaque morceau porte en métadonnées le projet (`doc_id`, titre, programme, année, pays, domaine, `detail_page`…),
 la section et `ai_generated` (vrai pour le résumé IA). Aucun LLM n'intervient : seul l'embedder travaille.
@@ -177,8 +183,14 @@ Changer de modèle d'embedding ou de règles de découpage déclenche automatiqu
 morceau est `<chemin relatif sans .md>#<n>` (ex. `projects/energy-regulation-academy#0`) ; le `doc_id` du projet
 ou du document programme est conservé à part dans les métadonnées.
 
-Environ 5 000 morceaux au total (2 137 fichiers) : `store.json` pèse environ 50 Mo et est intégralement réécrit
-à chaque run qui modifie quelque chose (OneDrive le resynchronise donc en entier à ce moment-là).
+Environ 70 000 morceaux au total, dont environ 65 000 pour le texte intégral des livrables (`output/deliverables`, découpé
+par page). Un full représente environ 1 h de vectorisation (embedder e5 sur CPU) plus environ 16 min d'écriture ; le
+dossier Qdrant pèse environ 300 à 500 Mo dans `~/tsi-vectors`. Un run incrémental ne touche que les fichiers modifiés
+(suppression des morceaux périmés, puis écriture). La base n'est pas synchronisée par OneDrive.
+
+Un full vide la base en supprimant puis recréant la collection ; `state.json` est invalidé avant, si bien qu'un full
+interrompu est refait en entier au run suivant. Si le dossier est déjà ouvert par un autre processus (chatbot), `index`
+échoue tout de suite.
 
 Dans deepset, l'embedder devient `OpenAIDocumentEmbedder` (même `meta_fields_to_embed`, sans préfixe), et on ajoute
 son tarif pour journaliser le coût :
@@ -215,16 +227,17 @@ reste identique.
 ## Chatbot (agent RAG)
 
 Un troisième pipeline, `chat`, répond aux questions sur les projets à partir de la couche vectorisée. C'est un
-`Agent` Haystack qui dispose de trois outils :
+`Agent` Haystack qui dispose de quatre outils :
 
 | Outil | Rôle |
 |---|---|
 | `search_projects` | Recherche sémantique dans les textes des projets, filtres pays, années, programme, domaine ; renvoie des passages numérotés [n] |
+| `search_deliverables` | Recherche sémantique dans le texte intégral des livrables (rapports, présentations) : méthodes, chiffres, recommandations ; renvoie des passages [n] avec document et page |
 | `list_projects` | Comptage et liste exacts des projets correspondant à des filtres, sur tout le corpus |
 | `get_project` | Texte complet d'un projet |
 
 ```powershell
-# Prérequis : la couche vectorisée (python -m tsi_agent index) et l'extra local
+# Prérequis : la couche vectorisée (python -m tsi_agent index, chatbot arrêté) et l'extra local
 .venv\Scripts\python -m tsi_agent chat            # ouvre http://127.0.0.1:8765
 .venv\Scripts\python -m tsi_agent export-yaml --chat chat.yaml
 ```
@@ -239,6 +252,8 @@ Chaque réponse cite ses sources [n] vers les pages de la Commission et signale 
 affiche les étapes de l'agent, la durée et le coût équivalent API. Chaque question est un run du journal
 (`logs/runs/`, `mode: chat`). En local, une réponse demande 2 à 4 appels au CLI `claude`, soit 20 à 60 s.
 
+Un seul processus à la fois sur la base locale : ne pas lancer `index` pendant que le chatbot tourne.
+
 `export-yaml --chat` construit le pipeline comme la commande `chat` : il exige donc la couche vectorisée déjà
 construite et l'extra `[local]` (embedder local pour `search_projects`).
 
@@ -247,12 +262,12 @@ tokens quel que soit le modèle appelé) ; seul le generator qu'il enveloppe cha
 remplacer :
 - `agent.init_parameters.chat_generator.init_parameters.chat_generator` (le `ClaudeCliChatGenerator`) par un
   `OpenAIChatGenerator`, qui appelle les outils nativement ;
-- le `text_embedder` de l'outil `search_projects` par un `OpenAITextEmbedder` (`text-embedding-3-small`, sans
+- le `text_embedder` des outils `search_projects` et `search_deliverables` par un `OpenAITextEmbedder` (`text-embedding-3-small`, sans
   préfixe), cohérent avec l'embedder de l'index ;
-- le `PersistedInMemoryDocumentStore`, qui apparaît dans les trois outils, par le document store de l'espace de
-  travail (et `InMemoryEmbeddingRetriever` par le retriever correspondant, par exemple `OpenSearchEmbeddingRetriever`).
+- le `LocalQdrantDocumentStore` (dans les outils et le retriever) et le `LocalQdrantEmbeddingRetriever` par le
+  document store de l'espace de travail (OpenSearch) et son retriever (par exemple `OpenSearchEmbeddingRetriever`).
 
-Les trois outils, le prompt et l'Agent ne changent pas.
+Les quatre outils, le prompt et l'Agent ne changent pas.
 
 ## Planification (Windows)
 

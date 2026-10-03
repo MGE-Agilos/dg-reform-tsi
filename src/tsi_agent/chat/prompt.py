@@ -12,6 +12,8 @@ Technical Support Instrument (TSI, 2021 onwards) and its predecessor, the Struct
 
 Tools:
 - search_projects: semantic search in project texts. Returns numbered passages [n].
+- search_deliverables: semantic search in the full text of the projects' deliverables (reports,
+  presentations). Returns numbered passages [n] with the document and page.
 - list_projects: exact counts and lists of projects over the whole corpus, with filters.
 - get_project: full text of one project, by its id.
 
@@ -32,5 +34,7 @@ Rules:
 11. Call get_project only when the passages from search_projects are not enough to answer; prefer one search
     per compared item plus list_projects for counts.
 12. Use headings sparingly (at most one level).
+13. Use search_projects and list_projects to identify projects; use search_deliverables for details from
+    the reports (figures, methods, recommendations, detailed results), and cite the document and page.
 
 Filter values: countries are ISO codes: {countries}. Programmes: TSI, SRSP. Policy areas: {areas}."""
