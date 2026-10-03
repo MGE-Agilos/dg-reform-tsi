@@ -237,3 +237,27 @@ def test_deliverable_search_on_chunks_built_from_a_real_full_text(tmp_path):
     assert "TSI 2022 — GR\nURL: https://reforms-investments.ec.europa.eu/document/download/" in out["result"]
     assert tool.run(query="x", project_id="other")["sources"] == []
     assert tool.run(query="x", countries=["FR"])["sources"] == []
+
+
+def test_build_filters_pushes_list_fields():
+    f = build_filters(doc_type="deliverable", countries=["hr", " si"], project_id="p1")
+    assert f["conditions"][1:] == [
+        {"field": "meta.countries", "operator": "in", "value": ["HR", "SI"]},
+        {"field": "meta.projects", "operator": "in", "value": ["p1"]}]
+
+
+def test_country_and_project_filters_are_pushed_into_the_store(tmp_path):
+    """Les documents recherches sont hors des 100 premiers candidats par similarite : seul le filtre du store les trouve."""
+    store = open_store(str(tmp_path), 8)
+    emb = MockTextEmbedder(model="mock", dimension=8).run(text="q")["embedding"]
+    far = [-v for v in emb]
+    noise = [Document(id=f"noise#{i}", content="n", embedding=[v * (1 - i * 1e-4) for v in emb], meta={
+        "doc_id": f"n{i}", "doc_type": "deliverable", "countries": ["FR"], "projects": ["other"], "year": 2024,
+        "section": "s", "page": 1}) for i in range(150)]
+    target = Document(id="t#0", content="target", embedding=far, meta={
+        "doc_id": "pub-t", "doc_type": "deliverable", "countries": ["HR"], "projects": ["wanted"], "year": 2024,
+        "section": "s", "page": 1, "title": "T"})
+    store.write_documents(noise + [target])
+    tool = deliverable_tool(store, top_k=5)
+    assert [s["doc_id"] for s in tool.run(query="q", countries=["HR"])["sources"]] == ["pub-t"]
+    assert [s["doc_id"] for s in tool.run(query="q", project_id="wanted")["sources"]] == ["pub-t"]

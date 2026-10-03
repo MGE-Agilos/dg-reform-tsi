@@ -301,3 +301,53 @@ def test_deliverable_full_texts_are_indexed_with_their_meta(tmp_path):
     assert {d.meta["page"] for d in docs} == {1, 2, 3}
     assert all(d.meta["projects"] == ["financing-sustainability-greece-public-policy-instruments"] for d in docs)
     assert all(d.id.startswith("deliverables/greece#") for d in docs)
+
+
+def test_full_run_interrupted_after_clear_forces_a_full_next_time(tmp_path, monkeypatch):
+    """Crash apres le vidage du store (full) : l'etat est deja invalide, le run suivant refait un full."""
+    out = make_output(tmp_path)
+    index_once(out)
+
+    def boom(self, *args, **kwargs):
+        raise RuntimeError("simulated crash during the write")
+
+    monkeypatch.setattr(LocalQdrantDocumentStore, "write_documents", boom)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        index_once(out, full=True)
+    monkeypatch.undo()
+    res = ProjectFileLoader(output_dir=str(out), vectors_dir=str(out / "vectors"),
+                            embedder_id="MockDocumentEmbedder:mock").run()
+    assert res["full"] is True and len(res["sources"]) == 3
+
+
+def test_reset_collection_empties_the_store_and_it_stays_usable(tmp_path):
+    store = open_store(str(tmp_path), 8)
+    store.write_documents([Document(id=f"a#{i}", content="x", embedding=[0.1] * 8) for i in range(5)])
+    store.reset_collection()
+    assert store.count_documents() == 0 and store.filter_documents() == []
+    store.write_documents([Document(id="a#0", content="y", embedding=[0.1] * 8)])
+    assert store.count_documents() == 1
+    assert open_store(str(tmp_path), 8).count_documents() == 1  # meme client partage
+
+
+def test_writer_full_uses_reset_collection(tmp_path, monkeypatch):
+    out = make_output(tmp_path)
+    calls = []
+    original = LocalQdrantDocumentStore.reset_collection
+    monkeypatch.setattr(LocalQdrantDocumentStore, "reset_collection",
+                        lambda self: calls.append(1) or original(self))
+    index_once(out)
+    assert calls == [1]
+
+
+def test_array_fields_match_in_filters(tmp_path):
+    store = open_store(str(tmp_path), 8)
+    emb = [0.1] * 8
+    store.write_documents([
+        Document(id="a", content="x", embedding=emb, meta={"countries": ["HR", "SI"], "projects": ["p1", "p2"]}),
+        Document(id="b", content="x", embedding=emb, meta={"countries": ["FR"], "projects": ["p3"]})])
+
+    def ids(field, values):
+        return sorted(d.id for d in store.filter_documents({"field": field, "operator": "in", "value": values}))
+    assert ids("meta.countries", ["HR"]) == ["a"] and ids("meta.countries", ["HR", "FR"]) == ["a", "b"]
+    assert ids("meta.projects", ["p3"]) == ["b"] and ids("meta.projects", ["zz"]) == []

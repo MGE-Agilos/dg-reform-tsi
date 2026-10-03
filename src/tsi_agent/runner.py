@@ -67,6 +67,10 @@ def run_index(settings: Settings, *, full: bool = False, embedder: Any = None, r
     """Vectorise les fichiers extraits nouveaux ou modifies (tout, au premier run ou avec full)."""
     with runlog.open_run(settings.logs_dir, run_id) as run:
         pipeline = pipeline_factory(settings, embedder=embedder)
+        # Dossier Qdrant verrouille par un autre processus : echouer maintenant, pas apres l'heure de vectorisation.
+        store = getattr(pipeline.get_component("vector_writer"), "document_store", None)
+        if hasattr(store, "check_lock"):
+            store.check_lock()
         out = pipeline.run({"loader": {"full": full}},
                            include_outputs_from={"loader", "chunker", "vector_writer"})
         run.extra.update({"mode": "index", "full": out["loader"]["full"],

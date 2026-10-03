@@ -75,9 +75,15 @@ class VectorLayerWriter:
         store = self.document_store
         state = None if full else load_state(vdir)
         if state is None:
-            # Full : on repart d'un store vide (ids orphelins d'un run interrompu compris).
+            # Full : on repart d'un store vide (ids orphelins d'un run interrompu compris). L'etat est invalide
+            # d'abord (embedder vide) : un arret apres le vidage force un full au run suivant, au lieu d'un
+            # incremental sur un store a moitie vide.
             state = VectorState()
-            store.delete_all_documents()
+            save_state(vdir, state)
+            if hasattr(store, "reset_collection"):
+                store.reset_collection()
+            else:
+                store.delete_all_documents()
         state.embedder_id, state.chunker_version = self.embedder_id, self.chunker_version
 
         touched = [str(s.meta["file_path"]) for s in sources] + list(removed)

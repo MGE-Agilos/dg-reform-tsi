@@ -89,3 +89,18 @@ def test_real_model_finds_project_from_french_question(tmp_path):
         lines = "\n".join(f"{i + 1}. {r.meta['doc_id']} (score={r.score:.4f})" for i, r in enumerate(results))
         pytest.fail(f"top-1 n'est pas energy-regulation-academy ; top-3 :\n{lines}")
     assert results[0].meta["doc_id"] == "energy-regulation-academy"
+
+
+def test_run_index_fails_fast_when_the_qdrant_folder_is_locked(tmp_path, monkeypatch):
+    import qdrant_client
+
+    def locked(*args, **kwargs):
+        raise RuntimeError("Storage folder is already accessed by another instance of Qdrant client")
+
+    monkeypatch.setattr(qdrant_client, "QdrantClient", locked)
+    embedded = []
+    emb = mock()
+    emb.run = lambda documents: embedded.append(documents) or {"documents": [], "meta": {}}
+    with pytest.raises(RuntimeError, match="deja ouverte par un autre processus"):
+        run_index(settings_for(tmp_path), embedder=emb, run_id="locked")
+    assert embedded == []

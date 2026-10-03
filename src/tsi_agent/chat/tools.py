@@ -25,7 +25,8 @@ LISTER_DEFAULT_LIMIT = 20
 
 def build_filters(year_from: int | None = None, year_to: int | None = None, programme: str | None = None,
                   policy_area: str | None = None, detail_only: bool = False,
-                  doc_type: str | list[str] | None = "project") -> dict[str, Any] | None:
+                  doc_type: str | list[str] | None = "project", countries: list[str] | None = None,
+                  project_id: str | None = None) -> dict[str, Any] | None:
     conditions: list[dict[str, Any]] = []
     if doc_type:
         if isinstance(doc_type, str):
@@ -42,6 +43,12 @@ def build_filters(year_from: int | None = None, year_to: int | None = None, prog
         conditions.append({"field": "meta.policy_area", "operator": "==", "value": policy_area})
     if detail_only:
         conditions.append({"field": "meta.detail_page", "operator": "==", "value": True})
+    # Champs liste : `in` avec une liste correspond si l'un des elements du champ est dans la liste (Qdrant, OpenSearch).
+    if countries:
+        conditions.append({"field": "meta.countries", "operator": "in",
+                           "value": [c.strip().upper() for c in countries]})
+    if project_id:
+        conditions.append({"field": "meta.projects", "operator": "in", "value": [project_id]})
     return {"operator": "AND", "conditions": conditions} if conditions else None
 
 
@@ -112,9 +119,11 @@ class ProjectSearch:
         """
         t0 = time.monotonic()
         embedding = self.text_embedder.run(text=query)["embedding"]
+        # Les fiches pays (include_programme) n'ont pas de champ countries : pays filtre en Python dans ce cas.
         filters = build_filters(year_from, year_to, programme, policy_area, detail_only,
-                                doc_type=["project", "programme"] if include_programme else "project")
-        candidates = SEARCH_CANDIDATES_WITH_FILTER if countries else self.top_k * 3
+                                doc_type=["project", "programme"] if include_programme else "project",
+                                countries=None if include_programme else countries)
+        candidates = SEARCH_CANDIDATES_WITH_FILTER if (countries and include_programme) else self.top_k * 3
         docs = self.retriever.run(query_embedding=embedding, filters=filters, top_k=candidates)["documents"]
         docs = [d for d in docs if _in_countries(d, countries)][: self.top_k]
         start = len(known_sources or [])
@@ -158,10 +167,11 @@ class DeliverableSearch(ProjectSearch):
         """
         t0 = time.monotonic()
         embedding = self.text_embedder.run(text=query)["embedding"]
-        filters = build_filters(year_from, year_to, programme, policy_area, doc_type="deliverable")
+        filters = build_filters(year_from, year_to, programme, policy_area, doc_type="deliverable",
+                                countries=countries, project_id=project_id)
         if publication_id:
             filters["conditions"].append({"field": "meta.doc_id", "operator": "==", "value": publication_id})
-        candidates = SEARCH_CANDIDATES_WITH_FILTER if (countries or project_id) else self.top_k * 3
+        candidates = self.top_k * 3
         docs = self.retriever.run(query_embedding=embedding, filters=filters, top_k=candidates)["documents"]
         docs = [d for d in docs if _in_countries(d, countries)
                 and (not project_id or project_id in (d.meta.get("projects") or []))][: self.top_k]
@@ -214,7 +224,7 @@ class ProjectLister:
         :param limit: Maximum number of projects to list (the total is always given).
         """
         t0 = time.monotonic()
-        filters = build_filters(year_from, year_to, programme, policy_area, detail_only)
+        filters = build_filters(year_from, year_to, programme, policy_area, detail_only, countries=countries)
         projects: dict[str, dict[str, Any]] = {}
         for doc in self.document_store.filter_documents(filters=filters):
             doc_id = doc.meta.get("doc_id")

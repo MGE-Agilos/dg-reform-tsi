@@ -95,6 +95,9 @@ par publication, un résumé généré par IA inséré dans le fichier du ou des
 # Tout retraiter, même les publications inchangées
 .venv\Scripts\python -m tsi_agent deliverables --full
 
+# Recopier pays, année, programme et domaine des projets liés dans les textes intégraux existants (sans LLM ni réseau)
+.venv\Scripts\python -m tsi_agent deliverables --refresh-metadata
+
 # Exporter le pipeline pour deepset Studio
 .venv\Scripts\python -m tsi_agent export-yaml --deliverables deliverables.yaml
 ```
@@ -180,8 +183,14 @@ Changer de modèle d'embedding ou de règles de découpage déclenche automatiqu
 morceau est `<chemin relatif sans .md>#<n>` (ex. `projects/energy-regulation-academy#0`) ; le `doc_id` du projet
 ou du document programme est conservé à part dans les métadonnées.
 
-Environ 5 000 morceaux au total (2 137 fichiers) pour les projets et le programme. La base est mise à jour morceau par
-morceau (suppression des morceaux périmés, puis écriture) et n'est pas synchronisée par OneDrive.
+Environ 70 000 morceaux au total, dont environ 65 000 pour le texte intégral des livrables (`output/deliverables`, découpé
+par page). Un full représente environ 1 h de vectorisation (embedder e5 sur CPU) plus environ 16 min d'écriture ; le
+dossier Qdrant pèse environ 300 à 500 Mo dans `~/tsi-vectors`. Un run incrémental ne touche que les fichiers modifiés
+(suppression des morceaux périmés, puis écriture). La base n'est pas synchronisée par OneDrive.
+
+Un full vide la base en supprimant puis recréant la collection ; `state.json` est invalidé avant, si bien qu'un full
+interrompu est refait en entier au run suivant. Si le dossier est déjà ouvert par un autre processus (chatbot), `index`
+échoue tout de suite.
 
 Dans deepset, l'embedder devient `OpenAIDocumentEmbedder` (même `meta_fields_to_embed`, sans préfixe), et on ajoute
 son tarif pour journaliser le coût :
