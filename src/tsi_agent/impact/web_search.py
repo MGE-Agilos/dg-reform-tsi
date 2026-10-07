@@ -59,9 +59,14 @@ class ClaudeWebSearch:
         except json.JSONDecodeError:
             payload = None
         results = payload.get("results") if isinstance(payload, dict) else None
+        if not isinstance(results, list):  # reponse illisible : aucun document, mais trace dans le journal
+            runlog.event("ClaudeWebSearch", "web_search", query, "bad_format", answer=(reply.text or "")[:500])
+            results = []
         documents: list[Document] = []
-        for item in results or []:
-            url = str((item or {}).get("url") or "")
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "")
             if not url.startswith(("http://", "https://")):
                 continue
             documents.append(Document(content=str(item.get("snippet") or ""),

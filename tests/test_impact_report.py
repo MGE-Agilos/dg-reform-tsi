@@ -65,3 +65,39 @@ def test_write_list_read(tmp_path):
     assert front["confidence"] == "medium" and body.startswith("# Impact analysis")
     assert read_report(tmp_path, "unknown") is None
     assert not valid_project_id("../etc") and valid_project_id("hosp-hr-2")
+
+
+def test_clean_citations_ranges_and_separators():
+    valid = {1, 2, 3, 4, 5}
+    assert clean_citations("A [1-2] B [3–5] C [2; 3] D [1, 4]", valid)[0] == \
+        "A [1][2] B [3][4][5] C [2][3] D [1][4]"
+    text, removed = clean_citations("X [4-7] Y [2;9]", valid)
+    assert text == "X [4][5] Y [2]" and removed == [6, 7, 9]
+    # plage trop longue : laissee telle quelle
+    assert clean_citations("Z [1-500]", valid)[0] == "Z [1-500]"
+
+
+def test_clean_citations_ignores_bracketed_years():
+    text, removed = clean_citations("In [2023] and [2019-2021] and [1, 2020] and [12]", {1, 2})
+    assert text == "In [2023] and [2019-2021] and [1, 2020] and " and removed == [12]
+
+
+def test_parse_report_rejects_empty_report():
+    with pytest.raises(ReportFormatError):
+        parse_report('{"confidence": "low", "objectives": []}')
+    with pytest.raises(ReportFormatError):
+        parse_report('{"overall_verdict": "  ", "impact_by_level": {"country": ""}}')
+    assert parse_report('{"impact_by_level": {"world": "Some evidence [1]."}}')["confidence"] == "low"
+
+
+def test_list_reports_skips_malformed_files(tmp_path):
+    write_report(tmp_path, "hosp-hr", render_report(META, REPORT, SOURCES, RUN))
+    (tmp_path / "bad-yaml.md").write_text("---\nfoo: [unclosed\n---\nbody", encoding="utf-8")
+    (tmp_path / "empty-fm.md").write_text("---\n\n---\nbody", encoding="utf-8")
+    (tmp_path / "list-fm.md").write_text("---\n- a\n- b\n---\nbody", encoding="utf-8")
+    (tmp_path / "scalar-fm.md").write_text("---\njust text\n---\nbody", encoding="utf-8")
+    assert [r["project_id"] for r in list_reports(tmp_path)] == ["hosp-hr"]
+
+
+def test_valid_project_id_rejects_trailing_newline():
+    assert not valid_project_id("hosp-hr\n") and valid_project_id("hosp-hr")

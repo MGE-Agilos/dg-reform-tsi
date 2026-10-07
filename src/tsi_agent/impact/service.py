@@ -34,6 +34,16 @@ def progress_text(record: dict[str, Any]) -> str | None:
         return "Analysing…" if record.get("component") == "ChatAgent" else None
     if action != "tool_call":
         return None
+    result = record.get("result") or "ok"
+    netloc = urlparse(str(record.get("url") or "")).netloc or record.get("url")
+    if result != "ok":  # echec d'un outil : affiche tel quel (l'agent continue)
+        if target == "web_search":
+            return "Search limit reached" if result == "limit" else f"Web search failed: {record.get('query')}"
+        if target == "fetch_page":
+            return f"Could not read: {netloc}"
+        if target == "get_project":
+            return f"Project not found: {record.get('doc_id')}"
+        return f"{target}: {result}"
     if target == "get_project":
         return f"Reading project {record.get('doc_id')}"
     if target == "search_deliverables":
@@ -41,7 +51,7 @@ def progress_text(record: dict[str, Any]) -> str | None:
     if target == "web_search":
         return f"Searching the web: {record.get('query')}"
     if target == "fetch_page":
-        return f"Reading: {urlparse(str(record.get('url') or '')).netloc or record.get('url')}"
+        return f"Reading: {netloc}"
     return None
 
 
@@ -70,15 +80,17 @@ def analyse(pipeline: Pipeline, project_id: str, *, settings: Settings, project_
         runlog.event("ImpactService", "impact_end", project_id, sources=len(sources),
                      searches=len(out.get("searches") or []))
         run.extra.update({"mode": "impact", "project_id": project_id})
+        # Ecriture dans le run : l'alerte est journalisee et un echec d'ecriture marque le run en erreur.
+        current = run.summary()
+        markdown = render_report(project_meta, report, sources, {
+            "run_id": run.run_id, "model": settings.impact_model, "cost_usd": current["cost_usd"],
+            "duration_s": current["duration_s"], "generated": date.today().isoformat()})
+        write_report(settings.impact_dir, project_id, markdown)
+        front, body = read_report(settings.impact_dir, project_id)
+        if front.get("removed_citations"):
+            runlog.event("ImpactService", "alert", project_id,
+                         message=f"citations inconnues retirees : {front['removed_citations']}")
     summary = run.final_summary
-    markdown = render_report(project_meta, report, sources, {
-        "run_id": run.run_id, "model": settings.impact_model, "cost_usd": summary["cost_usd"],
-        "duration_s": summary["duration_s"], "generated": date.today().isoformat()})
-    write_report(settings.impact_dir, project_id, markdown)
-    front, body = read_report(settings.impact_dir, project_id)
-    if front.get("removed_citations"):
-        runlog.event("ImpactService", "alert", project_id,
-                     message=f"citations inconnues retirees : {front['removed_citations']}")
     return {"project_id": project_id, "front": front, "body": body, "run_id": run.run_id,
             "cost_usd": summary["cost_usd"], "duration_s": summary["duration_s"]}
 

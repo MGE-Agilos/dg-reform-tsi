@@ -61,3 +61,12 @@ def test_real_web_search_via_cli():
     out = ClaudeWebSearch(model="haiku", top_k=5).run(query="Technical Support Instrument Croatia health reform")
     assert out["documents"], "no results"
     assert all(d.meta["link"].startswith("http") for d in out["documents"])
+
+
+def test_unparseable_reply_is_logged_as_bad_format(tmp_path, monkeypatch):
+    search = ClaudeWebSearch()
+    monkeypatch.setattr(search, "_cli", lambda: FakeCli({"no_results": []}))
+    with runlog.open_run(tmp_path, "w2") as run:
+        assert search.run(query="q")["documents"] == []
+    counts = run.final_summary["counts"]
+    assert counts.get("web_search:bad_format") == 1 and run.final_summary["llm_calls"] == 1

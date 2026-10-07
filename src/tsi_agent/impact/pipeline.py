@@ -54,7 +54,10 @@ def build_impact_pipeline(settings: Settings, *, chat_generator: Any = None, tex
     ]
     agent = Agent(chat_generator=LoggedChatGenerator(chat_generator=generator, pricing=settings.pricing),
                   tools=tools, system_prompt=system_prompt(settings.impact_max_searches), state_schema=IMPACT_STATE,
-                  max_agent_steps=settings.impact_max_steps)
+                  max_agent_steps=settings.impact_max_steps,
+                  # Les outils renvoient deja leurs erreurs attendues en texte ; une exception qui remonte (quota
+                  # de la souscription, bug) doit arreter l'analyse au lieu d'etre transmise au modele.
+                  raise_on_tool_invocation_failure=True)
     p = Pipeline()
     p.add_component("agent", agent)
     return p

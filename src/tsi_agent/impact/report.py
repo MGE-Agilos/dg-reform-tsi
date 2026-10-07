@@ -9,11 +9,17 @@ import re
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from tsi_agent.render import parse_front_matter, render
 
 VERDICTS = ("achieved", "partly achieved", "not achieved", "insufficient evidence")
 CONFIDENCES = ("high", "medium", "low")
-_CITE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+# Groupe de citations : [3], [2, 7], [2; 3], [1-2], [3–5] (tiret ou demi-cadratin pour les plages).
+_CITE = re.compile(r"\[(\d+(?:\s*[,;\-\u2013]\s*\d+)*)\]")
+_RANGE = re.compile(r"(\d+)\s*[\-\u2013]\s*(\d+)|(\d+)")
+MAX_CITATION = 999  # au-dela : une annee entre crochets ([2023]), pas une citation
+MAX_RANGE = 20  # plage plus longue : laissee telle quelle
 _PROJECT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,200}$")
 
 
@@ -22,7 +28,7 @@ class ReportFormatError(ValueError):
 
 
 def valid_project_id(project_id: str) -> bool:
-    return bool(_PROJECT_ID.match(project_id or ""))
+    return bool(_PROJECT_ID.fullmatch(project_id or ""))
 
 
 def parse_report(text: str) -> dict[str, Any]:
@@ -46,7 +52,7 @@ def parse_report(text: str) -> dict[str, Any]:
                            "verdict": verdict if verdict in VERDICTS else "insufficient evidence",
                            "rationale": str(item.get("rationale") or "").strip()})
     confidence = str(data.get("confidence") or "").strip().lower()
-    return {
+    report = {
         "project_overview": str(data.get("project_overview") or "").strip(),
         "positive_evidence": str(data.get("positive_evidence") or "").strip(),
         "negative_evidence": str(data.get("negative_evidence") or "").strip(),
@@ -55,14 +61,39 @@ def parse_report(text: str) -> dict[str, Any]:
         "overall_verdict": str(data.get("overall_verdict") or "").strip(),
         "confidence": confidence if confidence in CONFIDENCES else "low",
     }
+    texts = [report["overall_verdict"], report["project_overview"], report["positive_evidence"],
+             report["negative_evidence"], *report["impact_by_level"].values()]
+    if not any(texts):  # reponse vide : ne doit jamais ecraser un rapport existant
+        raise ReportFormatError("the final answer has no verdict and no content")
+    return report
+
+
+def _refs(group: str) -> list[int] | None:
+    """Numeros d'un groupe de citations, plages developpees ; None si ce n'est pas une citation (annee, plage
+    trop longue ou inversee)."""
+    refs: list[int] = []
+    for start, end, single in _RANGE.findall(group):
+        if single:
+            refs.append(int(single))
+            continue
+        a, b = int(start), int(end)
+        if b < a or b - a + 1 > MAX_RANGE:
+            return None
+        refs.extend(range(a, b + 1))
+    if any(n > MAX_CITATION for n in refs):
+        return None
+    return refs
 
 
 def clean_citations(text: str, valid: set[int]) -> tuple[str, list[int]]:
-    """Retire les numeros [n] inconnus ; "[2, 7]" devient "[2]" (ou rien). Renvoie (texte, numeros retires)."""
+    """Retire les numeros [n] inconnus ; "[2, 7]" devient "[2]" (ou rien), "[1-3]" devient "[1][2][3]".
+    Renvoie (texte, numeros retires)."""
     removed: set[int] = set()
 
     def repl(m: re.Match) -> str:
-        refs = [int(n) for n in re.findall(r"\d+", m.group(1))]
+        refs = _refs(m.group(1))
+        if refs is None:
+            return m.group(0)
         removed.update(n for n in refs if n not in valid)
         return "".join(f"[{n}]" for n in refs if n in valid)
 
@@ -74,7 +105,7 @@ def _cell(text: str) -> str:
 
 
 def _cited(texts: list[str]) -> set[int]:
-    return {int(n) for t in texts for group in _CITE.findall(t) for n in re.findall(r"\d+", group)}
+    return {n for t in texts for group in _CITE.findall(t) for n in (_refs(group) or [])}
 
 
 def render_report(meta: dict[str, Any], report: dict[str, Any], sources: list[dict[str, Any]],
@@ -150,7 +181,9 @@ def list_reports(impact_dir: str | Path) -> list[dict[str, Any]]:
     out = []
     for path in Path(impact_dir).glob("*.md"):
         try:
-            out.append(parse_front_matter(path.read_text(encoding="utf-8"))[0])
-        except (ValueError, OSError):
+            front = parse_front_matter(path.read_text(encoding="utf-8"))[0]
+        except (ValueError, OSError, yaml.YAMLError):  # fichier illisible : ignore, la liste reste servie
             continue
+        if isinstance(front, dict) and front:
+            out.append(front)
     return sorted(out, key=lambda f: (str(f.get("generated") or ""), str(f.get("run_id") or "")), reverse=True)

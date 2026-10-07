@@ -99,3 +99,56 @@ def test_jobs_single_run_status_and_errors():
     jobs.wait(5)
     st = jobs.status()
     assert st["state"] == "error" and "limit" in st["error"].lower()
+
+
+def test_progress_text_shows_failures():
+    assert progress_text({"action": "tool_call", "target": "web_search", "result": "error", "query": "q"}) == \
+        "Web search failed: q"
+    assert progress_text({"action": "tool_call", "target": "web_search", "result": "limit", "query": "q"}) == \
+        "Search limit reached"
+    assert progress_text({"action": "tool_call", "target": "fetch_page", "result": "error",
+                          "url": "https://www.oecd.org/x"}) == "Could not read: www.oecd.org"
+    assert progress_text({"action": "tool_call", "target": "get_project", "result": "not_found",
+                          "doc_id": "p"}) == "Project not found: p"
+    assert progress_text({"action": "tool_call", "target": "web_search", "result": "ok", "query": "q"}) == \
+        "Searching the web: q"
+
+
+def test_quota_in_web_search_stops_the_analysis(tmp_path):
+    from test_chat_agent import chat_settings
+    from tsi_agent.impact.service import QUOTA_MESSAGE
+    s = chat_settings(tmp_path).model_copy(update={"impact_dir": str(tmp_path / "impact")})
+    pipe = impact_pipeline(tmp_path, [[("web_search", {"query": "q"})], json.dumps(REPORT)], settings=s,
+                           search_engine=FakeEngine(error=LLMQuotaExceeded("limit")), page_fetcher=FakeFetcher())
+    jobs = ImpactJobs(lambda pid, on_step: analyse(pipe, pid, settings=s, project_meta=META, on_step=on_step))
+    jobs.start("energy-regulation-academy")
+    jobs.wait(30)
+    st = jobs.status()
+    assert st["state"] == "error" and st["error"] == QUOTA_MESSAGE
+    assert not (tmp_path / "impact" / "energy-regulation-academy.md").exists()
+
+
+def _summary(s, run_id):
+    return json.loads((Path(s.logs_dir) / "runs" / f"{run_id}.summary.json").read_text(encoding="utf-8"))
+
+
+def test_analyse_logs_removed_citations_alert_in_the_run(tmp_path):
+    report = dict(REPORT, positive_evidence="Good [2] and invented [8].")
+    result, _, s = run_analysis(tmp_path, json.dumps(report))
+    summary = _summary(s, result["run_id"])
+    assert any("8" in a for a in summary["alerts"]) and summary["status"] == "ok"
+    assert set(result) == {"project_id", "front", "body", "run_id", "cost_usd", "duration_s"}
+
+
+def test_analyse_write_failure_marks_run_as_error(tmp_path, monkeypatch):
+    import tsi_agent.impact.service as service
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(service, "write_report", boom)
+    with pytest.raises(OSError):
+        run_analysis(tmp_path, json.dumps(REPORT))
+    summaries = [json.loads(p.read_text(encoding="utf-8")) for p in (tmp_path / "logs" / "runs").glob("*.summary.json")]
+    impact = [x for x in summaries if x.get("mode") == "impact"]
+    assert len(impact) == 1 and impact[0]["status"] == "error" and "disk full" in impact[0]["error"]
