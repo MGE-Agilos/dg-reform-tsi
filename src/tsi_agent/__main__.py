@@ -52,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
     export.add_argument("--chat", action="store_true", help="exporter le pipeline du chatbot")
+    export.add_argument("--impact", action="store_true", help="exporter le pipeline d'analyse d'impact")
     export.add_argument("--deliverables", action="store_true", help="exporter le pipeline des livrables")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
@@ -66,6 +67,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if args.deliverables:
                 pipe = build_deliverables_pipeline(settings)
+            elif args.impact:
+                from tsi_agent.impact.pipeline import build_impact_pipeline
+                pipe = build_impact_pipeline(settings)
             elif args.chat:
                 from tsi_agent.chat import pipeline as chat_pipeline
                 pipe = chat_pipeline.build_chat_pipeline(settings, sources.get("policy_areas") or [])
