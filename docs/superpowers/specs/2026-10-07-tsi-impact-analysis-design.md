@@ -46,7 +46,7 @@ Outils de l'agent (numérotation continue des sources via l'état `sources`, com
 | `web_search(query)` | 6 à 8 résultats numérotés : titre, URL, extrait | `ClaudeWebSearch` | `SerperDevWebSearch` |
 | `fetch_page(url)` | Texte de la page (HTML ou PDF), tronqué | `LinkContentFetcher` + convertisseurs | idem |
 
-Réglages (`config/settings.yaml`) : `impact_model: sonnet`, `impact_max_steps: 20`, `impact_max_searches: 10`,
+Réglages (`config/settings.yaml`) : `impact_model: opus`, `impact_max_steps: 20`, `impact_max_searches: 10`,
 `impact_page_words: 3000`, `impact_dir: output/impact`, `web_search_model: haiku` (la recherche elle-même n'a pas
 besoin de Sonnet).
 

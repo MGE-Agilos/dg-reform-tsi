@@ -34,7 +34,7 @@ class Settings(BaseModel):
     deliverables_llm_timeout_s: int = 600  # prompts longs, jusqu'a 15 000 mots
     # Analyse d'impact (onglet de la page web).
     impact_dir: str = "output/impact"
-    impact_model: str = "sonnet"
+    impact_model: str = "opus"
     impact_max_steps: int = 20  # appels LLM maximum par analyse
     impact_max_searches: int = 10  # recherches web maximum par analyse (impose par l'outil)
     impact_page_words: int = 3000  # texte d'une page web transmis a l'agent

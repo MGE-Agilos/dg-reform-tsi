@@ -29,7 +29,7 @@ deliverables_recheck_days: 7   # publications traitees depuis moins de N jours :
 
 # Analyse d'impact (onglet "Impact analysis" de la page web)
 impact_dir: output/impact
-impact_model: sonnet
+impact_model: opus          # Opus : modele le plus capable pour l'analyse
 impact_max_steps: 20        # appels LLM maximum par analyse
 impact_max_searches: 10     # recherches web maximum par analyse
 impact_page_words: 3000     # texte d'une page web transmis a l'agent
