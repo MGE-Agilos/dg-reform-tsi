@@ -1,5 +1,10 @@
 """Pipeline Haystack de l'analyse d'impact : un Agent avec 4 outils (projet, livrables, recherche web, lecture de
-page) ; export YAML deepset (ClaudeWebSearch -> SerperDevWebSearch, generator -> OpenAIChatGenerator)."""
+page).
+
+L'export YAML (`export-yaml --impact`) contient les composants locaux ClaudeWebSearch (moteur de l'outil web_search)
+et ClaudeCliChatGenerator (enveloppe par LoggedChatGenerator). Dans deepset, on les remplace a la main dans le YAML :
+ClaudeWebSearch par SerperDevWebSearch (package serperdev-haystack, cle API Serper ; meme interface query ->
+documents, links) et ClaudeCliChatGenerator par OpenAIChatGenerator. Rien n'est remplace automatiquement."""
 
 from typing import Any
 
