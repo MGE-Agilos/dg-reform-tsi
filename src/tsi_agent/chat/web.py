@@ -13,7 +13,8 @@ from tsi_agent.components.claude_cli import LLMQuotaExceeded
 from tsi_agent.config import Settings
 from tsi_agent.impact.catalog import load_catalog, search_catalog
 from tsi_agent.impact.pipeline import build_impact_pipeline
-from tsi_agent.impact.report import impact_category, list_reports, read_report
+from tsi_agent.impact.report import list_reports, read_report
+from tsi_agent.impact.scoring import IMPACT_LEVEL_LABELS, default_scorer, impact_level
 from tsi_agent.impact.service import ImpactJobs, JobRunning, analyse, default_report_formatter
 
 INDEX_HTML = Path(__file__).parent / "static" / "index.html"
@@ -35,21 +36,28 @@ def _valid_history(history: Any) -> bool:
     return True
 
 
+def rated_score(front: dict[str, Any]) -> int | None:
+    """Score 0..10 d'un rapport note ; None sans impact_level ou sans impact_score entier dans 0..10 (rapport
+    jamais note ou ancienne echelle -2..+2)."""
+    score = front.get("impact_score")
+    if front.get("impact_level") in IMPACT_LEVEL_LABELS and isinstance(score, int) and not isinstance(score, bool) \
+            and 0 <= score <= 10:
+        return score
+    return None
+
+
 def impact_summary(reports: list[dict[str, Any]]) -> dict[str, int]:
-    """Nombre de rapports par categorie d'impact ; sans impact_score entier (anciens rapports) : not_rated."""
-    counts = {"positive": 0, "undetermined": 0, "negative": 0, "not_rated": 0}
+    """Nombre de rapports par niveau d'impact (strong / moderate / weak) ; non notes : not_rated."""
+    counts = {"strong": 0, "moderate": 0, "weak": 0, "not_rated": 0}
     for front in reports:
-        score = front.get("impact_score")
-        if isinstance(score, int) and not isinstance(score, bool):
-            counts[impact_category(score)] += 1
-        else:
-            counts["not_rated"] += 1
+        score = rated_score(front)
+        counts[impact_level(score) if score is not None else "not_rated"] += 1
     return counts
 
 
 def create_app(settings: Settings, pipeline: Any = None, policy_areas: list[str] | None = None,
                impact_pipeline: Any = None, catalog: list[dict[str, Any]] | None = None,
-               report_formatter: Any = None) -> Flask:
+               report_formatter: Any = None, scorer: Any = None) -> Flask:
     """Construit l'application ; les pipelines (store + modele) sont charges une seule fois, ici.
 
     Production (`pipeline` absent) : un seul embedder e5 et un seul store Qdrant local, partages par le chat et
@@ -65,6 +73,8 @@ def create_app(settings: Settings, pipeline: Any = None, policy_areas: list[str]
             catalog = load_catalog(Path(settings.output_dir) / "projects")
         if report_formatter is None:
             report_formatter = default_report_formatter(settings)
+        if scorer is None:
+            scorer = default_scorer(settings)
     catalog = catalog or []
     pipeline.warm_up()
     if impact_pipeline is not None:
@@ -99,7 +109,7 @@ def create_app(settings: Settings, pipeline: Any = None, policy_areas: list[str]
 
     def run_impact(project_id: str, on_step: Any) -> dict[str, Any]:
         return analyse(impact_pipeline, project_id, settings=settings, project_meta=by_id[project_id],
-                       on_step=on_step, formatter=report_formatter)
+                       on_step=on_step, formatter=report_formatter, scorer=scorer)
 
     jobs = ImpactJobs(run_impact)
     app.config["IMPACT_JOBS"] = jobs

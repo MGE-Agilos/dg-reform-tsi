@@ -12,11 +12,12 @@ from haystack.dataclasses import ChatMessage, ChatRole
 from tsi_agent import runlog
 from tsi_agent.chat.service import find_cause, root_cause
 from tsi_agent.chat.generator import LoggedChatGenerator
-from tsi_agent.components.claude_cli import ClaudeCliChatGenerator, LLMQuotaExceeded
+from tsi_agent.components.claude_cli import ClaudeCliChatGenerator, LLMCallError, LLMQuotaExceeded
 from tsi_agent.config import Settings
 from tsi_agent.impact.prompt import user_prompt
 from tsi_agent.impact.report import (REPORT_SCHEMA, ReportFormatError, parse_report, read_report, render_report,
                                      write_report)
+from tsi_agent.impact.scoring import ScoringError, apply_score, score_report
 
 QUOTA_MESSAGE = "The Claude subscription limit has been reached. Please try again later."
 
@@ -87,9 +88,12 @@ def _read_final_answer(text: str, formatter: Any, project_id: str) -> dict[str, 
 
 
 def analyse(pipeline: Pipeline, project_id: str, *, settings: Settings, project_meta: dict[str, Any],
-            on_step: Callable[[str], None] | None = None, formatter: Any = None) -> dict[str, Any]:
+            on_step: Callable[[str], None] | None = None, formatter: Any = None,
+            scorer: Any = None) -> dict[str, Any]:
     """:param formatter: generator a sortie structuree pour reparer un JSON final invalide (None : pas de
-        reparation) ; voir default_report_formatter."""
+        reparation) ; voir default_report_formatter.
+    :param scorer: generator du score d'impact 0-10, calcule a partir du rapport ecrit (None : pas de score) ;
+        voir scoring.default_scorer. Un echec du score laisse le rapport sans score (alerte) ; le quota remonte."""
     with runlog.open_run(settings.logs_dir) as run:
         if on_step is not None:
             def listener(record: dict[str, Any]) -> None:
@@ -115,6 +119,19 @@ def analyse(pipeline: Pipeline, project_id: str, *, settings: Settings, project_
             "duration_s": current["duration_s"], "generated": date.today().isoformat()})
         write_report(settings.impact_dir, project_id, markdown)
         front, body = read_report(settings.impact_dir, project_id)
+        if scorer is not None:
+            if on_step is not None:
+                on_step("Scoring impact…")
+            try:
+                scored = score_report(body, scorer, project_id=project_id)
+            except LLMQuotaExceeded:
+                raise
+            except (ScoringError, LLMCallError) as exc:
+                runlog.event("ImpactService", "alert", project_id, message=f"score d'impact non calcule : {exc}")
+            else:
+                write_report(settings.impact_dir, project_id,
+                             apply_score(markdown, scored["impact_score"], scored["impact_rationale"]))
+                front, body = read_report(settings.impact_dir, project_id)
         if front.get("removed_citations"):
             runlog.event("ImpactService", "alert", project_id,
                          message=f"citations inconnues retirees : {front['removed_citations']}")

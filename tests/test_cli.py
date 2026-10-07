@@ -128,3 +128,49 @@ def test_deliverables_refresh_metadata_needs_no_llm(monkeypatch, capsys):
     monkeypatch.setattr(cli, "run_deliverables", no_run)
     assert cli.main(["deliverables", "--refresh-metadata"]) == 0
     assert '"updated": 1' in capsys.readouterr().out
+
+
+def _rescore_setup(tmp_path, monkeypatch, replies):
+    import json as _json
+
+    from test_chat_agent import ScriptedGenerator
+    from test_impact_report import META, REPORT, RUN, SOURCES
+    from tsi_agent.impact import scoring
+    from tsi_agent.impact.report import render_report, write_report
+    impact = tmp_path / "impact"
+    for pid in ("aaa", "bbb"):
+        if not (impact / f"{pid}.md").exists():
+            write_report(impact, pid, render_report(dict(META, project_id=pid), REPORT, SOURCES, RUN))
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(f"impact_dir: {impact.as_posix()}\nlogs_dir: {(tmp_path / 'logs').as_posix()}\n",
+                        encoding="utf-8")
+    scorer = ScriptedGenerator([r if isinstance(r, Exception) else _json.dumps(r) for r in replies])
+    monkeypatch.setattr(scoring, "default_scorer", lambda s: scorer)
+    return impact, settings, scorer
+
+
+def test_impact_rescore_all_reports(tmp_path, monkeypatch, capsys):
+    from tsi_agent.render import parse_front_matter
+    impact, settings, scorer = _rescore_setup(tmp_path, monkeypatch, [
+        {"impact_score": 7, "impact_rationale": "Good [1]."}, {"impact_score": 2, "impact_rationale": "Weak."}])
+    assert cli.main(["--settings", str(settings), "impact-rescore"]) == 0
+    out = capsys.readouterr().out
+    assert "aaa 7/10 strong" in out and "bbb 2/10 weak" in out and "Coût total" in out
+    front = parse_front_matter((impact / "aaa.md").read_text(encoding="utf-8"))[0]
+    assert front["impact_score"] == 7 and front["impact_level"] == "strong"
+    assert not scorer.replies and not scorer.received[0][1].text.startswith("---")
+    assert list((tmp_path / "logs" / "runs").glob("*.summary.json"))
+
+
+def test_impact_rescore_selected_and_errors(tmp_path, monkeypatch, capsys):
+    from tsi_agent.components.claude_cli import LLMCallError
+    impact, settings, _ = _rescore_setup(tmp_path, monkeypatch, [{"impact_score": 5, "impact_rationale": "x"}])
+    assert cli.main(["--settings", str(settings), "impact-rescore", "bbb"]) == 0
+    assert "bbb 5/10 moderate" in capsys.readouterr().out
+    assert "impact_score" not in (impact / "aaa.md").read_text(encoding="utf-8")
+    assert cli.main(["--settings", str(settings), "impact-rescore", "nope"]) == 2
+    assert "nope" in capsys.readouterr().err
+    _rescore_setup(tmp_path, monkeypatch, [LLMCallError("timeout")])
+    assert cli.main(["--settings", str(settings), "impact-rescore", "aaa"]) == 2
+    assert "timeout" in capsys.readouterr().err
+    assert "impact_score" not in (impact / "aaa.md").read_text(encoding="utf-8")

@@ -15,8 +15,6 @@ from tsi_agent.render import parse_front_matter, render
 
 VERDICTS = ("achieved", "partly achieved", "not achieved", "insufficient evidence")
 CONFIDENCES = ("high", "medium", "low")
-IMPACT_SCORES = (-2, -1, 0, 1, 2)
-IMPACT_LABELS = {"positive": "Positive", "undetermined": "Undetermined", "negative": "Negative"}
 # Groupe de citations : [3], [2, 7], [2; 3], [1-2], [3–5] (tiret ou demi-cadratin pour les plages).
 _CITE = re.compile(r"\[(\d+(?:\s*[,;\-\u2013]\s*\d+)*)\]")
 _RANGE = re.compile(r"(\d+)\s*[\-\u2013]\s*(\d+)|(\d+)")
@@ -40,11 +38,9 @@ REPORT_SCHEMA = {
             "required": ["objective", "verdict", "rationale"]}},
         "overall_verdict": _TEXT,
         "confidence": {"type": "string", "enum": list(CONFIDENCES)},
-        "impact_score": {"type": "integer", "enum": list(IMPACT_SCORES)},
-        "impact_rationale": _TEXT,
     },
     "required": ["project_overview", "positive_evidence", "negative_evidence", "impact_by_level", "objectives",
-                 "overall_verdict", "confidence", "impact_score", "impact_rationale"],
+                 "overall_verdict", "confidence"],
 }
 
 
@@ -54,27 +50,6 @@ class ReportFormatError(ValueError):
 
 def valid_project_id(project_id: str) -> bool:
     return bool(_PROJECT_ID.fullmatch(project_id or ""))
-
-
-def impact_category(score: int) -> str:
-    """Categorie de la jauge : >= 1 positif, <= -1 negatif, 0 indetermine."""
-    return "positive" if score >= 1 else "negative" if score <= -1 else "undetermined"
-
-
-def signed_score(score: int) -> str:
-    """+2, +1, 0, -1, -2."""
-    return f"{score:+d}" if score else "0"
-
-
-def _impact_score(value: Any) -> int:
-    """Score entier borne a -2..2 ; valeur absente ou illisible -> 0 (indetermine)."""
-    if isinstance(value, bool):
-        return 0
-    try:
-        score = round(float(str(value).strip()))
-    except (TypeError, ValueError, OverflowError):
-        return 0
-    return max(-2, min(2, score))
 
 
 def parse_report(text: str) -> dict[str, Any]:
@@ -106,8 +81,6 @@ def parse_report(text: str) -> dict[str, Any]:
         "objectives": objectives,
         "overall_verdict": str(data.get("overall_verdict") or "").strip(),
         "confidence": confidence if confidence in CONFIDENCES else "low",
-        "impact_score": _impact_score(data.get("impact_score")),
-        "impact_rationale": str(data.get("impact_rationale") or "").strip(),
     }
     texts = [report["overall_verdict"], report["project_overview"], report["positive_evidence"],
              report["negative_evidence"], *report["impact_by_level"].values()]
@@ -180,10 +153,7 @@ def render_report(meta: dict[str, Any], report: dict[str, Any], sources: list[di
                    "verdict": o["verdict"] if o["verdict"] in VERDICTS else "insufficient evidence"}
                   for o in report["objectives"]]
     verdict = clean(report["overall_verdict"])
-    score = _impact_score(report.get("impact_score"))
-    category = impact_category(score)
-    rationale = clean(report.get("impact_rationale") or "")
-    cited = _cited([overview, positive, negative, verdict, rationale, *levels.values(),
+    cited = _cited([overview, positive, negative, verdict, *levels.values(),
                     *(o["rationale"] for o in objectives)])
     used = sorted((s for s in sources if s.get("ref") in cited), key=lambda s: s["ref"])
 
@@ -199,8 +169,6 @@ def render_report(meta: dict[str, Any], report: dict[str, Any], sources: list[di
         f"# Impact analysis — {meta.get('title') or meta.get('project_id')}",
         f"{scope}  \nGenerated {run['generated']} · {run['model']} · run {run['run_id']}",
         f"**Overall verdict:** {verdict} (confidence: {report['confidence']})",
-        f"**Impact:** {IMPACT_LABELS[category]} (score {signed_score(score)} on a -2…+2 scale)"
-        + (f" — {' '.join(rationale.split())}" if rationale else ""),
         f"## 1. Project overview\n\n{overview}",
         f"## 2. Evidence of positive impact\n\n{positive}",
         f"## 3. Evidence of negative impact or limitations\n\n{negative}",
@@ -213,8 +181,7 @@ def render_report(meta: dict[str, Any], report: dict[str, Any], sources: list[di
     front = {"project_id": meta.get("project_id"), "title": meta.get("title"), "countries": meta.get("countries"),
              "year": meta.get("year"), "generated": run["generated"], "run_id": run["run_id"],
              "model": run["model"], "cost_usd": run.get("cost_usd"), "duration_s": run.get("duration_s"),
-             "overall_verdict": verdict, "confidence": report["confidence"], "impact_score": score,
-             "impact_category": category, "impact_rationale": rationale, "sources": len(used),
+             "overall_verdict": verdict, "confidence": report["confidence"], "sources": len(used),
              "removed_citations": sorted(removed)}
     return render(front, body)
 

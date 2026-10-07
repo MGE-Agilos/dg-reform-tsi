@@ -176,3 +176,50 @@ def test_invalid_final_json_is_repaired_by_the_formatter(tmp_path):
         analyse(pipe, "energy-regulation-academy", settings=s, project_meta=META,
                 formatter=ScriptedGenerator(["still not json"]))
     assert not (tmp_path / "impact" / "energy-regulation-academy.md").exists()
+
+
+def run_scored(tmp_path, scorer):
+    from test_chat_agent import chat_settings
+    s = chat_settings(tmp_path).model_copy(update={"impact_dir": str(tmp_path / "impact")})
+    pipe = impact_pipeline(tmp_path, [[("web_search", {"query": "q"})], json.dumps(REPORT)], settings=s,
+                           search_engine=FakeEngine([("News", "https://n.eu", "x")]), page_fetcher=FakeFetcher())
+    return analyse(pipe, "energy-regulation-academy", settings=s, project_meta=META, scorer=scorer), s
+
+
+def test_analyse_with_scorer_writes_the_score(tmp_path):
+    from test_chat_agent import ScriptedGenerator
+    from tsi_agent.impact.scoring import SCORE_RUBRIC
+    scorer = ScriptedGenerator([json.dumps({"impact_score": 6, "impact_rationale": "Partly adopted [1][7]."})])
+    result, s = run_scored(tmp_path, scorer)
+    assert result["front"]["impact_score"] == 6 and result["front"]["impact_level"] == "moderate"
+    assert result["front"]["impact_rationale"] == "Partly adopted [1]."
+    assert "**Positive impact:** 6/10 (Moderate) \u2014 Partly adopted [1]." in result["body"]
+    text = (tmp_path / "impact" / "energy-regulation-academy.md").read_text(encoding="utf-8")
+    assert "impact_level: moderate" in text
+    system, user = scorer.received[0]
+    assert system.text == SCORE_RUBRIC and user.text.startswith("# Impact analysis") and "run_id:" not in user.text
+    events = (tmp_path / "logs" / "runs" / f"{result['run_id']}.jsonl").read_text(encoding="utf-8")
+    assert '"impact_score"' in events
+
+
+def test_analyse_without_scorer_leaves_report_unscored(tmp_path):
+    result, _ = run_scored(tmp_path, None)
+    assert "impact_score" not in result["front"] and "**Positive impact:**" not in result["body"]
+
+
+@pytest.mark.parametrize("failure", ["not json", "llm"])
+def test_analyse_scorer_failure_keeps_report_and_logs_alert(tmp_path, failure):
+    from test_chat_agent import ScriptedGenerator
+    from tsi_agent.components.claude_cli import LLMCallError
+    scorer = ScriptedGenerator([LLMCallError("timeout") if failure == "llm" else failure])
+    result, s = run_scored(tmp_path, scorer)
+    assert "impact_score" not in result["front"] and result["body"].startswith("# Impact analysis")
+    assert (tmp_path / "impact" / "energy-regulation-academy.md").exists()
+    summary = _summary(s, result["run_id"])
+    assert summary["status"] == "ok" and any("score" in a for a in summary["alerts"])
+
+
+def test_analyse_scorer_quota_propagates(tmp_path):
+    from test_chat_agent import ScriptedGenerator
+    with pytest.raises(LLMQuotaExceeded):
+        run_scored(tmp_path, ScriptedGenerator([LLMQuotaExceeded("limit")]))

@@ -7,18 +7,8 @@ REPORT_FORMAT = """{
   "impact_by_level": {"country": "Markdown", "europe": "Markdown", "world": "Markdown"},
   "objectives": [{"objective": "one objective of the project", "verdict": "achieved | partly achieved | not achieved | insufficient evidence", "rationale": "short, with citations [n]"}],
   "overall_verdict": "one or two sentences, with citations [n]",
-  "confidence": "high | medium | low",
-  "impact_score": <integer: -2, -1, 0, 1 or 2, see the impact scale>,
-  "impact_rationale": "one sentence justifying the score, with citations [n]"
+  "confidence": "high | medium | low"
 }"""
-
-IMPACT_SCALE = """Impact scale (impact_score, an integer):
-+2 clear positive impact, plausibly attributable to the project;
-+1 rather positive (positive signs, but weak or partial attribution to the project);
-0 undetermined (insufficient, too recent or mixed evidence);
--1 rather negative;
--2 clear negative impact (harm, reversal or failure of the reform).
-When unsure, choose 0."""
 
 
 def system_prompt(max_searches: int) -> str:
@@ -44,8 +34,6 @@ directly the evidence can be attributed to the project (causal link established,
 - When evidence is missing or too recent, say so and use the verdict "insufficient evidence". A short, honest \
 report is better than a speculative one.
 - Write in English, concise and factual. Do not put Markdown headings (#) inside the JSON fields: use bold text and lists.
-
-{IMPACT_SCALE}
 
 When you have enough evidence (or the search limit is reached), give your final answer as a single JSON object, \
 with no text before or after it, in this format. It must be valid JSON: inside strings, write quotations with \

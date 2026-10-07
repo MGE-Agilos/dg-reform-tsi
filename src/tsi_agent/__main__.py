@@ -48,6 +48,9 @@ def main(argv: list[str] | None = None) -> int:
     chat = sub.add_parser("chat", help="chatbot local sur la couche vectorisée (page web)")
     chat.add_argument("--port", type=int, help="port local (défaut : chat_port des réglages)")
     chat.add_argument("--no-browser", action="store_true", help="ne pas ouvrir le navigateur")
+    rescore = sub.add_parser("impact-rescore",
+                             help="recalculer le score d'impact (0-10) des rapports existants, sans nouvelle analyse")
+    rescore.add_argument("project_ids", nargs="*", help="identifiants des projets (défaut : tous les rapports)")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
@@ -84,6 +87,23 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(f"Pipeline exporté vers {args.path}")
         return 0
+    if args.command == "impact-rescore":
+        from tsi_agent.impact import scoring
+        try:
+            out = scoring.rescore_reports(settings, scoring.default_scorer(settings), args.project_ids)
+        except Exception as exc:
+            print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return 2
+        errors = 0
+        for r in out["results"]:
+            if "error" in r:
+                errors += 1
+                print(f"{r['project_id']} ERREUR : {r['error']}", file=sys.stderr)
+            else:
+                print(f"{r['project_id']} {r['impact_score']}/10 {r['impact_level']}")
+        print(f"Coût total : {out['cost_usd']:.4f} $ — run {out['run_id']}")
+        return 2 if errors else 0
     if args.command == "chat":
         import webbrowser
 

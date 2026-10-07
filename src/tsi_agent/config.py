@@ -35,6 +35,7 @@ class Settings(BaseModel):
     # Analyse d'impact (onglet de la page web).
     impact_dir: str = "output/impact"
     impact_model: str = "opus"
+    impact_score_model: str = "opus"  # score de 0 a 10 calcule a partir du rapport
     impact_max_steps: int = 20  # appels LLM maximum par analyse
     impact_max_searches: int = 10  # recherches web maximum par analyse (impose par l'outil)
     impact_page_words: int = 3000  # texte d'une page web transmis a l'agent
