@@ -6,10 +6,12 @@
 <title>TSI Projects Chat</title>
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --text:#1d2433; --muted:#667085; --accent:#1f4e9e; --border:#dde2ea; --ai:#8a5a00;
-          --pos:#1a7f37; --neg:#c4321f; --undet:#8a94a6; --gauge-off:#d5dae2; }
+          --ramp-0:#c3c9d3; --ramp-1:#9fd8a8; --ramp-2:#1a7f37; --gauge-off:#d5dae2;
+          --lvl-weak:#667085; --lvl-moderate:#3f8a4f; --lvl-strong:#1a7f37; }
   @media (prefers-color-scheme: dark) {
     :root { --bg:#12151b; --card:#1b2029; --text:#e6e9ef; --muted:#98a2b3; --accent:#7aa7ff; --border:#2c3441; --ai:#e0b458;
-            --pos:#4ac26b; --neg:#f2735f; --undet:#7d8799; --gauge-off:#353d4a; }
+            --ramp-0:#4a5363; --ramp-1:#3d7a4b; --ramp-2:#4ac26b; --gauge-off:#353d4a;
+            --lvl-weak:#98a2b3; --lvl-moderate:#8fcf86; --lvl-strong:#4ac26b; }
   }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
@@ -70,21 +72,22 @@
   .steps { margin:8px 0 0; padding-left:1.4em; font-size:13px; color:var(--muted); }
   .gauge { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-bottom:6px; padding-bottom:10px; border-bottom:1px solid var(--border); }
   .gauge svg { width:220px; max-width:100%; height:auto; flex:none; }
-  .gauge .zone { fill:none; stroke-width:20; }
-  .gauge .z-negative { stroke:var(--neg); } .gauge .z-undetermined { stroke:var(--undet); } .gauge .z-positive { stroke:var(--pos); }
-  .gauge.unrated .zone { stroke:var(--gauge-off); }
+  .gauge .arc { fill:none; stroke-width:20; stroke:url(#gauge-ramp); }
+  .gauge .s0 { stop-color:var(--ramp-0); } .gauge .s1 { stop-color:var(--ramp-1); } .gauge .s2 { stop-color:var(--ramp-2); }
+  .gauge.unrated .arc { stroke:var(--gauge-off); }
   .gauge .tick { stroke:var(--muted); stroke-width:1.5; }
   .gauge .tick-label { fill:var(--muted); font-size:11px; text-anchor:middle; dominant-baseline:middle; }
   .gauge .needle { stroke:var(--text); stroke-width:3.5; stroke-linecap:round; }
   .gauge .hub { fill:var(--text); }
   .gauge .gtext { flex:1; min-width:180px; }
-  .gauge .gcat { font-size:18px; font-weight:700; }
-  .gauge .gcat.positive { color:var(--pos); } .gauge .gcat.negative { color:var(--neg); }
-  .gauge .gcat.undetermined, .gauge .gcat.not_rated { color:var(--muted); }
+  .gauge .gscore { font-size:28px; font-weight:700; line-height:1.1; }
+  .gauge .glevel { font-size:16px; font-weight:700; }
+  .gauge .strong { color:var(--lvl-strong); } .gauge .moderate { color:var(--lvl-moderate); } .gauge .weak { color:var(--lvl-weak); }
+  .gauge .not_rated { color:var(--muted); }
   .gauge .grationale p { margin:.3em 0; }
   .gauge .grationale a { color:var(--accent); }
   .pill { display:inline-block; font-size:12px; font-weight:600; line-height:1.4; padding:1px 8px; border-radius:999px; border:1px solid currentColor; margin-left:6px; white-space:nowrap; }
-  .pill.positive { color:var(--pos); } .pill.negative { color:var(--neg); } .pill.undetermined { color:var(--undet); }
+  .pill.strong { color:var(--lvl-strong); } .pill.moderate { color:var(--lvl-moderate); } .pill.weak { color:var(--lvl-weak); }
   .pill.not_rated { color:var(--muted); border-style:dashed; font-weight:400; }
   .chips { display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 8px; }
   .chips button { font-size:13px; padding:3px 10px; border-radius:999px; }
@@ -249,22 +252,29 @@ function render(text, sources) {
 }
 
 // ---- Impact gauge (pure functions, no DOM) ----
-const IMPACT_LABELS = {positive: "Positive", undetermined: "Undetermined", negative: "Negative", not_rated: "Not rated"};
+// Score d'impact positif de 0 a 10, calcule a partir du rapport ; niveaux : 0-3 weak, 4-6 moderate, 7-10 strong.
+const IMPACT_LEVEL_LABELS = {strong: "Strong", moderate: "Moderate", weak: "Weak", not_rated: "Not rated"};
 
-// Score et categorie d'un front matter ; impact_score absent ou non entier (ancien rapport) : non note.
-function impactInfo(front) {
-  const raw = (front || {}).impact_score;
-  if (typeof raw !== "number" || !Number.isInteger(raw)) {
-    return {rated: false, score: null, category: "not_rated", label: IMPACT_LABELS.not_rated, signed: ""};
-  }
-  const score = Math.max(-2, Math.min(2, raw));
-  const category = score >= 1 ? "positive" : score <= -1 ? "negative" : "undetermined";
-  return {rated: true, score, category, label: IMPACT_LABELS[category], signed: score > 0 ? "+" + score : String(score)};
+function impactLevel(score) {
+  return score >= 7 ? "strong" : score >= 4 ? "moderate" : "weak";
 }
 
-// Angle de l'aiguille en degres depuis la verticale : -2 -> -90 (gauche), 0 -> 0 (haut), +2 -> +90 (droite).
+// Score et niveau d'un front matter ; note seulement avec impact_level et un impact_score entier dans 0..10
+// (rapport jamais note ou ancienne echelle -2..+2 : non note).
+function impactInfo(front) {
+  front = front || {};
+  const raw = front.impact_score;
+  const known = ["strong", "moderate", "weak"].includes(front.impact_level);
+  if (!known || typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > 10) {
+    return {rated: false, score: null, level: "not_rated", label: IMPACT_LEVEL_LABELS.not_rated};
+  }
+  const level = impactLevel(raw);
+  return {rated: true, score: raw, level, label: IMPACT_LEVEL_LABELS[level]};
+}
+
+// Angle de l'aiguille en degres depuis la verticale : 0 -> -90 (gauche), 5 -> 0 (haut), 10 -> +90 (droite).
 function gaugeAngle(score) {
-  return Math.max(-2, Math.min(2, score)) * 45;
+  return Math.max(0, Math.min(10, score)) * 18 - 90;
 }
 
 const G_CX = 110, G_CY = 114, G_R = 76;
@@ -279,22 +289,24 @@ function gaugeArc(a1, a2, r) {
   return `M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`;
 }
 
-// Jauge SVG + texte ; `sources` sert aux liens [n] de la justification (rendue via render(), donc echappee).
+// Jauge SVG 0..10 + texte ; `sources` sert aux liens [n] de la justification (rendue via render(), donc echappee).
 function impactGauge(front, sources) {
   front = front || {};
   const info = impactInfo(front);
   const confidence = front.confidence ? String(front.confidence) : "";
   const aria = info.rated
-    ? `Impact: ${info.label}, score ${info.signed} of -2 to +2` + (confidence ? `, confidence ${confidence}` : "")
-    : "Impact: not rated";
-  const zones = [["negative", -90, -22.5], ["undetermined", -22.5, 22.5], ["positive", 22.5, 90]];
-  let svg = `<svg viewBox="0 0 220 124" role="img" aria-label="${esc(aria)}" focusable="false">`;
-  zones.forEach(([name, a1, a2]) => { svg += `<path class="zone z-${name}" d="${gaugeArc(a1, a2, G_R)}"/>`; });
-  [-2, -1, 0, 1, 2].forEach(s => {
+    ? `Positive impact: ${info.score} out of 10 (${info.label})` + (confidence ? `, confidence ${confidence}` : "")
+    : "Positive impact: not rated";
+  // Degrade unique gris -> vert clair -> vert, de gauche (0) a droite (10).
+  let svg = `<svg viewBox="0 0 220 124" role="img" aria-label="${esc(aria)}" focusable="false">` +
+    `<defs><linearGradient id="gauge-ramp" gradientUnits="userSpaceOnUse" x1="${G_CX - G_R}" y1="0" x2="${G_CX + G_R}" y2="0">` +
+    '<stop offset="0" class="s0"/><stop offset="0.5" class="s1"/><stop offset="1" class="s2"/></linearGradient></defs>' +
+    `<path class="arc" d="${gaugeArc(-90, 90, G_R)}"/>`;
+  [0, 2, 4, 6, 8, 10].forEach(s => {
     const [x1, y1] = gaugePoint(gaugeAngle(s), G_R + 12), [x2, y2] = gaugePoint(gaugeAngle(s), G_R + 17);
     const [tx, ty] = gaugePoint(gaugeAngle(s), G_R + 27);
     svg += `<line class="tick" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>` +
-      `<text class="tick-label" x="${tx}" y="${ty}" aria-hidden="true">${s > 0 ? "+" + s : s}</text>`;
+      `<text class="tick-label" x="${tx}" y="${ty}" aria-hidden="true">${s}</text>`;
   });
   if (info.rated) {
     const [nx, ny] = gaugePoint(gaugeAngle(info.score), G_R - 16);
@@ -304,19 +316,22 @@ function impactGauge(front, sources) {
   svg += "</svg>";
   let text;
   if (info.rated) {
-    const meta = [`score ${info.signed} on a -2…+2 scale`, confidence ? `confidence: ${confidence}` : ""].filter(Boolean).join(" · ");
-    text = `<div class="gcat ${info.category}">${esc(info.label)}</div><div class="meta">${esc(meta)}</div>` +
+    const meta = ["Positive impact", confidence ? `confidence: ${confidence}` : ""].filter(Boolean).join(" · ");
+    text = `<div class="gscore ${info.level}">${info.score}/10</div><div class="glevel ${info.level}">${esc(info.label)}</div>` +
+      `<div class="meta">${esc(meta)}</div>` +
       (front.impact_rationale ? `<div class="grationale">${render(String(front.impact_rationale), sources)}</div>` : "");
   } else {
-    text = '<div class="gcat not_rated">Not rated</div><div class="meta">Not rated (run the analysis again to get a score)</div>';
+    text = '<div class="glevel not_rated">Not rated</div><div class="meta">Not rated (run impact-rescore or the analysis again)</div>';
   }
-  return `<div class="gauge ${info.rated ? info.category : "unrated"}">${svg}<div class="gtext">${text}</div></div>`;
+  return `<div class="gauge ${info.rated ? info.level : "unrated"}">${svg}<div class="gtext">${text}</div></div>`;
 }
 
-// Pastille de la liste des analyses : "Positive +2", "Undetermined 0", "Not rated".
+// Pastille de la liste des analyses : "7/10" colore par niveau, ou "Not rated".
 function impactPill(front) {
   const info = impactInfo(front);
-  return `<span class="pill ${info.category}">${esc(info.rated ? info.label + " " + info.signed : info.label)}</span>`;
+  return info.rated
+    ? `<span class="pill ${info.level}" title="Positive impact: ${esc(info.label)}">${info.score}/10</span>`
+    : '<span class="pill not_rated">Not rated</span>';
 }
 
 function addMessage(role, html, extra) {
@@ -608,10 +623,10 @@ async function runImpact() {
 
 const psummary = document.getElementById("psummary");
 
-// Bandeau de synthese : une puce par categorie (comptes de l'API), clic = filtre de la liste.
+// Bandeau de synthese : une puce par niveau d'impact (comptes de l'API), clic = filtre de la liste.
 function renderSummary(summary) {
   const counts = summary || {};
-  const chips = [["positive", "Positive"], ["undetermined", "Undetermined"], ["negative", "Negative"],
+  const chips = [["strong", "Strong"], ["moderate", "Moderate"], ["weak", "Weak"],
                  ["not_rated", "Not rated"], ["all", "All"]];
   psummary.innerHTML = "";
   chips.forEach(([key, label]) => {
@@ -628,9 +643,9 @@ function renderSummary(summary) {
 }
 
 function renderPast() {
-  const list = pastFilter === "all" ? pastReports : pastReports.filter(f => impactInfo(f).category === pastFilter);
+  const list = pastFilter === "all" ? pastReports : pastReports.filter(f => impactInfo(f).level === pastFilter);
   ppast.innerHTML = list.length ? "" :
-    `<div class="empty">${pastReports.length ? "No analysis in this category." : "No analysis yet."}</div>`;
+    `<div class="empty">${pastReports.length ? "No analysis at this level." : "No analysis yet."}</div>`;
   list.forEach(f => {
     const b = document.createElement("button");
     b.type = "button";
