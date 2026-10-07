@@ -13,7 +13,7 @@ from tsi_agent.components.claude_cli import LLMQuotaExceeded
 from tsi_agent.config import Settings
 
 INDEX_HTML = Path(__file__).parent / "static" / "index.html"
-QUOTA_MESSAGE = "La limite de la souscription Claude est atteinte. Réessayez plus tard."
+QUOTA_MESSAGE = "The Claude subscription limit has been reached. Please try again later."
 MAX_CONTENT_LENGTH = 1_000_000
 
 
@@ -50,9 +50,9 @@ def create_app(settings: Settings, pipeline: Any = None, policy_areas: list[str]
         question = str(data.get("question") or "").strip()
         history = data.get("history") or []
         if not question:
-            return jsonify({"error": "question vide ou historique invalide"}), 400
+            return jsonify({"error": "empty question"}), 400
         if not _valid_history(history):
-            return jsonify({"error": "historique invalide"}), 400
+            return jsonify({"error": "invalid history"}), 400
         with lock:
             try:
                 return jsonify(ask(pipeline, question, history, logs_dir=settings.logs_dir))
@@ -61,6 +61,6 @@ def create_app(settings: Settings, pipeline: Any = None, policy_areas: list[str]
                     return jsonify({"error": QUOTA_MESSAGE}), 429
                 logging.getLogger("tsi_agent").exception("Erreur lors du traitement d'une question du chatbot")
                 cause = root_cause(exc)
-                return jsonify({"error": f"Erreur interne ({type(cause).__name__}). Détail dans logs/runs/."}), 500
+                return jsonify({"error": f"Internal error ({type(cause).__name__}). Details in logs/runs/."}), 500
 
     return app

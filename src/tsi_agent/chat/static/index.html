@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -43,21 +43,29 @@
   form { position:fixed; bottom:0; left:0; right:0; background:var(--card); border-top:1px solid var(--border); padding:12px 16px; }
   form .row { max-width:900px; margin:0 auto; display:flex; gap:8px; }
   textarea { flex:1; resize:vertical; min-height:48px; max-height:200px; font:inherit; padding:10px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); }
+  .loading { display:flex; align-items:center; gap:10px; color:var(--muted); }
+  .loading .elapsed { font-size:12px; font-variant-numeric:tabular-nums; }
+  .dots { display:inline-flex; gap:5px; }
+  .dots i { width:8px; height:8px; border-radius:50%; background:var(--accent); animation:bounce 1.2s infinite ease-in-out; }
+  .dots i:nth-child(2) { animation-delay:.15s; }
+  .dots i:nth-child(3) { animation-delay:.3s; }
+  @keyframes bounce { 0%,80%,100% { transform:scale(.5); opacity:.4; } 40% { transform:scale(1); opacity:1; } }
+  @media (prefers-reduced-motion: reduce) { .dots i { animation:none; opacity:.7; } }
   .hint { max-width:900px; margin:6px auto 0; font-size:12px; color:var(--muted); }
 </style>
 </head>
 <body>
 <header>
-  <div><h1>Projets TSI / SRSP — assistant</h1><small>Réponses fondées sur les pages publiques de la Commission (DG REFORM)</small></div>
-  <button id="reset" type="button">Nouvelle conversation</button>
+  <div><h1>TSI / SRSP projects — assistant</h1><small>Answers based on the European Commission's public pages (DG REFORM)</small></div>
+  <button id="reset" type="button">New conversation</button>
 </header>
 <main id="thread"></main>
 <form id="form">
   <div class="row">
-    <textarea id="q" placeholder="Ex. : Quels projets aident la Croatie à réformer son système de santé ?" required></textarea>
-    <button class="primary" id="send" type="submit">Envoyer</button>
+    <textarea id="q" placeholder="E.g. Which projects help Croatia reform its health system?" required></textarea>
+    <button class="primary" id="send" type="submit">Send</button>
   </div>
-  <div class="hint">Entrée pour envoyer, Maj+Entrée pour aller à la ligne. Une réponse prend 20 à 60 s en local.</div>
+  <div class="hint">Enter to send, Shift+Enter for a new line. An answer takes 20 to 60 s locally.</div>
 </form>
 <script>
 const thread = document.getElementById("thread");
@@ -177,7 +185,7 @@ function render(text, sources) {
 function addMessage(role, html, extra) {
   const div = document.createElement("div");
   div.className = "msg " + role + (extra && extra.error ? " error" : "");
-  div.innerHTML = `<div class="who">${role === "user" ? "Vous" : "Assistant"}</div><div class="body">${html}</div>`;
+  div.innerHTML = `<div class="who">${role === "user" ? "You" : "Assistant"}</div><div class="body">${html}</div>`;
   if (extra && extra.after) div.insertAdjacentHTML("beforeend", extra.after);
   thread.appendChild(div);
   div.scrollIntoView({behavior: "smooth", block: "end"});
@@ -189,34 +197,40 @@ function details(res) {
   if (res.sources && res.sources.length) {
     html += '<div class="sources"><strong>Sources</strong><ol>' + res.sources.map(s =>
       `<li value="${s.ref}"><a href="${isHttpUrl(s.url) ? esc(s.url) : "#"}" target="_blank" rel="noopener">${esc(s.title || s.doc_id)}</a>` +
-      (s.section ? ` — ${esc(s.section)}` : "") + (s.ai_generated ? ' <span class="ai">(résumé IA)</span>' : "") + "</li>").join("") +
+      (s.section ? ` — ${esc(s.section)}` : "") + (s.ai_generated ? ' <span class="ai">(AI summary)</span>' : "") + "</li>").join("") +
       "</ol></div>";
   }
   if (res.steps && res.steps.length) {
-    html += `<details><summary>${res.steps.length} étape(s) de l'agent</summary><ol>` + res.steps.map(s =>
+    html += `<details><summary>${res.steps.length} agent step(s)</summary><ol>` + res.steps.map(s =>
       `<li><code>${esc(s.tool)}</code> ${esc(JSON.stringify(s.arguments))}<br><small>${esc(s.summary)}</small></li>`).join("") +
       "</ol></details>";
   }
-  html += `<div class="meta">${res.duration_s} s · coût équivalent API ${Number(res.cost_usd).toFixed(4)} $ · run ${esc(res.run_id)}</div>`;
+  html += `<div class="meta">${res.duration_s} s · API-equivalent cost $${Number(res.cost_usd).toFixed(4)} · run ${esc(res.run_id)}</div>`;
   return html;
 }
 
 async function submit(question) {
   addMessage("user", render(question));
-  const pending = addMessage("assistant", "<p><em>Recherche en cours…</em></p>");
+  const pending = addMessage("assistant",
+    '<div class="loading"><span class="dots"><i></i><i></i><i></i></span> <em>Searching projects and deliverables…</em> <span class="elapsed">0 s</span></div>');
+  const started = Date.now();
+  const timer = setInterval(() => {
+    pending.querySelector(".elapsed").textContent = Math.round((Date.now() - started) / 1000) + " s";
+  }, 1000);
   send.disabled = true;
   try {
     const r = await fetch("/api/chat", {method: "POST", headers: {"Content-Type": "application/json"},
                                         body: JSON.stringify({question, history})});
     const res = await r.json();
     pending.remove();
-    if (!r.ok) { addMessage("assistant", `<p>${esc(res.error || "Erreur")}</p>`, {error: true}); return; }
+    if (!r.ok) { addMessage("assistant", `<p>${esc(res.error || "Error")}</p>`, {error: true}); return; }
     addMessage("assistant", render(res.answer, res.sources), {after: details(res)});
     history.push({role: "user", text: question}, {role: "assistant", text: res.answer});
   } catch (e) {
     pending.remove();
     addMessage("assistant", `<p>${esc(e)}</p>`, {error: true});
   } finally {
+    clearInterval(timer);
     send.disabled = false;
     input.focus();
   }
