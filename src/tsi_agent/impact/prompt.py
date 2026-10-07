@@ -33,7 +33,7 @@ returned by the tools; never invent a source, a URL, a figure or an impact.
 directly the evidence can be attributed to the project (causal link established, plausible, or unclear).
 - When evidence is missing or too recent, say so and use the verdict "insufficient evidence". A short, honest \
 report is better than a speculative one.
-- Write in English, concise and factual.
+- Write in English, concise and factual. Do not put Markdown headings (#) inside the JSON fields: use bold text and lists.
 
 When you have enough evidence (or the search limit is reached), give your final answer as a single JSON object, \
 with no text before or after it, in this format. It must be valid JSON: inside strings, write quotations with \

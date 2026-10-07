@@ -129,13 +129,19 @@ def _cited(texts: list[str]) -> set[int]:
     return {n for t in texts for group in _CITE.findall(t) for n in (_refs(group) or [])}
 
 
+def _without_headings(text: str) -> str:
+    """Titres Markdown ajoutes par le modele dans une section ("## Positive Evidence") : en gras, pour ne pas casser
+    la structure fixe du rapport."""
+    return re.sub(r"^#{1,6}\s+(.+?)\s*#*\s*$", r"****", text or "", flags=re.MULTILINE)
+
+
 def render_report(meta: dict[str, Any], report: dict[str, Any], sources: list[dict[str, Any]],
                   run: dict[str, Any]) -> str:
     valid = {int(s["ref"]) for s in sources if s.get("ref") is not None}
     removed: set[int] = set()
 
     def clean(text: str) -> str:
-        cleaned, gone = clean_citations(text, valid)
+        cleaned, gone = clean_citations(_without_headings(text), valid)
         removed.update(gone)
         return cleaned
 

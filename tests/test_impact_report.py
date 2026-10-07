@@ -101,3 +101,10 @@ def test_list_reports_skips_malformed_files(tmp_path):
 
 def test_valid_project_id_rejects_trailing_newline():
     assert not valid_project_id("hosp-hr\n") and valid_project_id("hosp-hr")
+
+
+def test_headings_inside_sections_become_bold():
+    report = dict(REPORT, positive_evidence="## Positive Evidence\n\n- Arrears fell [3].")
+    body = render_report(META, report, SOURCES, RUN).split("\n---\n", 1)[1]
+    assert "## Positive Evidence" not in body and "**Positive Evidence**" in body
+    assert body.count("## 2. Evidence of positive impact") == 1
