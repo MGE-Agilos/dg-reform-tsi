@@ -88,7 +88,10 @@ class ClaudeCliChatGenerator:
         return [exe, "-p", "--output-format", "stream-json", "--verbose", "--model", self.model,
                 *self._tools_args(), "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
                 "--setting-sources", "", "--no-session-persistence", "--system-prompt", system_prompt,
-                "--json-schema", json.dumps(schema, separators=(",", ":"))]
+                "--json-schema", json.dumps(schema, separators=(",", ":")),
+                # Un seul tour : sans limite, le CLI continue apres le premier StructuredOutput et le modele
+                # enchaine des tours inventes (jusqu'a ~4 min et ~13 000 tokens perdus par etape).
+                "--max-turns", "1"]
 
     def _run_cli(self, cmd: list[str], prompt: str) -> subprocess.CompletedProcess:
         try:
@@ -156,7 +159,6 @@ class ClaudeCliChatGenerator:
             if _QUOTA.search(message):
                 raise LLMQuotaExceeded(message)
             raise LLMCallError(f"exit {proc.returncode}: {message}")
-        self._raise_for_error(result, proc.returncode, proc.stderr)
         structured = None
         for event in events:
             if event.get("type") != "assistant":
@@ -167,6 +169,10 @@ class ClaudeCliChatGenerator:
                     break
             if structured is not None:
                 break  # on ignore tout appel StructuredOutput suivant (reponse fabriquee)
+        # --max-turns 1 : le CLI termine en "error_max_turns" une fois StructuredOutput appele ; ce n'est pas
+        # une erreur quand l'appel structure est la.
+        if not (structured is not None and result.get("subtype") == "error_max_turns"):
+            self._raise_for_error(result, proc.returncode, proc.stderr)
         if structured is None:
             structured = result.get("structured_output")
         return structured, self._meta_from_result(result)

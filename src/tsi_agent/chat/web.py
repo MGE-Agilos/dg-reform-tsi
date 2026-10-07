@@ -14,7 +14,7 @@ from tsi_agent.config import Settings
 from tsi_agent.impact.catalog import load_catalog, search_catalog
 from tsi_agent.impact.pipeline import build_impact_pipeline
 from tsi_agent.impact.report import list_reports, read_report
-from tsi_agent.impact.service import ImpactJobs, JobRunning, analyse
+from tsi_agent.impact.service import ImpactJobs, JobRunning, analyse, default_report_formatter
 
 INDEX_HTML = Path(__file__).parent / "static" / "index.html"
 QUOTA_MESSAGE = "The Claude subscription limit has been reached. Please try again later."
@@ -36,7 +36,8 @@ def _valid_history(history: Any) -> bool:
 
 
 def create_app(settings: Settings, pipeline: Any = None, policy_areas: list[str] | None = None,
-               impact_pipeline: Any = None, catalog: list[dict[str, Any]] | None = None) -> Flask:
+               impact_pipeline: Any = None, catalog: list[dict[str, Any]] | None = None,
+               report_formatter: Any = None) -> Flask:
     """Construit l'application ; les pipelines (store + modele) sont charges une seule fois, ici.
 
     Production (`pipeline` absent) : un seul embedder e5 et un seul store Qdrant local, partages par le chat et
@@ -50,6 +51,8 @@ def create_app(settings: Settings, pipeline: Any = None, policy_areas: list[str]
             impact_pipeline = build_impact_pipeline(settings, text_embedder=emb, document_store=store)
         if catalog is None:
             catalog = load_catalog(Path(settings.output_dir) / "projects")
+        if report_formatter is None:
+            report_formatter = default_report_formatter(settings)
     catalog = catalog or []
     pipeline.warm_up()
     if impact_pipeline is not None:
@@ -84,7 +87,7 @@ def create_app(settings: Settings, pipeline: Any = None, policy_areas: list[str]
 
     def run_impact(project_id: str, on_step: Any) -> dict[str, Any]:
         return analyse(impact_pipeline, project_id, settings=settings, project_meta=by_id[project_id],
-                       on_step=on_step)
+                       on_step=on_step, formatter=report_formatter)
 
     jobs = ImpactJobs(run_impact)
     app.config["IMPACT_JOBS"] = jobs

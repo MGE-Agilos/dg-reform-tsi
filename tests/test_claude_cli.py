@@ -225,6 +225,27 @@ def test_second_structured_output_call_is_ignored(monkeypatch):
     assert reply.text is None
 
 
+def test_single_turn_stop_is_not_an_error(monkeypatch):
+    """--max-turns 1 : le CLI s'arrete apres le premier StructuredOutput avec subtype error_max_turns."""
+    first = {"tool_calls": [{"tool_name": "search_projects", "arguments": {"query": "x"}}], "answer": ""}
+    stdout = stream_output(tool_use_event(first), result_event(is_error=True, subtype="error_max_turns"))
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, stdout=stdout, stderr="")
+    monkeypatch.setattr(claude_cli.subprocess, "run", run)
+    monkeypatch.setattr(claude_cli.shutil, "which", lambda exe: "C:/npm/claude.CMD")
+    reply = ClaudeCliChatGenerator().run(messages=MESSAGES, tools=[SEARCH])["replies"][0]
+    assert reply.tool_calls[0].tool_name == "search_projects"
+    assert calls[0][calls[0].index("--max-turns") + 1] == "1"
+    # sans appel structure, error_max_turns reste une erreur
+    monkeypatch.setattr(claude_cli.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 1, stdout=stream_output(result_event(is_error=True, subtype="error_max_turns")), stderr=""))
+    with pytest.raises(LLMCallError):
+        ClaudeCliChatGenerator().run(messages=MESSAGES, tools=[SEARCH])
+
+
 def test_quota_error_in_tool_mode(monkeypatch):
     stdout = stream_output(result_event(is_error=True, result="Claude AI usage limit reached|1759230000"))
     monkeypatch.setattr(claude_cli.subprocess, "run",

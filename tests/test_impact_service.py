@@ -152,3 +152,27 @@ def test_analyse_write_failure_marks_run_as_error(tmp_path, monkeypatch):
     summaries = [json.loads(p.read_text(encoding="utf-8")) for p in (tmp_path / "logs" / "runs").glob("*.summary.json")]
     impact = [x for x in summaries if x.get("mode") == "impact"]
     assert len(impact) == 1 and impact[0]["status"] == "error" and "disk full" in impact[0]["error"]
+
+
+def test_invalid_final_json_is_repaired_by_the_formatter(tmp_path):
+    from test_chat_agent import ScriptedGenerator, chat_settings
+    from tsi_agent.impact.report import REPORT_SCHEMA
+    s = chat_settings(tmp_path).model_copy(update={"impact_dir": str(tmp_path / "impact")})
+    broken = '{"project_overview": "The minister said "eHealth is a priority" [1]."}'
+    pipe = impact_pipeline(tmp_path, [[("get_project", {"doc_id": "energy-regulation-academy"})], broken],
+                           settings=s, search_engine=FakeEngine(), page_fetcher=FakeFetcher())
+    formatter = ScriptedGenerator([json.dumps(dict(REPORT, project_overview="The minister said 'eHealth' [1]."))])
+    result = analyse(pipe, "energy-regulation-academy", settings=s, project_meta=META, formatter=formatter)
+    assert "The minister said 'eHealth' [1]." in result["body"]
+    assert broken in formatter.received[0][1].text
+    assert "verdict" in json.dumps(REPORT_SCHEMA)
+    events = (tmp_path / "logs" / "runs" / f"{result['run_id']}.jsonl").read_text(encoding="utf-8")
+    assert '"bad_format"' in events and '"repaired"' in events
+    # formateur qui echoue aussi : AnalysisFailed, pas de rapport
+    pipe = impact_pipeline(tmp_path, [[("get_project", {"doc_id": "energy-regulation-academy"})], broken],
+                           settings=s, search_engine=FakeEngine(), page_fetcher=FakeFetcher())
+    (tmp_path / "impact" / "energy-regulation-academy.md").unlink()
+    with pytest.raises(AnalysisFailed):
+        analyse(pipe, "energy-regulation-academy", settings=s, project_meta=META,
+                formatter=ScriptedGenerator(["still not json"]))
+    assert not (tmp_path / "impact" / "energy-regulation-academy.md").exists()

@@ -11,10 +11,12 @@ from haystack.dataclasses import ChatMessage, ChatRole
 
 from tsi_agent import runlog
 from tsi_agent.chat.service import find_cause, root_cause
-from tsi_agent.components.claude_cli import LLMQuotaExceeded
+from tsi_agent.chat.generator import LoggedChatGenerator
+from tsi_agent.components.claude_cli import ClaudeCliChatGenerator, LLMQuotaExceeded
 from tsi_agent.config import Settings
 from tsi_agent.impact.prompt import user_prompt
-from tsi_agent.impact.report import ReportFormatError, parse_report, read_report, render_report, write_report
+from tsi_agent.impact.report import (REPORT_SCHEMA, ReportFormatError, parse_report, read_report, render_report,
+                                     write_report)
 
 QUOTA_MESSAGE = "The Claude subscription limit has been reached. Please try again later."
 
@@ -55,8 +57,39 @@ def progress_text(record: dict[str, Any]) -> str | None:
     return None
 
 
+FORMAT_SYSTEM = ("Convert the impact report below into the required JSON structure. Keep its content, wording and "
+                 "citation numbers [n] exactly; do not add, remove or invent anything.")
+
+
+def default_report_formatter(settings: Settings) -> Any:
+    """Generator a sortie structuree (schema du rapport) : reformate une reponse finale dont le JSON est invalide."""
+    return LoggedChatGenerator(chat_generator=ClaudeCliChatGenerator(
+        model=settings.web_search_model, timeout_s=settings.impact_llm_timeout_s, json_schema=REPORT_SCHEMA),
+        pricing=settings.pricing)
+
+
+def _read_final_answer(text: str, formatter: Any, project_id: str) -> dict[str, Any]:
+    """Rapport tire de la reponse finale ; si son JSON est invalide (guillemets non echappes...), un appel de
+    reformatage a sortie structuree le reconstruit. AnalysisFailed si rien n'est lisible."""
+    try:
+        return parse_report(text)
+    except ReportFormatError as exc:
+        runlog.event("ImpactService", "report_format", project_id, "bad_format", error=str(exc), answer=text[:2000])
+        if formatter is None:
+            raise AnalysisFailed(f"The agent's final answer could not be read ({exc}).") from exc
+    reply = formatter.run(messages=[ChatMessage.from_system(FORMAT_SYSTEM), ChatMessage.from_user(text)])
+    try:
+        report = parse_report(reply["replies"][0].text or "")
+    except ReportFormatError as exc:
+        raise AnalysisFailed(f"The agent's final answer could not be read ({exc}).") from exc
+    runlog.event("ImpactService", "report_format", project_id, "repaired")
+    return report
+
+
 def analyse(pipeline: Pipeline, project_id: str, *, settings: Settings, project_meta: dict[str, Any],
-            on_step: Callable[[str], None] | None = None) -> dict[str, Any]:
+            on_step: Callable[[str], None] | None = None, formatter: Any = None) -> dict[str, Any]:
+    """:param formatter: generator a sortie structuree pour reparer un JSON final invalide (None : pas de
+        reparation) ; voir default_report_formatter."""
     with runlog.open_run(settings.logs_dir) as run:
         if on_step is not None:
             def listener(record: dict[str, Any]) -> None:
@@ -70,12 +103,7 @@ def analyse(pipeline: Pipeline, project_id: str, *, settings: Settings, project_
         if last is None or not last.is_from(ChatRole.ASSISTANT) or last.tool_calls or not last.text:
             runlog.event("ImpactService", "impact_end", project_id, "step_limit", exit_reason=out.get("exit_reason"))
             raise AnalysisFailed("The analysis did not complete (step limit reached). Details in logs/runs/.")
-        try:
-            report = parse_report(last.text)
-        except ReportFormatError as exc:
-            runlog.event("ImpactService", "impact_end", project_id, "bad_format", error=str(exc),
-                         answer=last.text[:2000])
-            raise AnalysisFailed(f"The agent's final answer could not be read ({exc}).") from exc
+        report = _read_final_answer(last.text, formatter, project_id)
         sources = out.get("sources") or []
         runlog.event("ImpactService", "impact_end", project_id, sources=len(sources),
                      searches=len(out.get("searches") or []))

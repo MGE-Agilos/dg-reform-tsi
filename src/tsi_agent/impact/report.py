@@ -23,6 +23,27 @@ MAX_RANGE = 20  # plage plus longue : laissee telle quelle
 _PROJECT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,200}$")
 
 
+_TEXT = {"type": "string"}
+# Schema de la reponse finale : sert au reformatage (sortie structuree du CLI) quand le JSON de l'agent est invalide.
+REPORT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "project_overview": _TEXT, "positive_evidence": _TEXT, "negative_evidence": _TEXT,
+        "impact_by_level": {"type": "object", "properties": {"country": _TEXT, "europe": _TEXT, "world": _TEXT},
+                            "required": ["country", "europe", "world"]},
+        "objectives": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"objective": _TEXT, "verdict": {"type": "string", "enum": list(VERDICTS)},
+                           "rationale": _TEXT},
+            "required": ["objective", "verdict", "rationale"]}},
+        "overall_verdict": _TEXT,
+        "confidence": {"type": "string", "enum": list(CONFIDENCES)},
+    },
+    "required": ["project_overview", "positive_evidence", "negative_evidence", "impact_by_level", "objectives",
+                 "overall_verdict", "confidence"],
+}
+
+
 class ReportFormatError(ValueError):
     pass
 

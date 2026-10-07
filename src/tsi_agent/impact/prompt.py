@@ -36,7 +36,8 @@ report is better than a speculative one.
 - Write in English, concise and factual.
 
 When you have enough evidence (or the search limit is reached), give your final answer as a single JSON object, \
-with no text before or after it, in this format:
+with no text before or after it, in this format. It must be valid JSON: inside strings, write quotations with \
+single quotes ('like this') and line breaks as \\n.
 {REPORT_FORMAT}"""
 
 
