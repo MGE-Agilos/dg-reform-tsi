@@ -52,14 +52,45 @@
   @keyframes bounce { 0%,80%,100% { transform:scale(.5); opacity:.4; } 40% { transform:scale(1); opacity:1; } }
   @media (prefers-reduced-motion: reduce) { .dots i { animation:none; opacity:.7; } }
   .hint { max-width:900px; margin:6px auto 0; font-size:12px; color:var(--muted); }
+  [hidden] { display:none !important; }
+  header { flex-wrap:wrap; gap:10px; }
+  .tabs { display:flex; gap:4px; }
+  .tab { border:none; border-bottom:3px solid transparent; border-radius:0; background:none; padding:6px 10px; color:var(--muted); }
+  .tab[aria-selected=true] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+  #impact h2 { font-size:15px; margin:18px 0 8px; }
+  #pq { width:100%; font:inherit; padding:10px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--text); }
+  .plist { display:flex; flex-direction:column; gap:6px; margin:8px 0; }
+  .plist button { text-align:left; width:100%; padding:8px 12px; }
+  .plist button:hover, .plist button:focus-visible { border-color:var(--accent); }
+  .plist .sub { display:block; font-size:12px; color:var(--muted); }
+  .plist .empty { font-size:13px; color:var(--muted); }
+  .card-actions { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .steps { margin:8px 0 0; padding-left:1.4em; font-size:13px; color:var(--muted); }
+  @media (max-width: 600px) { header { padding:12px 16px; } .tabs { order:3; width:100%; } }
 </style>
 </head>
 <body>
 <header>
   <div><h1>TSI / SRSP projects — assistant</h1><small>Answers based on the European Commission's public pages (DG REFORM)</small></div>
+  <nav class="tabs" role="tablist">
+    <button class="tab" id="tab-chat" type="button" role="tab" aria-selected="true" aria-controls="thread">Chat</button>
+    <button class="tab" id="tab-impact" type="button" role="tab" aria-selected="false" aria-controls="impact">Impact analysis</button>
+  </nav>
   <button id="reset" type="button">New conversation</button>
 </header>
-<main id="thread"></main>
+<main>
+  <div id="thread" role="tabpanel" aria-labelledby="tab-chat"></div>
+  <section id="impact" role="tabpanel" aria-labelledby="tab-impact" hidden>
+    <div id="punavailable" class="msg error" hidden><p>Impact analysis is not available on this server.</p></div>
+    <input id="pq" type="search" autocomplete="off" placeholder="Search a project by title, country or year…" aria-label="Search a project">
+    <div id="presults" class="plist"></div>
+    <div id="pselected" class="msg" hidden></div>
+    <div id="prun" class="msg" hidden></div>
+    <div id="preport" hidden></div>
+    <h2>Previous analyses</h2>
+    <div id="ppast" class="plist"></div>
+  </section>
+</main>
 <form id="form">
   <div class="row">
     <textarea id="q" placeholder="E.g. Which projects help Croatia reform its health system?" required></textarea>
@@ -248,6 +279,258 @@ input.addEventListener("keydown", e => {
 });
 document.getElementById("reset").addEventListener("click", () => { history = []; thread.innerHTML = ""; input.focus(); });
 input.focus();
+
+// ---- Impact analysis tab ----
+const tabChat = document.getElementById("tab-chat");
+const tabImpact = document.getElementById("tab-impact");
+const resetBtn = document.getElementById("reset");
+const impact = document.getElementById("impact");
+const pq = document.getElementById("pq");
+const presults = document.getElementById("presults");
+const pselected = document.getElementById("pselected");
+const prun = document.getElementById("prun");
+const preport = document.getElementById("preport");
+const ppast = document.getElementById("ppast");
+const punavailable = document.getElementById("punavailable");
+let selected = null;        // projet choisi
+let jobRunning = false;     // une analyse tourne sur le serveur
+let impactAvailable = true;
+let pollTimer = null;
+let elapsedTimer = null;
+let runStarted = 0;
+let searchTimer = null;
+let searchSeq = 0;
+
+function showTab(name) {
+  const isImpact = name === "impact";
+  tabChat.setAttribute("aria-selected", String(!isImpact));
+  tabImpact.setAttribute("aria-selected", String(isImpact));
+  thread.hidden = isImpact;
+  form.hidden = isImpact;
+  resetBtn.hidden = isImpact;
+  impact.hidden = !isImpact;
+  if (isImpact) {
+    if (!presults.childElementCount) searchProjects("");
+    loadPast();
+    checkJob();
+    pq.focus();
+  } else {
+    input.focus();
+  }
+}
+tabChat.addEventListener("click", () => showTab("chat"));
+tabImpact.addEventListener("click", () => showTab("impact"));
+
+function projectLine(p) {
+  const prog = [p.programme, p.year].filter(Boolean).join(" ");
+  const countries = (p.countries || []).join(", ");
+  return [prog, countries].filter(Boolean).join(" — ");
+}
+
+// Sources numerotees de la section "## 6. Sources" -> [{ref, url}] pour les liens [n]
+function reportSources(body) {
+  const idx = body.indexOf("## 6. Sources");
+  const part = idx >= 0 ? body.slice(idx) : "";
+  const out = [];
+  const re = /^- \[(\d+)\] .*?(https?:\/\/\S+)\s*$/gm;
+  let m;
+  while ((m = re.exec(part))) out.push({ref: Number(m[1]), url: m[2]});
+  return out;
+}
+
+function showReport(front, body) {
+  front = front || {};
+  const meta = [front.generated ? "Generated " + front.generated : "", front.confidence ? "confidence: " + front.confidence : "",
+                front.duration_s != null ? front.duration_s + " s" : "",
+                front.cost_usd != null ? "API-equivalent cost $" + Number(front.cost_usd).toFixed(4) : "",
+                front.run_id ? "run " + front.run_id : ""].filter(Boolean).join(" · ");
+  preport.innerHTML = `<div class="msg"><div class="body">${render(body || "", reportSources(body || ""))}</div>` +
+    (meta ? `<div class="meta">${esc(meta)}</div>` : "") + "</div>";
+  preport.hidden = false;
+}
+
+function showError(message) {
+  preport.innerHTML = `<div class="msg error"><p>${esc(message)}</p></div>`;
+  preport.hidden = false;
+}
+
+function updateRunButton() {
+  const btn = document.getElementById("prun-btn");
+  if (btn) btn.disabled = jobRunning || !impactAvailable;
+}
+
+async function searchProjects(q) {
+  const seq = ++searchSeq;
+  try {
+    const r = await fetch("/api/projects?q=" + encodeURIComponent(q));
+    const res = await r.json();
+    if (seq !== searchSeq) return;  // reponse obsolete
+    const list = res.projects || [];
+    presults.innerHTML = list.length ? "" : '<div class="empty">No project found.</div>';
+    list.forEach(p => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.innerHTML = `${esc(p.title || p.project_id)}<span class="sub">${esc(projectLine(p))}</span>`;
+      b.addEventListener("click", () => selectProject(p));
+      presults.appendChild(b);
+    });
+  } catch (e) {
+    if (seq === searchSeq) presults.innerHTML = `<div class="empty">${esc(e)}</div>`;
+  }
+}
+pq.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => searchProjects(pq.value.trim()), 250);
+});
+
+async function selectProject(p) {
+  selected = p;
+  pselected.innerHTML = `<div class="who">Selected project</div><div class="body"><strong>${esc(p.title || p.project_id)}</strong>` +
+    `<div class="meta">${esc([projectLine(p), p.policy_area].filter(Boolean).join(" — "))}</div></div>` +
+    '<div class="card-actions"><button class="primary" id="prun-btn" type="button">Run impact analysis</button>' +
+    '<span class="meta">An analysis takes several minutes (web searches and page reading).</span></div>';
+  pselected.hidden = false;
+  document.getElementById("prun-btn").addEventListener("click", runImpact);
+  updateRunButton();
+  preport.hidden = true;
+  preport.innerHTML = "";
+  // rapport existant pour ce projet : affiche directement
+  try {
+    const r = await fetch("/api/impact/reports/" + encodeURIComponent(p.project_id));
+    if (r.ok && selected === p) { const res = await r.json(); showReport(res.front, res.body); }
+  } catch (e) { /* pas de rapport */ }
+  pselected.scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+function showProgress(st) {
+  if (!prun.querySelector(".loading")) {
+    prun.innerHTML = `<div class="who">Impact analysis — ${esc(st.project_id || "")}</div>` +
+      '<div class="loading"><span class="dots"><i></i><i></i><i></i></span> <em>Analysing impact…</em> <span class="elapsed">0 s</span></div>' +
+      '<ol class="steps"></ol>';
+  }
+  prun.hidden = false;
+  prun.querySelector(".steps").innerHTML = (st.steps || []).map(s => `<li>${esc(s)}</li>`).join("");
+  prun.querySelector(".elapsed").textContent = Math.round((Date.now() - runStarted) / 1000) + " s";
+}
+
+function startTracking(st) {
+  jobRunning = true;
+  updateRunButton();
+  if (!elapsedTimer) {
+    runStarted = Date.now();
+    elapsedTimer = setInterval(() => {
+      const el = prun.querySelector(".elapsed");
+      if (el) el.textContent = Math.round((Date.now() - runStarted) / 1000) + " s";
+    }, 1000);
+  }
+  showProgress(st);
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(poll, 2000);
+}
+
+function stopTracking() {
+  jobRunning = false;
+  clearTimeout(pollTimer); pollTimer = null;
+  clearInterval(elapsedTimer); elapsedTimer = null;
+  prun.hidden = true;
+  prun.innerHTML = "";
+  updateRunButton();
+}
+
+function handleStatus(st) {
+  if (st.state === "running") { startTracking(st); return; }
+  const wasTracking = jobRunning;
+  stopTracking();
+  if (!wasTracking) return;  // fin d'une analyse non suivie par cette page : rien a afficher
+  if (st.state === "done" && st.result) {
+    showReport(st.result.front, st.result.body);
+    loadPast();
+  } else if (st.state === "error") {
+    showError(st.error || "The analysis failed.");
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/impact/job");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    handleStatus(await r.json());
+  } catch (e) {
+    // erreur reseau passagere : on reessaie
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(poll, 2000);
+  }
+}
+
+async function checkJob() {
+  try {
+    const r = await fetch("/api/impact/job");
+    if (r.status === 503) {
+      impactAvailable = false;
+      punavailable.hidden = false;
+      updateRunButton();
+      return;
+    }
+    const st = await r.json();
+    if (st.state === "running" && !jobRunning) startTracking(st);
+  } catch (e) { /* serveur injoignable */ }
+}
+
+async function runImpact() {
+  if (!selected || jobRunning) return;
+  preport.hidden = true;
+  preport.innerHTML = "";
+  jobRunning = true;
+  updateRunButton();
+  try {
+    const r = await fetch("/api/impact", {method: "POST", headers: {"Content-Type": "application/json"},
+                                         body: JSON.stringify({project_id: selected.project_id})});
+    const res = await r.json();
+    jobRunning = false;
+    if (r.status === 409) { showError(res.error || "An analysis is already running."); checkJob(); return; }
+    if (!r.ok) { updateRunButton(); showError(res.error || "Error"); return; }
+    startTracking(res);
+  } catch (e) {
+    jobRunning = false;
+    updateRunButton();
+    showError(String(e));
+  }
+}
+
+async function loadPast() {
+  try {
+    const r = await fetch("/api/impact/reports");
+    const list = (await r.json()).reports || [];
+    ppast.innerHTML = list.length ? "" : '<div class="empty">No analysis yet.</div>';
+    list.forEach(f => {
+      const b = document.createElement("button");
+      b.type = "button";
+      const verdict = String(f.overall_verdict || "").replace(/\s*\[\d+\]/g, "");
+      const sub = [f.generated ? "Generated " + f.generated : "", f.confidence ? "confidence: " + f.confidence : ""].filter(Boolean).join(" · ");
+      b.innerHTML = `${esc(f.title || f.project_id)}<span class="sub">${esc(sub)}</span>` +
+        (verdict ? `<span class="sub">${esc(verdict.length > 220 ? verdict.slice(0, 220) + "…" : verdict)}</span>` : "");
+      b.addEventListener("click", () => openReport(f.project_id));
+      ppast.appendChild(b);
+    });
+  } catch (e) {
+    ppast.innerHTML = `<div class="empty">${esc(e)}</div>`;
+  }
+}
+
+async function openReport(projectId) {
+  try {
+    const r = await fetch("/api/impact/reports/" + encodeURIComponent(projectId));
+    const res = await r.json();
+    if (!r.ok) { showError(res.error || "Error"); return; }
+    showReport(res.front, res.body);
+  } catch (e) {
+    showError(String(e));
+  }
+  preport.scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+// au chargement : reprend l'affichage d'une analyse en cours
+checkJob();
 </script>
 </body>
 </html>
