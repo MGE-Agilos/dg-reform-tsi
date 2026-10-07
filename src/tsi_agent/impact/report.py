@@ -132,7 +132,7 @@ def _cited(texts: list[str]) -> set[int]:
 def _without_headings(text: str) -> str:
     """Titres Markdown ajoutes par le modele dans une section ("## Positive Evidence") : en gras, pour ne pas casser
     la structure fixe du rapport."""
-    return re.sub(r"^#{1,6}\s+(.+?)\s*#*\s*$", r"****", text or "", flags=re.MULTILINE)
+    return re.sub(r"^#{1,6}\s+(.+?)\s*#*\s*$", r"**\1**", text or "", flags=re.MULTILINE)
 
 
 def render_report(meta: dict[str, Any], report: dict[str, Any], sources: list[dict[str, Any]],
