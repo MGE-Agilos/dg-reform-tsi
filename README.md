@@ -288,7 +288,16 @@ Une analyse à la fois, en arrière-plan ; la page affiche les étapes en direct
 verdict, confiance, coût, durée), en remplaçant le précédent. Une réponse finale vide ou illisible n'écrase jamais
 un rapport existant.
 
-Réglages (`config/settings.yaml`) : `impact_model`, `impact_max_steps` (appels LLM par analyse),
+Une fois le rapport écrit, un appel LLM séparé (`impact_score_model`) lit le rapport terminé et lui attribue un score
+d'impact positif de 0 à 10 (0-3 Weak, 4-6 Moderate, 7-10 Strong) avec une justification ; la page l'affiche en
+jauge. Pour recalculer le score des rapports existants sans relancer l'analyse :
+
+```powershell
+.venv\Scripts\python -m tsi_agent impact-rescore                    # tous les rapports de output/impact
+.venv\Scripts\python -m tsi_agent impact-rescore <project_id> ...
+```
+
+Réglages (`config/settings.yaml`) : `impact_model`, `impact_score_model`, `impact_max_steps` (appels LLM par analyse),
 `impact_max_searches` (recherches web par analyse), `impact_page_words` (texte d'une page transmis à l'agent),
 `impact_page_max_mb` (taille maximale d'une page téléchargée), `impact_project_chars`, `impact_llm_timeout_s`,
 ainsi que `web_search_model` et `web_search_timeout_s` pour la recherche web. `fetch_page` ne lit que des URL

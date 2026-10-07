@@ -119,24 +119,46 @@ Estimation : 0,30 à 1 $ (équivalent API) et 2 à 6 minutes par analyse.
 
 Hors périmètre : analyses en lot, comparaison entre projets, export PDF du rapport.
 
-## 9. Jauge d'impact (ajout du 2026-10-07)
+## 9. Score d'impact positif 0-10 (revu le 2026-10-07)
 
-- **Données.** Le JSON final de l'agent gagne `impact_score` (entier de -2 à +2) et `impact_rationale` (une phrase
-  avec citations [n]). Échelle donnée dans le prompt : +2 impact positif net, plausiblement attribuable au projet ;
-  +1 plutôt positif (signes positifs, attribution faible ou partielle) ; 0 indéterminé (preuves insuffisantes, trop
-  récentes ou contradictoires) ; -1 plutôt négatif ; -2 impact négatif net (préjudice, retour en arrière, échec de
-  la réforme). En cas de doute : 0.
-- **Rapport.** `parse_report` convertit le score en entier borné à -2..2 (absent ou illisible : 0) ; la
-  justification passe par le nettoyage des citations et compte pour les sources citées. Catégorie : >= 1 positive,
-  <= -1 negative, 0 undetermined. Front matter : `impact_score`, `impact_category`, `impact_rationale` juste après
-  `confidence`. Corps : ligne `**Impact:** Positive (score +1 on a -2…+2 scale) — <justification>` sous le verdict.
-- **Anciens rapports** (sans `impact_score`) : servis tels quels ; la page les affiche « Not rated ».
-- **API.** `GET /api/impact/reports` ajoute `summary` : `{"positive", "undetermined", "negative", "not_rated"}`.
-- **Page.** Jauge SVG en demi-cercle (sans bibliothèque) en tête du rapport : zones rouge / gris / vert (variables
-  CSS clair et sombre), graduations -2..+2, aiguille sur le score (-2 à gauche, +2 à droite), puis catégorie, score
-  signé, confiance et justification (rendue avec les fonctions d'échappement existantes). Non noté : jauge grisée
-  sans aiguille. `role="img"` et `aria-label` décrivant le score. Liste des analyses : pastille par rapport ;
-  bandeau de puces (Positive / Undetermined / Negative / Not rated / All) qui filtre la liste.
-- **Tests.** Conversion et bornage du score, catégorie, front matter et ligne Impact, nettoyage des citations de la
-  justification, résumé de l'API avec un rapport non noté ; côté page (Node) : angle de l'aiguille, catégorie,
-  balisage et échappement de la jauge.
+Remplace l'échelle -2..+2 (positif / indéterminé / négatif) notée par l'agent pendant l'analyse.
+
+- **L'agent ne note plus.** Le prompt et `REPORT_SCHEMA` ne contiennent plus `impact_score` ni
+  `impact_rationale` ; `parse_report` ignore ces champs s'ils sont présents. Le rapport est rendu sans score.
+- **Étape de score sur le rapport terminé** (`impact/scoring.py`). Après l'écriture du rapport, un appel LLM séparé à
+  sortie structurée (`SCORE_SCHEMA` : `impact_score` entier 0..10 et `impact_rationale`, tous deux requis) reçoit la
+  rubrique en prompt système et le corps du rapport (sans front matter). Modèle : réglage `impact_score_model`
+  (défaut `opus`), via `default_scorer(settings)` (CLI `claude`, journalisé). La réponse est bornée à 0..10 (entier
+  arrondi) ; une réponse illisible lève `ScoringError`. Événement du journal : `ImpactScoring` / `impact_score`
+  avec `score`.
+- **Rubrique** (anglais, prompt système) : impact POSITIF du projet tel que documenté par le rapport. 0 : aucune
+  preuve d'impact positif (livrables non utilisés, réforme abandonnée, contredite ou annulée) ; 1-3 faible
+  (livrables remis, peu ou pas de preuve d'appropriation) ; 4-6 modéré (réforme adoptée ou partiellement mise en
+  œuvre, attribution plausible mais partielle ou précoce) ; 7-8 fort (résultats documentés plausiblement
+  attribuables au projet) ; 9-10 très fort (résultats durables, bien documentés, clairement attribuables). Score
+  fondé uniquement sur le rapport, en tenant compte de la confiance et des réserves d'attribution qu'il exprime ;
+  justification d'une phrase citant les sources [n] du rapport.
+- **Niveaux** : 0-3 `weak`, 4-6 `moderate`, 7-10 `strong` (libellés Weak / Moderate / Strong).
+- **Écriture** (`apply_score`, idempotent) : front matter `impact_score`, `impact_level`, `impact_rationale` juste
+  après `confidence` (l'ancien `impact_category` est retiré) ; corps : ligne
+  `**Positive impact:** 7/10 (Strong) — <justification>` sous le verdict (une ancienne ligne `**Impact:**` est
+  retirée). Les citations de la justification absentes de la section Sources du rapport sont retirées.
+- **Erreurs.** Échec du score (`ScoringError` ou erreur du CLI hors quota) : le rapport reste enregistré sans score
+  et une alerte est journalisée. Le quota remonte comme pour l'analyse (le rapport, déjà écrit, reste non noté).
+- **Recalcul** : `python -m tsi_agent impact-rescore [project_id ...]` recalcule le score des rapports existants
+  de `impact_dir` (tous par défaut), sans nouvelle analyse ni couche vectorisée, dans un run du journal
+  (`mode: impact-rescore`) ; une ligne par rapport (`project_id 7/10 strong`) puis le coût total ; code 0, 2 en
+  cas d'erreur.
+- **API.** `GET /api/impact/reports` : `summary` = `{"strong", "moderate", "weak", "not_rated"}`. Non noté : pas
+  d'`impact_level` ou pas d'`impact_score` entier dans 0..10 (rapports jamais notés et anciens rapports -2..+2).
+- **Page.** Jauge SVG en demi-cercle de 0 (gauche) à 10 (droite), dégradé unique gris → vert clair → vert
+  (variables CSS clair et sombre, sans rouge), graduations 0, 2, 4, 6, 8, 10, aiguille sur le score ; à côté :
+  « 7/10 » en grand, niveau, confiance et justification (rendue avec les fonctions d'échappement existantes).
+  `role="img"`, `aria-label` « Positive impact: 7 out of 10 (Strong), confidence medium ». Non noté : jauge grisée
+  sans aiguille, « Not rated (run impact-rescore or the analysis again) ». Liste des analyses : pastille « 7/10 »
+  colorée par niveau ; puces Strong / Moderate / Weak / Not rated / All qui filtrent la liste.
+- **Tests.** Score : lecture, bornage et erreurs de la réponse (generator scripté), seuils des niveaux,
+  `apply_score` (front matter, ligne du corps, idempotence, retrait de l'ancienne échelle et des citations
+  inconnues) ; analyse avec et sans score, échec du score (rapport conservé, alerte), quota ; commande
+  `impact-rescore` sur un dossier temporaire ; résumé de l'API avec rapports non notés ; côté page (Node) : angle de
+  l'aiguille pour 0, 5 et 10, niveau, `aria-label`, échappement, non noté.
