@@ -126,3 +126,34 @@ def test_render_table_cell_with_escaped_pipe():
         '<div class="table-wrap"><table><thead><tr><th>A</th><th>B</th></tr></thead><tbody>'
         "<tr><td>a|b</td><td>c</td></tr></tbody></table></div>"
     )
+
+
+def eval_js(expr: str):
+    node_src = _pure_js() + f"\nprocess.stdout.write(JSON.stringify({expr}));\n"
+    result = subprocess.run(["node", "-e", node_src], capture_output=True, text=True, encoding="utf-8", check=True)
+    return json.loads(result.stdout)
+
+
+def test_gauge_angle_and_impact_category():
+    assert eval_js("[-2, -1, 0, 1, 2, 5].map(gaugeAngle)") == [-90, -45, 0, 45, 90, 90]
+    infos = eval_js("[2, 1, 0, -1, -2, undefined, '2', 1.5].map(s => impactInfo({impact_score: s}))")
+    assert [(i["category"], i["signed"]) for i in infos] == [
+        ("positive", "+2"), ("positive", "+1"), ("undetermined", "0"), ("negative", "-1"), ("negative", "-2"),
+        ("not_rated", ""), ("not_rated", ""), ("not_rated", "")]
+    # aiguille : -2 tout a gauche, +2 tout a droite (meme hauteur que le centre)
+    assert eval_js("[gaugePoint(gaugeAngle(-2), 10), gaugePoint(gaugeAngle(2), 10), gaugePoint(0, 10)]") == \
+        [[100, 114], [120, 114], [110, 104]]
+
+
+def test_impact_gauge_markup_and_escaping():
+    html = eval_js('impactGauge({impact_score: 2, confidence: "high", '
+                   'impact_rationale: "<img src=x onerror=alert(1)> Done [1]."}, '
+                   '[{ref: 1, url: "https://ok.example"}])')
+    assert 'role="img"' in html and 'aria-label="Impact: Positive, score +2 of -2 to +2, confidence high"' in html
+    assert 'class="needle"' in html and "<img" not in html and "&lt;img" in html
+    assert '<sup><a href="https://ok.example"' in html
+    unrated = eval_js('impactGauge({confidence: "low"}, [])')
+    assert 'class="needle"' not in unrated and "gauge unrated" in unrated
+    assert "Not rated (run the analysis again to get a score)" in unrated
+    assert eval_js('[impactPill({impact_score: -1}), impactPill({})]') == [
+        '<span class="pill negative">Negative -1</span>', '<span class="pill not_rated">Not rated</span>']

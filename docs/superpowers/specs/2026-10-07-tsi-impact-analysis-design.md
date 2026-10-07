@@ -118,3 +118,25 @@ citées figurent dans la section Sources.
 Estimation : 0,30 à 1 $ (équivalent API) et 2 à 6 minutes par analyse.
 
 Hors périmètre : analyses en lot, comparaison entre projets, export PDF du rapport.
+
+## 9. Jauge d'impact (ajout du 2026-10-07)
+
+- **Données.** Le JSON final de l'agent gagne `impact_score` (entier de -2 à +2) et `impact_rationale` (une phrase
+  avec citations [n]). Échelle donnée dans le prompt : +2 impact positif net, plausiblement attribuable au projet ;
+  +1 plutôt positif (signes positifs, attribution faible ou partielle) ; 0 indéterminé (preuves insuffisantes, trop
+  récentes ou contradictoires) ; -1 plutôt négatif ; -2 impact négatif net (préjudice, retour en arrière, échec de
+  la réforme). En cas de doute : 0.
+- **Rapport.** `parse_report` convertit le score en entier borné à -2..2 (absent ou illisible : 0) ; la
+  justification passe par le nettoyage des citations et compte pour les sources citées. Catégorie : >= 1 positive,
+  <= -1 negative, 0 undetermined. Front matter : `impact_score`, `impact_category`, `impact_rationale` juste après
+  `confidence`. Corps : ligne `**Impact:** Positive (score +1 on a -2…+2 scale) — <justification>` sous le verdict.
+- **Anciens rapports** (sans `impact_score`) : servis tels quels ; la page les affiche « Not rated ».
+- **API.** `GET /api/impact/reports` ajoute `summary` : `{"positive", "undetermined", "negative", "not_rated"}`.
+- **Page.** Jauge SVG en demi-cercle (sans bibliothèque) en tête du rapport : zones rouge / gris / vert (variables
+  CSS clair et sombre), graduations -2..+2, aiguille sur le score (-2 à gauche, +2 à droite), puis catégorie, score
+  signé, confiance et justification (rendue avec les fonctions d'échappement existantes). Non noté : jauge grisée
+  sans aiguille. `role="img"` et `aria-label` décrivant le score. Liste des analyses : pastille par rapport ;
+  bandeau de puces (Positive / Undetermined / Negative / Not rated / All) qui filtre la liste.
+- **Tests.** Conversion et bornage du score, catégorie, front matter et ligne Impact, nettoyage des citations de la
+  justification, résumé de l'API avec un rapport non noté ; côté page (Node) : angle de l'aiguille, catégorie,
+  balisage et échappement de la jauge.

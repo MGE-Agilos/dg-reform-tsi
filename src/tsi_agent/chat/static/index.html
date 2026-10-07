@@ -5,9 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TSI Projects Chat</title>
 <style>
-  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2433; --muted:#667085; --accent:#1f4e9e; --border:#dde2ea; --ai:#8a5a00; }
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2433; --muted:#667085; --accent:#1f4e9e; --border:#dde2ea; --ai:#8a5a00;
+          --pos:#1a7f37; --neg:#c4321f; --undet:#8a94a6; --gauge-off:#d5dae2; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#12151b; --card:#1b2029; --text:#e6e9ef; --muted:#98a2b3; --accent:#7aa7ff; --border:#2c3441; --ai:#e0b458; }
+    :root { --bg:#12151b; --card:#1b2029; --text:#e6e9ef; --muted:#98a2b3; --accent:#7aa7ff; --border:#2c3441; --ai:#e0b458;
+            --pos:#4ac26b; --neg:#f2735f; --undet:#7d8799; --gauge-off:#353d4a; }
   }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
@@ -66,7 +68,28 @@
   .plist .empty { font-size:13px; color:var(--muted); }
   .card-actions { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
   .steps { margin:8px 0 0; padding-left:1.4em; font-size:13px; color:var(--muted); }
-  @media (max-width: 600px) { header { padding:12px 16px; } .tabs { order:3; width:100%; } }
+  .gauge { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-bottom:6px; padding-bottom:10px; border-bottom:1px solid var(--border); }
+  .gauge svg { width:220px; max-width:100%; height:auto; flex:none; }
+  .gauge .zone { fill:none; stroke-width:20; }
+  .gauge .z-negative { stroke:var(--neg); } .gauge .z-undetermined { stroke:var(--undet); } .gauge .z-positive { stroke:var(--pos); }
+  .gauge.unrated .zone { stroke:var(--gauge-off); }
+  .gauge .tick { stroke:var(--muted); stroke-width:1.5; }
+  .gauge .tick-label { fill:var(--muted); font-size:11px; text-anchor:middle; dominant-baseline:middle; }
+  .gauge .needle { stroke:var(--text); stroke-width:3.5; stroke-linecap:round; }
+  .gauge .hub { fill:var(--text); }
+  .gauge .gtext { flex:1; min-width:180px; }
+  .gauge .gcat { font-size:18px; font-weight:700; }
+  .gauge .gcat.positive { color:var(--pos); } .gauge .gcat.negative { color:var(--neg); }
+  .gauge .gcat.undetermined, .gauge .gcat.not_rated { color:var(--muted); }
+  .gauge .grationale p { margin:.3em 0; }
+  .gauge .grationale a { color:var(--accent); }
+  .pill { display:inline-block; font-size:12px; font-weight:600; line-height:1.4; padding:1px 8px; border-radius:999px; border:1px solid currentColor; margin-left:6px; white-space:nowrap; }
+  .pill.positive { color:var(--pos); } .pill.negative { color:var(--neg); } .pill.undetermined { color:var(--undet); }
+  .pill.not_rated { color:var(--muted); border-style:dashed; font-weight:400; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 8px; }
+  .chips button { font-size:13px; padding:3px 10px; border-radius:999px; }
+  .chips button[aria-pressed=true] { background:var(--accent); border-color:var(--accent); color:#fff; }
+  @media (max-width: 600px) { header { padding:12px 16px; } .tabs { order:3; width:100%; } .gauge { justify-content:center; } }
 </style>
 </head>
 <body>
@@ -88,6 +111,7 @@
     <div id="prun" class="msg" hidden></div>
     <div id="preport" hidden></div>
     <h2>Previous analyses</h2>
+    <div id="psummary" class="chips" role="group" aria-label="Filter previous analyses by impact" hidden></div>
     <div id="ppast" class="plist"></div>
   </section>
 </main>
@@ -224,6 +248,77 @@ function render(text, sources) {
   return out.join("");
 }
 
+// ---- Impact gauge (pure functions, no DOM) ----
+const IMPACT_LABELS = {positive: "Positive", undetermined: "Undetermined", negative: "Negative", not_rated: "Not rated"};
+
+// Score et categorie d'un front matter ; impact_score absent ou non entier (ancien rapport) : non note.
+function impactInfo(front) {
+  const raw = (front || {}).impact_score;
+  if (typeof raw !== "number" || !Number.isInteger(raw)) {
+    return {rated: false, score: null, category: "not_rated", label: IMPACT_LABELS.not_rated, signed: ""};
+  }
+  const score = Math.max(-2, Math.min(2, raw));
+  const category = score >= 1 ? "positive" : score <= -1 ? "negative" : "undetermined";
+  return {rated: true, score, category, label: IMPACT_LABELS[category], signed: score > 0 ? "+" + score : String(score)};
+}
+
+// Angle de l'aiguille en degres depuis la verticale : -2 -> -90 (gauche), 0 -> 0 (haut), +2 -> +90 (droite).
+function gaugeAngle(score) {
+  return Math.max(-2, Math.min(2, score)) * 45;
+}
+
+const G_CX = 110, G_CY = 114, G_R = 76;
+
+function gaugePoint(angle, r) {
+  const a = angle * Math.PI / 180;
+  return [+(G_CX + r * Math.sin(a)).toFixed(2), +(G_CY - r * Math.cos(a)).toFixed(2)];
+}
+
+function gaugeArc(a1, a2, r) {
+  const [x1, y1] = gaugePoint(a1, r), [x2, y2] = gaugePoint(a2, r);
+  return `M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`;
+}
+
+// Jauge SVG + texte ; `sources` sert aux liens [n] de la justification (rendue via render(), donc echappee).
+function impactGauge(front, sources) {
+  front = front || {};
+  const info = impactInfo(front);
+  const confidence = front.confidence ? String(front.confidence) : "";
+  const aria = info.rated
+    ? `Impact: ${info.label}, score ${info.signed} of -2 to +2` + (confidence ? `, confidence ${confidence}` : "")
+    : "Impact: not rated";
+  const zones = [["negative", -90, -22.5], ["undetermined", -22.5, 22.5], ["positive", 22.5, 90]];
+  let svg = `<svg viewBox="0 0 220 124" role="img" aria-label="${esc(aria)}" focusable="false">`;
+  zones.forEach(([name, a1, a2]) => { svg += `<path class="zone z-${name}" d="${gaugeArc(a1, a2, G_R)}"/>`; });
+  [-2, -1, 0, 1, 2].forEach(s => {
+    const [x1, y1] = gaugePoint(gaugeAngle(s), G_R + 12), [x2, y2] = gaugePoint(gaugeAngle(s), G_R + 17);
+    const [tx, ty] = gaugePoint(gaugeAngle(s), G_R + 27);
+    svg += `<line class="tick" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>` +
+      `<text class="tick-label" x="${tx}" y="${ty}" aria-hidden="true">${s > 0 ? "+" + s : s}</text>`;
+  });
+  if (info.rated) {
+    const [nx, ny] = gaugePoint(gaugeAngle(info.score), G_R - 16);
+    svg += `<line class="needle" x1="${G_CX}" y1="${G_CY}" x2="${nx}" y2="${ny}"/>` +
+      `<circle class="hub" cx="${G_CX}" cy="${G_CY}" r="6"/>`;
+  }
+  svg += "</svg>";
+  let text;
+  if (info.rated) {
+    const meta = [`score ${info.signed} on a -2…+2 scale`, confidence ? `confidence: ${confidence}` : ""].filter(Boolean).join(" · ");
+    text = `<div class="gcat ${info.category}">${esc(info.label)}</div><div class="meta">${esc(meta)}</div>` +
+      (front.impact_rationale ? `<div class="grationale">${render(String(front.impact_rationale), sources)}</div>` : "");
+  } else {
+    text = '<div class="gcat not_rated">Not rated</div><div class="meta">Not rated (run the analysis again to get a score)</div>';
+  }
+  return `<div class="gauge ${info.rated ? info.category : "unrated"}">${svg}<div class="gtext">${text}</div></div>`;
+}
+
+// Pastille de la liste des analyses : "Positive +2", "Undetermined 0", "Not rated".
+function impactPill(front) {
+  const info = impactInfo(front);
+  return `<span class="pill ${info.category}">${esc(info.rated ? info.label + " " + info.signed : info.label)}</span>`;
+}
+
 function addMessage(role, html, extra) {
   const div = document.createElement("div");
   div.className = "msg " + role + (extra && extra.error ? " error" : "");
@@ -311,6 +406,8 @@ let elapsedTimer = null;
 let runStarted = 0;
 let searchTimer = null;
 let searchSeq = 0;
+let pastReports = [];       // front matter des analyses deja faites
+let pastFilter = "all";     // categorie affichee dans la liste
 
 function showTab(name) {
   const isImpact = name === "impact";
@@ -355,7 +452,8 @@ function showReport(front, body) {
                 front.duration_s != null ? front.duration_s + " s" : "",
                 front.cost_usd != null ? "API-equivalent cost $" + Number(front.cost_usd).toFixed(4) : "",
                 front.run_id ? "run " + front.run_id : ""].filter(Boolean).join(" · ");
-  preport.innerHTML = `<div class="msg"><div class="body">${render(body || "", reportSources(body || ""))}</div>` +
+  const sources = reportSources(body || "");
+  preport.innerHTML = `<div class="msg">${impactGauge(front, sources)}<div class="body">${render(body || "", sources)}</div>` +
     (meta ? `<div class="meta">${esc(meta)}</div>` : "") + "</div>";
   preport.hidden = false;
 }
@@ -508,21 +606,50 @@ async function runImpact() {
   }
 }
 
+const psummary = document.getElementById("psummary");
+
+// Bandeau de synthese : une puce par categorie (comptes de l'API), clic = filtre de la liste.
+function renderSummary(summary) {
+  const counts = summary || {};
+  const chips = [["positive", "Positive"], ["undetermined", "Undetermined"], ["negative", "Negative"],
+                 ["not_rated", "Not rated"], ["all", "All"]];
+  psummary.innerHTML = "";
+  chips.forEach(([key, label]) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = key;
+    const n = key === "all" ? pastReports.length : Number(counts[key] || 0);
+    b.textContent = `${label} (${n})`;
+    b.setAttribute("aria-pressed", String(pastFilter === key));
+    b.addEventListener("click", () => { pastFilter = key; renderSummary(summary); renderPast(); });
+    psummary.appendChild(b);
+  });
+  psummary.hidden = !pastReports.length;
+}
+
+function renderPast() {
+  const list = pastFilter === "all" ? pastReports : pastReports.filter(f => impactInfo(f).category === pastFilter);
+  ppast.innerHTML = list.length ? "" :
+    `<div class="empty">${pastReports.length ? "No analysis in this category." : "No analysis yet."}</div>`;
+  list.forEach(f => {
+    const b = document.createElement("button");
+    b.type = "button";
+    const verdict = String(f.overall_verdict || "").replace(/\s*\[\d+\]/g, "");
+    const sub = [f.generated ? "Generated " + f.generated : "", f.confidence ? "confidence: " + f.confidence : ""].filter(Boolean).join(" · ");
+    b.innerHTML = `${esc(f.title || f.project_id)}${impactPill(f)}<span class="sub">${esc(sub)}</span>` +
+      (verdict ? `<span class="sub">${esc(verdict.length > 220 ? verdict.slice(0, 220) + "…" : verdict)}</span>` : "");
+    b.addEventListener("click", () => openReport(f.project_id));
+    ppast.appendChild(b);
+  });
+}
+
 async function loadPast() {
   try {
     const r = await fetch("/api/impact/reports");
-    const list = (await r.json()).reports || [];
-    ppast.innerHTML = list.length ? "" : '<div class="empty">No analysis yet.</div>';
-    list.forEach(f => {
-      const b = document.createElement("button");
-      b.type = "button";
-      const verdict = String(f.overall_verdict || "").replace(/\s*\[\d+\]/g, "");
-      const sub = [f.generated ? "Generated " + f.generated : "", f.confidence ? "confidence: " + f.confidence : ""].filter(Boolean).join(" · ");
-      b.innerHTML = `${esc(f.title || f.project_id)}<span class="sub">${esc(sub)}</span>` +
-        (verdict ? `<span class="sub">${esc(verdict.length > 220 ? verdict.slice(0, 220) + "…" : verdict)}</span>` : "");
-      b.addEventListener("click", () => openReport(f.project_id));
-      ppast.appendChild(b);
-    });
+    const res = await r.json();
+    pastReports = res.reports || [];
+    renderSummary(res.summary);
+    renderPast();
   } catch (e) {
     ppast.innerHTML = `<div class="empty">${esc(e)}</div>`;
   }
