@@ -261,3 +261,10 @@ def test_country_and_project_filters_are_pushed_into_the_store(tmp_path):
     tool = deliverable_tool(store, top_k=5)
     assert [s["doc_id"] for s in tool.run(query="q", countries=["HR"])["sources"]] == ["pub-t"]
     assert [s["doc_id"] for s in tool.run(query="q", project_id="wanted")["sources"]] == ["pub-t"]
+
+
+def test_project_reader_max_chars(tmp_path):
+    store = open_store(str(make_vector_store(tmp_path)), 8)
+    short = ProjectReader(document_store=store, max_chars=300).run(doc_id="energy-regulation-academy")
+    assert len(short["result"]) == 300
+    assert ProjectReader(document_store=store).to_dict()["init_parameters"]["max_chars"] == 8000

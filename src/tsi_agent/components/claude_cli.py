@@ -43,11 +43,19 @@ class LLMQuotaExceeded(LLMCallError):
 @component
 class ClaudeCliChatGenerator:
     def __init__(self, model: str = "sonnet", timeout_s: int = 180, json_schema: dict[str, Any] | None = None,
-                 executable: str = "claude"):
+                 executable: str = "claude", allowed_tools: list[str] | None = None):
         self.model = model
         self.timeout_s = timeout_s
         self.json_schema = json_schema
         self.executable = executable
+        self.allowed_tools = allowed_tools
+
+    def _tools_args(self) -> list[str]:
+        """Outils natifs du CLI : aucun par defaut ; `allowed_tools` (ex. ["WebSearch"]) les active sans demande."""
+        if not self.allowed_tools:
+            return ["--tools", ""]
+        names = ",".join(self.allowed_tools)
+        return ["--tools", names, "--allowedTools", names]
 
     def _resolve_executable(self) -> str:
         path = shutil.which(self.executable)
@@ -66,7 +74,7 @@ class ClaudeCliChatGenerator:
     def _command(self, system_prompt: str) -> list[str]:
         exe = self._resolve_executable()
         cmd = [exe, "-p", "--output-format", "json", "--model", self.model,
-               "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+               *self._tools_args(), "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
                "--setting-sources", "", "--no-session-persistence", "--system-prompt", system_prompt]
         if self.json_schema:
             cmd += ["--json-schema", json.dumps(self.json_schema, separators=(",", ":"))]
@@ -78,7 +86,7 @@ class ClaudeCliChatGenerator:
         # dernier appel, potentiellement une reponse fabriquee par le modele apres un premier appel correct.
         exe = self._resolve_executable()
         return [exe, "-p", "--output-format", "stream-json", "--verbose", "--model", self.model,
-                "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+                *self._tools_args(), "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
                 "--setting-sources", "", "--no-session-persistence", "--system-prompt", system_prompt,
                 "--json-schema", json.dumps(schema, separators=(",", ":"))]
 

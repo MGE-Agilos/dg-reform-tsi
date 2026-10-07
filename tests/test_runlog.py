@@ -72,3 +72,17 @@ def test_embed_events_count_tokens_and_cost_but_not_llm_calls(tmp_path):
     s = run.final_summary
     assert s["llm_calls"] == 0 and s["tokens"]["input_tokens"] == 1000 and s["cost_usd"] == 0.0
     assert run.cost_usd == pytest.approx(0.00002)
+
+
+def test_listeners_receive_each_event_and_errors_are_ignored(tmp_path):
+    seen = []
+
+    def boom(record):
+        raise RuntimeError("listener failure must not break the run")
+
+    with runlog.open_run(tmp_path, "l1") as run:
+        run.listeners.append(seen.append)
+        run.listeners.append(boom)
+        runlog.event("X", "tool_call", "web_search", query="q")
+    assert seen[0]["target"] == "web_search" and seen[0]["query"] == "q"
+    assert run.final_summary["counts"] == {"tool_call:ok": 1}

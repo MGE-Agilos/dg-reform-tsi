@@ -297,3 +297,15 @@ def test_real_cli_answers_greece_question_via_list_projects_tool():
     reply2 = gen.run(messages=messages, tools=tools)["replies"][0]
     assert not reply2.tool_calls, f"outil rappele au lieu de repondre : {reply2.tool_calls}"
     assert "20" in (reply2.text or ""), f"reponse sans le chiffre attendu : {reply2.text!r}"
+
+
+def test_allowed_tools_enable_native_cli_tools(monkeypatch):
+    gen = ClaudeCliChatGenerator(model="haiku", allowed_tools=["WebSearch"])
+    monkeypatch.setattr(gen, "_resolve_executable", lambda: "claude")
+    cmd = gen._command("sys")
+    assert cmd[cmd.index("--tools") + 1] == "WebSearch"
+    assert cmd[cmd.index("--allowedTools") + 1] == "WebSearch"
+    plain = ClaudeCliChatGenerator(model="haiku")
+    monkeypatch.setattr(plain, "_resolve_executable", lambda: "claude")
+    assert plain._command("sys")[plain._command("sys").index("--tools") + 1] == ""
+    assert "--allowedTools" not in plain._command("sys")

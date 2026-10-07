@@ -26,3 +26,14 @@ deliverables_max_words: 15000   # debut des documents envoye au LLM pour le resu
 deliverables_max_pdf_mb: 50
 deliverables_llm_timeout_s: 600   # prompts longs, jusqu'a 15 000 mots
 deliverables_recheck_days: 7   # publications traitees depuis moins de N jours : page non reverifiee (sauf --full)
+
+# Analyse d'impact (onglet "Impact analysis" de la page web)
+impact_dir: output/impact
+impact_model: sonnet
+impact_max_steps: 20        # appels LLM maximum par analyse
+impact_max_searches: 10     # recherches web maximum par analyse
+impact_page_words: 3000     # texte d'une page web transmis a l'agent
+impact_project_chars: 20000
+impact_llm_timeout_s: 600
+web_search_model: haiku     # la recherche web elle-meme (CLI claude, outil WebSearch)
+web_search_timeout_s: 180

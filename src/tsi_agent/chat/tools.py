@@ -252,11 +252,12 @@ class ProjectLister:
 
 @component
 class ProjectReader:
-    def __init__(self, document_store: Any):
+    def __init__(self, document_store: Any, max_chars: int = READER_MAX_CHARS):
         self.document_store = document_store
+        self.max_chars = max_chars
 
     def to_dict(self) -> dict[str, Any]:
-        return default_to_dict(self, document_store=self.document_store.to_dict())
+        return default_to_dict(self, document_store=self.document_store.to_dict(), max_chars=self.max_chars)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ProjectReader":
@@ -289,4 +290,4 @@ class ProjectReader:
             parts.append(doc.content or "")
         runlog.event("ProjectReader", "tool_call", "get_project", doc_id=doc_id, chunks=len(docs),
                      duration_ms=round((time.monotonic() - t0) * 1000))
-        return {"result": "\n\n".join(parts)[:READER_MAX_CHARS], "sources": [_source(ref, docs[0])]}
+        return {"result": "\n\n".join(parts)[:self.max_chars], "sources": [_source(ref, docs[0])]}
