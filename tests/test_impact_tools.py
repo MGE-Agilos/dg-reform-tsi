@@ -99,4 +99,97 @@ def test_tools_round_trip(monkeypatch):
     tool = WebSearchTool.from_dict(WebSearchTool(search_engine=ClaudeWebSearch(), max_searches=4).to_dict())
     assert isinstance(tool.search_engine, ClaudeWebSearch) and tool.max_searches == 4
     reader = PageReader.from_dict(PageReader(max_words=10).to_dict())
-    assert reader.max_words == 10 and type(reader.fetcher).__name__ == "LinkContentFetcher"
+    assert reader.max_words == 10 and type(reader.fetcher).__name__ == "BoundedLinkFetcher"
+
+
+def test_page_text_pdf_stops_after_max_words():
+    pdf = (FIX / "deliverable_small.pdf").read_bytes()
+    full = page_text(pdf, "application/pdf", "https://x.eu/r.pdf")
+    assert "--- page 2 ---" in full
+    short = page_text(pdf, "application/pdf", "https://x.eu/r.pdf", max_words=1)
+    assert "--- page 1 ---" in short and "--- page 2 ---" not in short
+
+
+def bounded(handler, **kw):
+    import httpx
+    from tsi_agent.impact.tools import BoundedLinkFetcher
+    fetcher = BoundedLinkFetcher(**kw)
+    fetcher._transport = httpx.MockTransport(handler)
+    return fetcher
+
+
+@pytest.fixture
+def public_dns(monkeypatch):
+    """Resolution DNS simulee : tout nom resout vers une adresse publique, sauf internal.example (privee)."""
+    import tsi_agent.impact.tools as tools
+    monkeypatch.setattr(tools, "_resolve", lambda host: ["10.1.2.3"] if host == "internal.example" else ["93.184.216.34"])
+
+
+def test_bounded_fetcher_reads_page_and_content_type(public_dns):
+    import httpx
+    fetcher = bounded(lambda req: httpx.Response(200, content=b"hello", headers={"content-type": "text/plain"}))
+    stream = fetcher.run(urls=["https://a.example/x"])["streams"][0]
+    assert stream.data == b"hello" and stream.meta == {"url": "https://a.example/x", "content_type": "text/plain"}
+
+
+def test_bounded_fetcher_aborts_past_size_limit(public_dns):
+    import httpx
+
+    def chunks():
+        for _ in range(100):
+            yield b"x" * 100_000  # 10 Mo au total
+
+    fetcher = bounded(lambda req: httpx.Response(200, content=chunks(), headers={"content-type": "text/html"}),
+                      max_mb=1)
+    with pytest.raises(ValueError, match="larger than"):
+        fetcher.run(urls=["https://a.example/big"])
+    declared = bounded(lambda req: httpx.Response(200, content=b"x", headers={"content-length": "99999999"}),
+                       max_mb=1)
+    with pytest.raises(ValueError, match="larger than"):
+        declared.run(urls=["https://a.example/big"])
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1/", "http://10.0.0.1/admin", "http://[::1]/", "http://169.254.169.254/",
+                                 "https://internal.example/x", "file:///etc/passwd", "ftp://a.example/f"])
+def test_bounded_fetcher_refuses_private_hosts_and_other_schemes(public_dns, url):
+    calls = []
+    fetcher = bounded(lambda req: calls.append(req) or __import__("httpx").Response(200, content=b"secret"))
+    with pytest.raises(ValueError):
+        fetcher.run(urls=[url])
+    assert calls == []
+
+
+def test_bounded_fetcher_follows_redirects_but_not_to_private_ip(public_dns):
+    import httpx
+
+    def handler(req):
+        if req.url.path == "/moved":
+            return httpx.Response(301, headers={"location": "/final"})
+        if req.url.path == "/final":
+            return httpx.Response(200, content=b"ok", headers={"content-type": "text/plain"})
+        return httpx.Response(302, headers={"location": "http://127.0.0.1/secret"})
+
+    fetcher = bounded(handler)
+    stream = fetcher.run(urls=["https://a.example/moved"])["streams"][0]
+    assert stream.data == b"ok" and stream.meta["url"] == "https://a.example/final"
+    with pytest.raises(ValueError, match="not allowed"):
+        fetcher.run(urls=["https://a.example/evil"])
+    loop = bounded(lambda req: httpx.Response(302, headers={"location": "/again"}), max_redirects=3)
+    with pytest.raises(ValueError, match="redirects"):
+        loop.run(urls=["https://a.example/start"])
+
+
+def test_page_reader_reports_refused_url(public_dns):
+    out = PageReader().run(url="http://127.0.0.1:9/x")
+    assert out["result"].startswith("Could not read http://127.0.0.1:9/x") and out["sources"] == []
+
+
+def test_bounded_fetcher_round_trip(monkeypatch):
+    monkeypatch.setenv("HAYSTACK_DESERIALIZATION_ALLOWLIST", "tsi_agent")
+    from haystack.components.fetchers import LinkContentFetcher
+    from tsi_agent.impact.tools import BoundedLinkFetcher
+    reader = PageReader.from_dict(PageReader(fetcher=BoundedLinkFetcher(max_mb=5, max_redirects=2)).to_dict())
+    assert isinstance(reader.fetcher, BoundedLinkFetcher)
+    assert reader.fetcher.max_mb == 5 and reader.fetcher.max_redirects == 2
+    swapped = PageReader.from_dict(PageReader(fetcher=LinkContentFetcher()).to_dict())  # echange deepset
+    assert isinstance(swapped.fetcher, LinkContentFetcher)

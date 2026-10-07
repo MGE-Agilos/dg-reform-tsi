@@ -13,7 +13,7 @@ from tsi_agent.chat.tools import DeliverableSearch, ProjectReader
 from tsi_agent.components.claude_cli import ClaudeCliChatGenerator
 from tsi_agent.config import Settings
 from tsi_agent.impact.prompt import system_prompt
-from tsi_agent.impact.tools import PageReader, WebSearchTool
+from tsi_agent.impact.tools import BoundedLinkFetcher, PageReader, WebSearchTool
 from tsi_agent.impact.web_search import ClaudeWebSearch
 from tsi_agent.qdrant_local import LocalQdrantEmbeddingRetriever
 
@@ -31,6 +31,7 @@ def build_impact_pipeline(settings: Settings, *, chat_generator: Any = None, tex
     embedder = text_embedder if text_embedder is not None else default_text_embedder(settings)
     engine = search_engine if search_engine is not None else ClaudeWebSearch(
         model=settings.web_search_model, timeout_s=settings.web_search_timeout_s)
+    fetcher = page_fetcher if page_fetcher is not None else BoundedLinkFetcher(max_mb=settings.impact_page_max_mb)
     tools = [
         ComponentTool(ProjectReader(document_store=store, max_chars=settings.impact_project_chars),
                       name="get_project", description="Full text of the project to analyse, by its id.",
@@ -48,7 +49,7 @@ def build_impact_pipeline(settings: Settings, *, chat_generator: Any = None, tex
                       outputs_to_string={"source": "result"},
                       outputs_to_state={"sources": {"source": "sources"}, "searches": {"source": "searches"}},
                       inputs_from_state={"sources": "known_sources", "searches": "past_searches"}),
-        ComponentTool(PageReader(max_words=settings.impact_page_words, fetcher=page_fetcher),
+        ComponentTool(PageReader(max_words=settings.impact_page_words, fetcher=fetcher),
                       name="fetch_page", description="Read a web page or online document (HTML, PDF) by URL.",
                       outputs_to_string={"source": "result"}, **_SOURCES_IO),
     ]

@@ -38,6 +38,7 @@ class Settings(BaseModel):
     impact_max_steps: int = 20  # appels LLM maximum par analyse
     impact_max_searches: int = 10  # recherches web maximum par analyse (impose par l'outil)
     impact_page_words: int = 3000  # texte d'une page web transmis a l'agent
+    impact_page_max_mb: float = 20  # taille maximale d'une page ou d'un document telecharge
     impact_project_chars: int = 20000  # texte du projet transmis a l'agent
     impact_llm_timeout_s: int = 600  # le rapport final est long
     web_search_model: str = "haiku"

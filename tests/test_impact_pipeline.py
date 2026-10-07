@@ -43,7 +43,7 @@ def test_yaml_round_trip(tmp_path):
     pipe = build_impact_pipeline(s, chat_generator=ClaudeCliChatGenerator(model="sonnet"),
                                  text_embedder=MockTextEmbedder(model="mock", dimension=8))
     text = pipe.dumps()
-    for name in ("ClaudeWebSearch", "WebSearchTool", "PageReader", "LinkContentFetcher", "ProjectReader",
+    for name in ("ClaudeWebSearch", "WebSearchTool", "PageReader", "BoundedLinkFetcher", "ProjectReader",
                  "DeliverableSearch"):
         assert name in text
     agent = load_pipeline(text).get_component("agent")
@@ -51,3 +51,7 @@ def test_yaml_round_trip(tmp_path):
     web = next(t for t in yaml.safe_load(text)["components"]["agent"]["init_parameters"]["tools"]
                if t["data"]["name"] == "web_search")
     assert web["data"]["component"]["init_parameters"]["max_searches"] == s.impact_max_searches
+    page = next(t for t in yaml.safe_load(text)["components"]["agent"]["init_parameters"]["tools"]
+                if t["data"]["name"] == "fetch_page")
+    assert page["data"]["component"]["init_parameters"]["fetcher"]["init_parameters"]["max_mb"] ==         s.impact_page_max_mb
+    assert agent.raise_on_tool_invocation_failure is True

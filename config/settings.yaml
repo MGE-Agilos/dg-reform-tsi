@@ -33,6 +33,7 @@ impact_model: sonnet
 impact_max_steps: 20        # appels LLM maximum par analyse
 impact_max_searches: 10     # recherches web maximum par analyse
 impact_page_words: 3000     # texte d'une page web transmis a l'agent
+impact_page_max_mb: 20      # taille maximale d'une page ou d'un document telecharge (Mo)
 impact_project_chars: 20000
 impact_llm_timeout_s: 600
 web_search_model: haiku     # la recherche web elle-meme (CLI claude, outil WebSearch)
