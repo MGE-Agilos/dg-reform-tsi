@@ -54,3 +54,10 @@ def test_unparseable_reply_gives_no_documents(tmp_path, monkeypatch):
     search = ClaudeWebSearch()
     monkeypatch.setattr(search, "_cli", lambda: FakeCli("not a dict"))
     assert search.run(query="q") == {"documents": [], "links": []}
+
+
+@pytest.mark.integration
+def test_real_web_search_via_cli():
+    out = ClaudeWebSearch(model="haiku", top_k=5).run(query="Technical Support Instrument Croatia health reform")
+    assert out["documents"], "no results"
+    assert all(d.meta["link"].startswith("http") for d in out["documents"])
