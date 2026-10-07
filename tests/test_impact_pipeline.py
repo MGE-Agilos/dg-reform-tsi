@@ -25,6 +25,12 @@ def test_prompt():
     assert "{{" not in text and "energy-regulation-academy" in user_prompt("energy-regulation-academy")
 
 
+def test_prompt_defines_impact_scale():
+    text = system_prompt(max_searches=7)
+    for word in ('"impact_score"', '"impact_rationale"', "+2", "+1", "-1", "-2", "choose 0"):
+        assert word in text
+
+
 def test_agent_runs_tools_with_continuous_numbering(tmp_path):
     engine = FakeEngine([("News", "https://n.eu", "arrears fell")])
     fetcher = FakeFetcher({"https://n.eu": (b"Arrears fell by 40 percent.", "text/plain")})

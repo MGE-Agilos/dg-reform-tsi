@@ -39,8 +39,11 @@ def test_impact_job_lifecycle(tmp_path):
     st = c.get("/api/impact/job").get_json()
     assert st["state"] == "done" and st["result"]["body"].startswith("# Impact analysis")
     assert "Searching the web: q" in st["steps"]
-    reports = c.get("/api/impact/reports").get_json()["reports"]
+    data = c.get("/api/impact/reports").get_json()
+    reports = data["reports"]
     assert reports[0]["project_id"] == "energy-regulation-academy"
+    assert reports[0]["impact_score"] == 1 and reports[0]["impact_category"] == "positive"
+    assert data["summary"] == {"positive": 1, "undetermined": 0, "negative": 0, "not_rated": 0}
     one = c.get("/api/impact/reports/energy-regulation-academy").get_json()
     assert one["front"]["confidence"] == "medium" and one["body"].startswith("# Impact analysis")
     assert c.get("/api/impact/reports/nope").status_code == 404
@@ -63,4 +66,19 @@ def test_impact_unavailable_without_pipeline(tmp_path):
     res = c.get("/api/impact/job")
     assert res.status_code == 503 and res.get_json()["error"] == "impact analysis not available"
     assert c.get("/api/projects").get_json() == {"projects": []}
-    assert c.get("/api/impact/reports").get_json() == {"reports": []}
+    assert c.get("/api/impact/reports").get_json() == {
+        "reports": [], "summary": {"positive": 0, "undetermined": 0, "negative": 0, "not_rated": 0}}
+
+
+def test_impact_reports_summary_counts_not_rated(tmp_path):
+    app, c = client(tmp_path, [])
+    impact = tmp_path / "impact"
+    impact.mkdir()
+    (impact / "old.md").write_text("---\nproject_id: old\ngenerated: '2026-01-01'\n---\n# Old", encoding="utf-8")
+    (impact / "neg.md").write_text("---\nproject_id: neg\nimpact_score: -1\nimpact_category: negative\n---\n# N",
+                                   encoding="utf-8")
+    (impact / "zero.md").write_text("---\nproject_id: zero\nimpact_score: 0\n---\n# Z", encoding="utf-8")
+    data = c.get("/api/impact/reports").get_json()
+    assert data["summary"] == {"positive": 0, "undetermined": 1, "negative": 1, "not_rated": 1}
+    old = next(r for r in data["reports"] if r["project_id"] == "old")
+    assert "impact_score" not in old

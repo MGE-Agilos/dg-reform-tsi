@@ -2,8 +2,11 @@ import json
 
 import pytest
 
-from tsi_agent.impact.report import (ReportFormatError, clean_citations, list_reports, parse_report, read_report,
-                                     render_report, valid_project_id, write_report)
+from tsi_agent.render import parse_front_matter
+
+from tsi_agent.impact.report import (IMPACT_LABELS, REPORT_SCHEMA, ReportFormatError, clean_citations,
+                                     impact_category, list_reports, parse_report, read_report, render_report,
+                                     valid_project_id, write_report)
 
 REPORT = {
     "project_overview": "Supports hospital reform [1].",
@@ -14,6 +17,8 @@ REPORT = {
                    {"objective": "Improve quality", "verdict": "bogus", "rationale": "No data."}],
     "overall_verdict": "Positive but partly attributable.",
     "confidence": "medium",
+    "impact_score": 1,
+    "impact_rationale": "Arrears fell after the reform [3][9].",
 }
 SOURCES = [{"ref": 1, "title": "Project page", "url": "https://p.eu", "section": "Objectives"},
            {"ref": 2, "title": "Report", "url": "https://r.eu", "section": "Final report, p. 4"},
@@ -108,3 +113,58 @@ def test_headings_inside_sections_become_bold():
     body = render_report(META, report, SOURCES, RUN).split("\n---\n", 1)[1]
     assert "## Positive Evidence" not in body and "**Positive Evidence**" in body
     assert body.count("## 2. Evidence of positive impact") == 1
+
+
+@pytest.mark.parametrize("value, expected", [(1, 1), ("2", 2), (5, 2), (-7, -2), ("-1", -1), (1.6, 2), ("x", 0),
+                                             (None, 0), (True, 0), ([1], 0)])
+def test_parse_report_coerces_and_clamps_impact_score(value, expected):
+    assert parse_report(json.dumps(dict(REPORT, impact_score=value)))["impact_score"] == expected
+
+
+def test_parse_report_missing_impact_fields():
+    data = {k: v for k, v in REPORT.items() if k not in ("impact_score", "impact_rationale")}
+    report = parse_report(json.dumps(data))
+    assert report["impact_score"] == 0 and report["impact_rationale"] == ""
+    assert parse_report(json.dumps(REPORT))["impact_rationale"] == "Arrears fell after the reform [3][9]."
+
+
+def test_impact_category_and_labels():
+    assert [impact_category(s) for s in (2, 1, 0, -1, -2)] == \
+        ["positive", "positive", "undetermined", "negative", "negative"]
+    assert IMPACT_LABELS == {"positive": "Positive", "undetermined": "Undetermined", "negative": "Negative"}
+
+
+def test_report_schema_requires_impact_fields():
+    assert {"impact_score", "impact_rationale"} <= set(REPORT_SCHEMA["required"])
+    assert REPORT_SCHEMA["properties"]["impact_score"] == {"type": "integer", "enum": [-2, -1, 0, 1, 2]}
+
+
+def test_render_report_impact_front_matter_and_line():
+    md = render_report(META, parse_report(json.dumps(REPORT)), SOURCES, RUN)
+    front, body = parse_front_matter(md)
+    assert front["impact_score"] == 1 and front["impact_category"] == "positive"
+    assert front["impact_rationale"] == "Arrears fell after the reform [3]."  # citation inconnue [9] retiree
+    keys = list(front)
+    i = keys.index("confidence")
+    assert keys[i + 1:i + 4] == ["impact_score", "impact_category", "impact_rationale"]
+    verdict_line = "**Overall verdict:** Positive but partly attributable. (confidence: medium)"
+    impact_line = "**Impact:** Positive (score +1 on a -2\u2026+2 scale) \u2014 Arrears fell after the reform [3]."
+    assert verdict_line + "\n\n" + impact_line in body
+    assert front["removed_citations"] == [7, 9]
+
+
+def test_render_report_rationale_counts_for_sources():
+    report = dict(REPORT, impact_rationale="Cited only here [5].")
+    assert parse_front_matter(render_report(META, report, SOURCES, RUN))[0]["sources"] == 5
+
+
+def test_render_report_signed_scores():
+    for score, text in ((-2, "Negative (score -2"), (0, "Undetermined (score 0"), (2, "Positive (score +2")):
+        body = render_report(META, dict(REPORT, impact_score=score), SOURCES, RUN).split("\n---\n", 1)[1]
+        assert f"**Impact:** {text} on a -2\u2026+2 scale)" in body
+
+
+def test_old_report_without_impact_is_listed_unchanged(tmp_path):
+    (tmp_path / "old.md").write_text("---\nproject_id: old\nconfidence: low\n---\n# Old", encoding="utf-8")
+    assert list_reports(tmp_path) == [{"project_id": "old", "confidence": "low"}]
+    assert read_report(tmp_path, "old")[0] == {"project_id": "old", "confidence": "low"}

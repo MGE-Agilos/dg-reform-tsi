@@ -13,7 +13,7 @@ from tsi_agent.components.claude_cli import LLMQuotaExceeded
 from tsi_agent.config import Settings
 from tsi_agent.impact.catalog import load_catalog, search_catalog
 from tsi_agent.impact.pipeline import build_impact_pipeline
-from tsi_agent.impact.report import list_reports, read_report
+from tsi_agent.impact.report import impact_category, list_reports, read_report
 from tsi_agent.impact.service import ImpactJobs, JobRunning, analyse, default_report_formatter
 
 INDEX_HTML = Path(__file__).parent / "static" / "index.html"
@@ -33,6 +33,18 @@ def _valid_history(history: Any) -> bool:
         if not isinstance(turn.get("text"), str):
             return False
     return True
+
+
+def impact_summary(reports: list[dict[str, Any]]) -> dict[str, int]:
+    """Nombre de rapports par categorie d'impact ; sans impact_score entier (anciens rapports) : not_rated."""
+    counts = {"positive": 0, "undetermined": 0, "negative": 0, "not_rated": 0}
+    for front in reports:
+        score = front.get("impact_score")
+        if isinstance(score, int) and not isinstance(score, bool):
+            counts[impact_category(score)] += 1
+        else:
+            counts["not_rated"] += 1
+    return counts
 
 
 def create_app(settings: Settings, pipeline: Any = None, policy_areas: list[str] | None = None,
@@ -120,7 +132,8 @@ def create_app(settings: Settings, pipeline: Any = None, policy_areas: list[str]
 
     @app.get("/api/impact/reports")
     def impact_reports() -> Any:
-        return jsonify({"reports": list_reports(settings.impact_dir)})
+        reports = list_reports(settings.impact_dir)
+        return jsonify({"reports": reports, "summary": impact_summary(reports)})
 
     @app.get("/api/impact/reports/<project_id>")
     def impact_report(project_id: str) -> Any:
