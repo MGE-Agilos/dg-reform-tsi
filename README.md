@@ -336,6 +336,24 @@ l'index actuel : A sémantique (actuel), B + filtre pays, C hybride sémantique 
 fichier ; puis trois tailles de morceaux (150 / 250 / 400 mots) sur les projets et le programme, revectorisés dans un
 index temporaire en mémoire. Sorties : `output/eval/retrieval-<date>.md` (rapport) et `.csv` (rangs par question).
 
+## Banc d'agrégation
+
+Mesure si le chatbot retrouve **tous** les pays ou projets d'une question globale (« Quels pays ont des projets sur
+la santé ? »). **Arrêter le chatbot avant.**
+
+```powershell
+.venv\Scripts\python -m tsi_agent eval-aggregation                   # vérité des thèmes réutilisée si elle existe
+.venv\Scripts\python -m tsi_agent eval-aggregation --regenerate      # refaire la vérité des thèmes (juge Sonnet)
+.venv\Scripts\python -m tsi_agent eval-aggregation --metadata-only   # ou --topics-only
+```
+
+12 questions sur les métadonnées (pays par domaine, projets d'un pays dans un domaine, comptages ; vérité exacte tirée
+du catalogue des projets) et 16 sur 8 thèmes libres (cancer, hydrogène, feux de forêt, blanchiment, cybersécurité,
+retraites, intégration des migrants, justice numérique ; vérité = candidats par mots-clés + 300 premiers morceaux
+sémantiques, jugés par Sonnet, enregistrée dans `output/eval/aggregation_truth.json`). Chaque question passe par le
+vrai chatbot ; rappel, précision et F1 des pays cités (noms anglais/français, codes ISO) et des projets cités
+(sources, titres, identifiants). Sorties : `output/eval/aggregation-<date>.md` et `.csv`.
+
 ## Planification (Windows)
 
 À exécuter depuis le dossier du dépôt (les chemins sont résolus en absolu à partir du dossier courant) :
