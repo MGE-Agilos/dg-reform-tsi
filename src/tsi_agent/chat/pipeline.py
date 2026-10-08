@@ -1,4 +1,4 @@
-"""Pipeline Haystack du chatbot : un Agent avec quatre outils sur la couche vectorisee (export YAML deepset)."""
+"""Pipeline Haystack du chatbot : un Agent avec cinq outils sur la couche vectorisee (export YAML deepset)."""
 
 from typing import Any
 
@@ -8,7 +8,7 @@ from haystack.tools import ComponentTool
 
 from tsi_agent.chat.generator import LoggedChatGenerator
 from tsi_agent.chat.prompt import system_prompt
-from tsi_agent.chat.tools import DeliverableSearch, ProjectLister, ProjectReader, ProjectSearch
+from tsi_agent.chat.tools import DeliverableSearch, ProjectFinder, ProjectLister, ProjectReader, ProjectSearch
 from tsi_agent.components.claude_cli import ClaudeCliChatGenerator
 from tsi_agent.config import Settings
 from tsi_agent.qdrant_local import LocalQdrantEmbeddingRetriever, collection_exists, open_store
@@ -55,6 +55,17 @@ def build_chat_pipeline(settings: Settings, policy_areas: list[str], *, chat_gen
         ComponentTool(ProjectSearch(text_embedder=embedder, retriever=retriever),
                       name="search_projects",
                       description="Semantic search in TSI/SRSP project texts; returns numbered passages to cite.",
+                      outputs_to_string={"source": "result"}, **_SOURCES_IO),
+        ComponentTool(ProjectFinder(text_embedder=embedder, retriever=retriever, document_store=store,
+                                    project_pool=settings.finder_project_pool,
+                                    project_chunks=settings.finder_project_chunks,
+                                    deliverable_pool=settings.finder_deliverable_pool,
+                                    deliverable_chunks=settings.finder_deliverable_chunks,
+                                    max_candidates=settings.finder_max_candidates),
+                      name="find_projects",
+                      description="List candidate projects on a free topic (best matches in project texts and "
+                                  "deliverables plus keywords in titles, no relevance threshold) for you to judge "
+                                  "one by one; returns numbered candidates [n] to cite.",
                       outputs_to_string={"source": "result"}, **_SOURCES_IO),
         ComponentTool(DeliverableSearch(text_embedder=embedder, retriever=retriever),
                       name="search_deliverables",

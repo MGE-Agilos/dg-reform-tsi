@@ -48,3 +48,13 @@ def name_from_iso(iso: str) -> str:
 
 def iso_from_name(name: str) -> str | None:
     return _BY_NAME.get(" ".join(name.split()).lower())
+
+# Noms francais (banc d'agregation : detection des pays cites dans une reponse en francais).
+FRENCH_NAMES: dict[str, tuple[str, ...]] = {
+    "AT": ("Autriche",), "BE": ("Belgique",), "BG": ("Bulgarie",), "HR": ("Croatie",), "CY": ("Chypre",),
+    "CZ": ("Tchéquie", "République tchèque"), "DK": ("Danemark",), "EE": ("Estonie",), "FI": ("Finlande",),
+    "FR": ("France",), "DE": ("Allemagne",), "GR": ("Grèce",), "HU": ("Hongrie",), "IE": ("Irlande",),
+    "IT": ("Italie",), "LV": ("Lettonie",), "LT": ("Lituanie",), "LU": ("Luxembourg",), "MT": ("Malte",),
+    "NL": ("Pays-Bas",), "PL": ("Pologne",), "PT": ("Portugal",), "RO": ("Roumanie",), "SK": ("Slovaquie",),
+    "SI": ("Slovénie",), "ES": ("Espagne",), "SE": ("Suède",),
+}

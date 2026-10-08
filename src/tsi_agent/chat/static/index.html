@@ -5,9 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>TSI Projects Chat</title>
 <style>
-  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2433; --muted:#667085; --accent:#1f4e9e; --border:#dde2ea; --ai:#8a5a00; }
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2433; --muted:#667085; --accent:#1f4e9e; --border:#dde2ea; --ai:#8a5a00;
+          --ramp-0:#c3c9d3; --ramp-1:#9fd8a8; --ramp-2:#1a7f37; --gauge-off:#d5dae2;
+          --lvl-weak:#667085; --lvl-moderate:#3f8a4f; --lvl-strong:#1a7f37; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#12151b; --card:#1b2029; --text:#e6e9ef; --muted:#98a2b3; --accent:#7aa7ff; --border:#2c3441; --ai:#e0b458; }
+    :root { --bg:#12151b; --card:#1b2029; --text:#e6e9ef; --muted:#98a2b3; --accent:#7aa7ff; --border:#2c3441; --ai:#e0b458;
+            --ramp-0:#4a5363; --ramp-1:#3d7a4b; --ramp-2:#4ac26b; --gauge-off:#353d4a;
+            --lvl-weak:#98a2b3; --lvl-moderate:#8fcf86; --lvl-strong:#4ac26b; }
   }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
@@ -52,14 +56,68 @@
   @keyframes bounce { 0%,80%,100% { transform:scale(.5); opacity:.4; } 40% { transform:scale(1); opacity:1; } }
   @media (prefers-reduced-motion: reduce) { .dots i { animation:none; opacity:.7; } }
   .hint { max-width:900px; margin:6px auto 0; font-size:12px; color:var(--muted); }
+  [hidden] { display:none !important; }
+  header { flex-wrap:wrap; gap:10px; }
+  .tabs { display:flex; gap:4px; }
+  .tab { border:none; border-bottom:3px solid transparent; border-radius:0; background:none; padding:6px 10px; color:var(--muted); }
+  .tab[aria-selected=true] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+  #impact h2 { font-size:15px; margin:18px 0 8px; }
+  #pq { width:100%; font:inherit; padding:10px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--text); }
+  .plist { display:flex; flex-direction:column; gap:6px; margin:8px 0; }
+  .plist button { text-align:left; width:100%; padding:8px 12px; }
+  .plist button:hover, .plist button:focus-visible { border-color:var(--accent); }
+  .plist .sub { display:block; font-size:12px; color:var(--muted); }
+  .plist .empty { font-size:13px; color:var(--muted); }
+  .card-actions { margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .steps { margin:8px 0 0; padding-left:1.4em; font-size:13px; color:var(--muted); }
+  .gauge { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-bottom:6px; padding-bottom:10px; border-bottom:1px solid var(--border); }
+  .gauge svg { width:220px; max-width:100%; height:auto; flex:none; }
+  .gauge .arc { fill:none; stroke-width:20; stroke:url(#gauge-ramp); }
+  .gauge .s0 { stop-color:var(--ramp-0); } .gauge .s1 { stop-color:var(--ramp-1); } .gauge .s2 { stop-color:var(--ramp-2); }
+  .gauge.unrated .arc { stroke:var(--gauge-off); }
+  .gauge .tick { stroke:var(--muted); stroke-width:1.5; }
+  .gauge .tick-label { fill:var(--muted); font-size:11px; text-anchor:middle; dominant-baseline:middle; }
+  .gauge .needle { stroke:var(--text); stroke-width:3.5; stroke-linecap:round; }
+  .gauge .hub { fill:var(--text); }
+  .gauge .gtext { flex:1; min-width:180px; }
+  .gauge .gscore { font-size:28px; font-weight:700; line-height:1.1; }
+  .gauge .glevel { font-size:16px; font-weight:700; }
+  .gauge .strong { color:var(--lvl-strong); } .gauge .moderate { color:var(--lvl-moderate); } .gauge .weak { color:var(--lvl-weak); }
+  .gauge .not_rated { color:var(--muted); }
+  .gauge .grationale p { margin:.3em 0; }
+  .gauge .grationale a { color:var(--accent); }
+  .pill { display:inline-block; font-size:12px; font-weight:600; line-height:1.4; padding:1px 8px; border-radius:999px; border:1px solid currentColor; margin-left:6px; white-space:nowrap; }
+  .pill.strong { color:var(--lvl-strong); } .pill.moderate { color:var(--lvl-moderate); } .pill.weak { color:var(--lvl-weak); }
+  .pill.not_rated { color:var(--muted); border-style:dashed; font-weight:400; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 8px; }
+  .chips button { font-size:13px; padding:3px 10px; border-radius:999px; }
+  .chips button[aria-pressed=true] { background:var(--accent); border-color:var(--accent); color:#fff; }
+  @media (max-width: 600px) { header { padding:12px 16px; } .tabs { order:3; width:100%; } .gauge { justify-content:center; } }
 </style>
 </head>
 <body>
 <header>
   <div><h1>TSI / SRSP projects — assistant</h1><small>Answers based on the European Commission's public pages (DG REFORM)</small></div>
+  <nav class="tabs" role="tablist">
+    <button class="tab" id="tab-chat" type="button" role="tab" aria-selected="true" aria-controls="thread">Chat</button>
+    <button class="tab" id="tab-impact" type="button" role="tab" aria-selected="false" aria-controls="impact">Impact analysis</button>
+  </nav>
   <button id="reset" type="button">New conversation</button>
 </header>
-<main id="thread"></main>
+<main>
+  <div id="thread" role="tabpanel" aria-labelledby="tab-chat"></div>
+  <section id="impact" role="tabpanel" aria-labelledby="tab-impact" hidden>
+    <div id="punavailable" class="msg error" hidden><p>Impact analysis is not available on this server.</p></div>
+    <input id="pq" type="search" autocomplete="off" placeholder="Search a project by title, country or year…" aria-label="Search a project">
+    <div id="presults" class="plist"></div>
+    <div id="pselected" class="msg" hidden></div>
+    <div id="prun" class="msg" hidden></div>
+    <div id="preport" hidden></div>
+    <h2>Previous analyses</h2>
+    <div id="psummary" class="chips" role="group" aria-label="Filter previous analyses by impact" hidden></div>
+    <div id="ppast" class="plist"></div>
+  </section>
+</main>
 <form id="form">
   <div class="row">
     <textarea id="q" placeholder="E.g. Which projects help Croatia reform its health system?" required></textarea>
@@ -83,24 +141,35 @@ function isHttpUrl(u) {
 }
 
 // Applies inline markdown to an already-escaped fragment (bold/italic/code/[n]/autolinks).
-// Never call on raw, unescaped model text.
+// Never call on raw, unescaped model text. Code spans and [n] citations are swapped for placeholders first and
+// restored last, so no replacement ever runs inside a generated tag (e.g. a [n] inside an autolinked href).
 function inline(s, urls) {
   const codes = [];
+  const cites = [];
+  s = s.replace(/[\u0000\u0001]/g, "");
   s = s.replace(/`([^`\n]+?)`/g, (m, c) => { codes.push(c); return "\u0000" + (codes.length - 1) + "\u0000"; });
+  s = s.replace(/\[(\d+)\]/g, (m, n) => {
+    if (!urls[n]) return m;
+    cites.push(`<sup><a href="${urls[n]}" target="_blank" rel="noopener">[${n}]</a></sup>`);
+    return "\u0001" + (cites.length - 1) + "\u0001";
+  });
   s = s.replace(/\*\*([^*\n]+?)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/\*([^*\n]+?)\*/g, "<em>$1</em>");
   s = s.replace(/\b_([^_\s][^_\n]*?)_\b/g, "<em>$1</em>");
-  s = s.replace(/(https?:\/\/[^\s<)]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
-  s = s.replace(/\[(\d+)\]/g, (m, n) => urls[n] ? `<sup><a href="${urls[n]}" target="_blank" rel="noopener">[${n}]</a></sup>` : m);
+  // URL: stops at whitespace, tags, brackets, quotes (raw or escaped) and placeholders.
+  s = s.replace(/(https?:\/\/(?:(?!&quot;|&#39;)[^\s<>"'\[\])\u0000\u0001])+)/g,
+    '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/\u0001(\d+)\u0001/g, (m, i) => cites[Number(i)]);
   s = s.replace(/\u0000(\d+)\u0000/g, (m, i) => "<code>" + codes[Number(i)] + "</code>");
   return s;
 }
 
+// Cells are split on unescaped pipes only; "\|" inside a cell is a literal pipe.
 function splitTableRow(line) {
   let t = line.trim();
   if (t.startsWith("|")) t = t.slice(1);
-  if (t.endsWith("|")) t = t.slice(0, -1);
-  return t.split("|").map(c => c.trim());
+  if (t.endsWith("|") && !t.endsWith("\\|")) t = t.slice(0, -1);
+  return t.split(/(?<!\\)\|/).map(c => c.replace(/\\\|/g, "|").trim());
 }
 
 function isTableSeparator(line) {
@@ -182,6 +251,89 @@ function render(text, sources) {
   return out.join("");
 }
 
+// ---- Impact gauge (pure functions, no DOM) ----
+// Score d'impact positif de 0 a 10, calcule a partir du rapport ; niveaux : 0-3 weak, 4-6 moderate, 7-10 strong.
+const IMPACT_LEVEL_LABELS = {strong: "Strong", moderate: "Moderate", weak: "Weak", not_rated: "Not rated"};
+
+function impactLevel(score) {
+  return score >= 7 ? "strong" : score >= 4 ? "moderate" : "weak";
+}
+
+// Score et niveau d'un front matter ; note seulement avec impact_level et un impact_score entier dans 0..10
+// (rapport jamais note ou ancienne echelle -2..+2 : non note).
+function impactInfo(front) {
+  front = front || {};
+  const raw = front.impact_score;
+  const known = ["strong", "moderate", "weak"].includes(front.impact_level);
+  if (!known || typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > 10) {
+    return {rated: false, score: null, level: "not_rated", label: IMPACT_LEVEL_LABELS.not_rated};
+  }
+  const level = impactLevel(raw);
+  return {rated: true, score: raw, level, label: IMPACT_LEVEL_LABELS[level]};
+}
+
+// Angle de l'aiguille en degres depuis la verticale : 0 -> -90 (gauche), 5 -> 0 (haut), 10 -> +90 (droite).
+function gaugeAngle(score) {
+  return Math.max(0, Math.min(10, score)) * 18 - 90;
+}
+
+const G_CX = 110, G_CY = 114, G_R = 76;
+
+function gaugePoint(angle, r) {
+  const a = angle * Math.PI / 180;
+  return [+(G_CX + r * Math.sin(a)).toFixed(2), +(G_CY - r * Math.cos(a)).toFixed(2)];
+}
+
+function gaugeArc(a1, a2, r) {
+  const [x1, y1] = gaugePoint(a1, r), [x2, y2] = gaugePoint(a2, r);
+  return `M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`;
+}
+
+// Jauge SVG 0..10 + texte ; `sources` sert aux liens [n] de la justification (rendue via render(), donc echappee).
+function impactGauge(front, sources) {
+  front = front || {};
+  const info = impactInfo(front);
+  const confidence = front.confidence ? String(front.confidence) : "";
+  const aria = info.rated
+    ? `Positive impact: ${info.score} out of 10 (${info.label})` + (confidence ? `, confidence ${confidence}` : "")
+    : "Positive impact: not rated";
+  // Degrade unique gris -> vert clair -> vert, de gauche (0) a droite (10).
+  let svg = `<svg viewBox="0 0 220 124" role="img" aria-label="${esc(aria)}" focusable="false">` +
+    `<defs><linearGradient id="gauge-ramp" gradientUnits="userSpaceOnUse" x1="${G_CX - G_R}" y1="0" x2="${G_CX + G_R}" y2="0">` +
+    '<stop offset="0" class="s0"/><stop offset="0.5" class="s1"/><stop offset="1" class="s2"/></linearGradient></defs>' +
+    `<path class="arc" d="${gaugeArc(-90, 90, G_R)}"/>`;
+  [0, 2, 4, 6, 8, 10].forEach(s => {
+    const [x1, y1] = gaugePoint(gaugeAngle(s), G_R + 12), [x2, y2] = gaugePoint(gaugeAngle(s), G_R + 17);
+    const [tx, ty] = gaugePoint(gaugeAngle(s), G_R + 27);
+    svg += `<line class="tick" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>` +
+      `<text class="tick-label" x="${tx}" y="${ty}" aria-hidden="true">${s}</text>`;
+  });
+  if (info.rated) {
+    const [nx, ny] = gaugePoint(gaugeAngle(info.score), G_R - 16);
+    svg += `<line class="needle" x1="${G_CX}" y1="${G_CY}" x2="${nx}" y2="${ny}"/>` +
+      `<circle class="hub" cx="${G_CX}" cy="${G_CY}" r="6"/>`;
+  }
+  svg += "</svg>";
+  let text;
+  if (info.rated) {
+    const meta = ["Positive impact", confidence ? `confidence: ${confidence}` : ""].filter(Boolean).join(" · ");
+    text = `<div class="gscore ${info.level}">${info.score}/10</div><div class="glevel ${info.level}">${esc(info.label)}</div>` +
+      `<div class="meta">${esc(meta)}</div>` +
+      (front.impact_rationale ? `<div class="grationale">${render(String(front.impact_rationale), sources)}</div>` : "");
+  } else {
+    text = '<div class="glevel not_rated">Not rated</div><div class="meta">Not rated (run impact-rescore or the analysis again)</div>';
+  }
+  return `<div class="gauge ${info.rated ? info.level : "unrated"}">${svg}<div class="gtext">${text}</div></div>`;
+}
+
+// Pastille de la liste des analyses : "7/10" colore par niveau, ou "Not rated".
+function impactPill(front) {
+  const info = impactInfo(front);
+  return info.rated
+    ? `<span class="pill ${info.level}" title="Positive impact: ${esc(info.label)}">${info.score}/10</span>`
+    : '<span class="pill not_rated">Not rated</span>';
+}
+
 function addMessage(role, html, extra) {
   const div = document.createElement("div");
   div.className = "msg " + role + (extra && extra.error ? " error" : "");
@@ -248,6 +400,290 @@ input.addEventListener("keydown", e => {
 });
 document.getElementById("reset").addEventListener("click", () => { history = []; thread.innerHTML = ""; input.focus(); });
 input.focus();
+
+// ---- Impact analysis tab ----
+const tabChat = document.getElementById("tab-chat");
+const tabImpact = document.getElementById("tab-impact");
+const resetBtn = document.getElementById("reset");
+const impact = document.getElementById("impact");
+const pq = document.getElementById("pq");
+const presults = document.getElementById("presults");
+const pselected = document.getElementById("pselected");
+const prun = document.getElementById("prun");
+const preport = document.getElementById("preport");
+const ppast = document.getElementById("ppast");
+const punavailable = document.getElementById("punavailable");
+let selected = null;        // projet choisi
+let jobRunning = false;     // une analyse tourne sur le serveur
+let impactAvailable = true;
+let pollTimer = null;
+let elapsedTimer = null;
+let runStarted = 0;
+let searchTimer = null;
+let searchSeq = 0;
+let pastReports = [];       // front matter des analyses deja faites
+let pastFilter = "all";     // categorie affichee dans la liste
+
+function showTab(name) {
+  const isImpact = name === "impact";
+  tabChat.setAttribute("aria-selected", String(!isImpact));
+  tabImpact.setAttribute("aria-selected", String(isImpact));
+  thread.hidden = isImpact;
+  form.hidden = isImpact;
+  resetBtn.hidden = isImpact;
+  impact.hidden = !isImpact;
+  if (isImpact) {
+    if (!presults.childElementCount) searchProjects("");
+    loadPast();
+    checkJob();
+    pq.focus();
+  } else {
+    input.focus();
+  }
+}
+tabChat.addEventListener("click", () => showTab("chat"));
+tabImpact.addEventListener("click", () => showTab("impact"));
+
+function projectLine(p) {
+  const prog = [p.programme, p.year].filter(Boolean).join(" ");
+  const countries = (p.countries || []).join(", ");
+  return [prog, countries].filter(Boolean).join(" — ");
+}
+
+// Sources numerotees de la section "## 6. Sources" -> [{ref, url}] pour les liens [n]
+function reportSources(body) {
+  const idx = body.indexOf("## 6. Sources");
+  const part = idx >= 0 ? body.slice(idx) : "";
+  const out = [];
+  const re = /^- \[(\d+)\] .*?(https?:\/\/\S+)\s*$/gm;
+  let m;
+  while ((m = re.exec(part))) out.push({ref: Number(m[1]), url: m[2]});
+  return out;
+}
+
+function showReport(front, body) {
+  front = front || {};
+  const meta = [front.generated ? "Generated " + front.generated : "", front.confidence ? "confidence: " + front.confidence : "",
+                front.duration_s != null ? front.duration_s + " s" : "",
+                front.cost_usd != null ? "API-equivalent cost $" + Number(front.cost_usd).toFixed(4) : "",
+                front.run_id ? "run " + front.run_id : ""].filter(Boolean).join(" · ");
+  const sources = reportSources(body || "");
+  preport.innerHTML = `<div class="msg">${impactGauge(front, sources)}<div class="body">${render(body || "", sources)}</div>` +
+    (meta ? `<div class="meta">${esc(meta)}</div>` : "") + "</div>";
+  preport.hidden = false;
+}
+
+function showError(message) {
+  preport.innerHTML = `<div class="msg error"><p>${esc(message)}</p></div>`;
+  preport.hidden = false;
+}
+
+function updateRunButton() {
+  const btn = document.getElementById("prun-btn");
+  if (btn) btn.disabled = jobRunning || !impactAvailable;
+}
+
+async function searchProjects(q) {
+  const seq = ++searchSeq;
+  try {
+    const r = await fetch("/api/projects?q=" + encodeURIComponent(q));
+    const res = await r.json();
+    if (seq !== searchSeq) return;  // reponse obsolete
+    const list = res.projects || [];
+    presults.innerHTML = list.length ? "" : '<div class="empty">No project found.</div>';
+    list.forEach(p => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.innerHTML = `${esc(p.title || p.project_id)}<span class="sub">${esc(projectLine(p))}</span>`;
+      b.addEventListener("click", () => selectProject(p));
+      presults.appendChild(b);
+    });
+  } catch (e) {
+    if (seq === searchSeq) presults.innerHTML = `<div class="empty">${esc(e)}</div>`;
+  }
+}
+pq.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => searchProjects(pq.value.trim()), 250);
+});
+
+async function selectProject(p) {
+  selected = p;
+  pselected.innerHTML = `<div class="who">Selected project</div><div class="body"><strong>${esc(p.title || p.project_id)}</strong>` +
+    `<div class="meta">${esc([projectLine(p), p.policy_area].filter(Boolean).join(" — "))}</div></div>` +
+    '<div class="card-actions"><button class="primary" id="prun-btn" type="button">Run impact analysis</button>' +
+    '<span class="meta">An analysis takes several minutes (web searches and page reading).</span></div>';
+  pselected.hidden = false;
+  document.getElementById("prun-btn").addEventListener("click", runImpact);
+  updateRunButton();
+  preport.hidden = true;
+  preport.innerHTML = "";
+  // rapport existant pour ce projet : affiche directement
+  try {
+    const r = await fetch("/api/impact/reports/" + encodeURIComponent(p.project_id));
+    if (r.ok && selected === p) { const res = await r.json(); showReport(res.front, res.body); }
+  } catch (e) { /* pas de rapport */ }
+  pselected.scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+function showProgress(st) {
+  if (!prun.querySelector(".loading")) {
+    prun.innerHTML = `<div class="who">Impact analysis — ${esc(st.project_id || "")}</div>` +
+      '<div class="loading"><span class="dots"><i></i><i></i><i></i></span> <em>Analysing impact…</em> <span class="elapsed">0 s</span></div>' +
+      '<ol class="steps"></ol>';
+  }
+  prun.hidden = false;
+  prun.querySelector(".steps").innerHTML = (st.steps || []).map(s => `<li>${esc(s)}</li>`).join("");
+  prun.querySelector(".elapsed").textContent = Math.round((Date.now() - runStarted) / 1000) + " s";
+}
+
+function startTracking(st) {
+  jobRunning = true;
+  updateRunButton();
+  if (!elapsedTimer) {
+    runStarted = Date.now();
+    elapsedTimer = setInterval(() => {
+      const el = prun.querySelector(".elapsed");
+      if (el) el.textContent = Math.round((Date.now() - runStarted) / 1000) + " s";
+    }, 1000);
+  }
+  showProgress(st);
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(poll, 2000);
+}
+
+function stopTracking() {
+  jobRunning = false;
+  clearTimeout(pollTimer); pollTimer = null;
+  clearInterval(elapsedTimer); elapsedTimer = null;
+  prun.hidden = true;
+  prun.innerHTML = "";
+  updateRunButton();
+}
+
+function handleStatus(st) {
+  if (st.state === "running") { startTracking(st); return; }
+  const wasTracking = jobRunning;
+  stopTracking();
+  if (!wasTracking) return;  // fin d'une analyse non suivie par cette page : rien a afficher
+  if (st.state === "done" && st.result) {
+    showReport(st.result.front, st.result.body);
+    loadPast();
+  } else if (st.state === "error") {
+    showError(st.error || "The analysis failed.");
+  }
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/impact/job");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    handleStatus(await r.json());
+  } catch (e) {
+    // erreur reseau passagere : on reessaie
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(poll, 2000);
+  }
+}
+
+async function checkJob() {
+  try {
+    const r = await fetch("/api/impact/job");
+    if (r.status === 503) {
+      impactAvailable = false;
+      punavailable.hidden = false;
+      updateRunButton();
+      return;
+    }
+    const st = await r.json();
+    if (st.state === "running" && !jobRunning) startTracking(st);
+  } catch (e) { /* serveur injoignable */ }
+}
+
+async function runImpact() {
+  if (!selected || jobRunning) return;
+  preport.hidden = true;
+  preport.innerHTML = "";
+  jobRunning = true;
+  updateRunButton();
+  try {
+    const r = await fetch("/api/impact", {method: "POST", headers: {"Content-Type": "application/json"},
+                                         body: JSON.stringify({project_id: selected.project_id})});
+    const res = await r.json();
+    jobRunning = false;
+    if (r.status === 409) { showError(res.error || "An analysis is already running."); checkJob(); return; }
+    if (!r.ok) { updateRunButton(); showError(res.error || "Error"); return; }
+    startTracking(res);
+  } catch (e) {
+    jobRunning = false;
+    updateRunButton();
+    showError(String(e));
+  }
+}
+
+const psummary = document.getElementById("psummary");
+
+// Bandeau de synthese : une puce par niveau d'impact (comptes de l'API), clic = filtre de la liste.
+function renderSummary(summary) {
+  const counts = summary || {};
+  const chips = [["strong", "Strong"], ["moderate", "Moderate"], ["weak", "Weak"],
+                 ["not_rated", "Not rated"], ["all", "All"]];
+  psummary.innerHTML = "";
+  chips.forEach(([key, label]) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = key;
+    const n = key === "all" ? pastReports.length : Number(counts[key] || 0);
+    b.textContent = `${label} (${n})`;
+    b.setAttribute("aria-pressed", String(pastFilter === key));
+    b.addEventListener("click", () => { pastFilter = key; renderSummary(summary); renderPast(); });
+    psummary.appendChild(b);
+  });
+  psummary.hidden = !pastReports.length;
+}
+
+function renderPast() {
+  const list = pastFilter === "all" ? pastReports : pastReports.filter(f => impactInfo(f).level === pastFilter);
+  ppast.innerHTML = list.length ? "" :
+    `<div class="empty">${pastReports.length ? "No analysis at this level." : "No analysis yet."}</div>`;
+  list.forEach(f => {
+    const b = document.createElement("button");
+    b.type = "button";
+    const verdict = String(f.overall_verdict || "").replace(/\s*\[\d+\]/g, "");
+    const sub = [f.generated ? "Generated " + f.generated : "", f.confidence ? "confidence: " + f.confidence : ""].filter(Boolean).join(" · ");
+    b.innerHTML = `${esc(f.title || f.project_id)}${impactPill(f)}<span class="sub">${esc(sub)}</span>` +
+      (verdict ? `<span class="sub">${esc(verdict.length > 220 ? verdict.slice(0, 220) + "…" : verdict)}</span>` : "");
+    b.addEventListener("click", () => openReport(f.project_id));
+    ppast.appendChild(b);
+  });
+}
+
+async function loadPast() {
+  try {
+    const r = await fetch("/api/impact/reports");
+    const res = await r.json();
+    pastReports = res.reports || [];
+    renderSummary(res.summary);
+    renderPast();
+  } catch (e) {
+    ppast.innerHTML = `<div class="empty">${esc(e)}</div>`;
+  }
+}
+
+async function openReport(projectId) {
+  try {
+    const r = await fetch("/api/impact/reports/" + encodeURIComponent(projectId));
+    const res = await r.json();
+    if (!r.ok) { showError(res.error || "Error"); return; }
+    showReport(res.front, res.body);
+  } catch (e) {
+    showError(String(e));
+  }
+  preport.scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+// au chargement : reprend l'affichage d'une analyse en cours
+checkJob();
 </script>
 </body>
 </html>

@@ -50,6 +50,21 @@ def test_system_prompt_has_rules_and_no_jinja():
     assert "{{" not in text and "{%" not in text
 
 
+def test_system_prompt_points_free_topics_to_find_projects_and_english_queries():
+    text = system_prompt(POLICY_AREAS)
+    assert "find_projects" in text and "keywords" in text and "AML" in text
+    assert "not be exhaustive" in text and "official policy area" in text
+    assert "in English" in text
+    assert "EVERY candidate" in text and "get_project" in text and "kept projects" in text
+    assert "comes from a relevance threshold" not in text and "no relevance threshold" in text
+
+
+def test_system_prompt_points_aggregate_questions_to_breakdown_lines():
+    text = system_prompt(POLICY_AREAS)
+    assert "By country" in text and "By policy area" in text
+    assert "which countries" in text.lower() and "truncated" in text and "limit" in text
+
+
 def test_logged_generator_logs_llm_call_and_forwards_tools(tmp_path):
     inner = ScriptedGenerator(["hello"])
     gen = LoggedChatGenerator(chat_generator=inner)
@@ -104,11 +119,11 @@ def test_yaml_round_trip_and_openai_swap(tmp_path, monkeypatch):
                                text_embedder=MockTextEmbedder(model="mock", dimension=8))
     text = pipe.dumps()
     for name in ("Agent", "LoggedChatGenerator", "ClaudeCliChatGenerator", "ProjectSearch", "ProjectLister",
-                 "ProjectReader", "DeliverableSearch", "LocalQdrantEmbeddingRetriever", "LocalQdrantDocumentStore"):
+                 "ProjectReader", "DeliverableSearch", "ProjectFinder", "LocalQdrantEmbeddingRetriever", "LocalQdrantDocumentStore"):
         assert name in text
     reloaded = load_pipeline(text)
     tools = reloaded.get_component("agent").tools
-    assert [t.name for t in tools] == ["search_projects", "search_deliverables", "list_projects", "get_project"]
+    assert [t.name for t in tools] == ["search_projects", "find_projects", "search_deliverables", "list_projects", "get_project"]
 
     data = yaml.safe_load(text)
     agent = data["components"]["agent"]["init_parameters"]

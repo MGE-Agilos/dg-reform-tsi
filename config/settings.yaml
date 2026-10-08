@@ -19,6 +19,11 @@ embedding_batch_size: 32
 chat_model: sonnet
 chat_max_steps: 6     # appels LLM maximum par question
 chat_port: 8765
+finder_project_pool: 60          # find_projects : projets gardes depuis les textes projet
+finder_project_chunks: 400       # morceaux projet lus avant regroupement par projet
+finder_deliverable_pool: 30      # projets gardes depuis les livrables
+finder_deliverable_chunks: 300   # morceaux livrable lus avant regroupement par projet
+finder_max_candidates: 150       # lignes de candidats listees au plus
 
 # Livrables des projets (python -m tsi_agent deliverables)
 deliverables_dir: output/deliverables
@@ -26,3 +31,16 @@ deliverables_max_words: 15000   # debut des documents envoye au LLM pour le resu
 deliverables_max_pdf_mb: 50
 deliverables_llm_timeout_s: 600   # prompts longs, jusqu'a 15 000 mots
 deliverables_recheck_days: 7   # publications traitees depuis moins de N jours : page non reverifiee (sauf --full)
+
+# Analyse d'impact (onglet "Impact analysis" de la page web)
+impact_dir: output/impact
+impact_model: opus          # Opus : modele le plus capable pour l'analyse
+impact_score_model: opus    # score de 0 a 10 calcule a partir du rapport
+impact_max_steps: 20        # appels LLM maximum par analyse
+impact_max_searches: 10     # recherches web maximum par analyse
+impact_page_words: 3000     # texte d'une page web transmis a l'agent
+impact_page_max_mb: 20      # taille maximale d'une page ou d'un document telecharge (Mo)
+impact_project_chars: 20000
+impact_llm_timeout_s: 600
+web_search_model: haiku     # la recherche web elle-meme (CLI claude, outil WebSearch)
+web_search_timeout_s: 180

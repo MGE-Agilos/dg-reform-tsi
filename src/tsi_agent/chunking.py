@@ -21,8 +21,10 @@ DELIVERABLES = "Deliverables (AI-generated summary)"
 AI_SECTIONS = {SUMMARY, DELIVERABLES}
 # Listes d'URL et titres de listing : deja en metadonnees, sans valeur pour la recherche.
 SKIPPED_SECTIONS = {"Sources", "Listed in country factsheets as"}
+# listing_titles : titres des listings (recherche par mots du titre de find_projects). Ajoute sans changer
+# CHUNKER_VERSION : present dans les fichiers revectorises ; `index --full` pour toute la couche.
 PROJECT_FIELDS = ("title", "programme", "year", "countries", "multi_country", "policy_area", "detail_page",
-                  "results", "spotlight", "highlighted", "listed")
+                  "results", "spotlight", "highlighted", "listed", "listing_titles")
 
 _TITLE = re.compile(r"\A# [^\n]*(?:\n|\Z)")
 _HEADING = re.compile(r"^## (.+?)[ \t]*$", re.MULTILINE)
@@ -79,8 +81,11 @@ def split_pages(text: str) -> list[tuple[int | None, str]]:
     return [(int(parts[i]), parts[i + 1].strip()) for i in range(1, len(parts), 2)]
 
 
-def chunk_deliverable(rel_path: str, fm: dict[str, Any], body: str) -> list[Document]:
-    """Texte integral d'une publication : un ou plusieurs morceaux par page de chaque document."""
+def chunk_deliverable(rel_path: str, fm: dict[str, Any], body: str, **split: int) -> list[Document]:
+    """Texte integral d'une publication : un ou plusieurs morceaux par page de chaque document.
+
+    `split` (threshold, window, overlap) : passe a split_words (banc de recherche) ; defauts inchanges sinon.
+    """
     countries = [name_from_iso(c) if c in COUNTRIES else str(c) for c in fm.get("countries") or []]
     programme_year = " ".join(str(v) for v in (fm.get("programme"), fm.get("year")) if v)
     title = str(fm.get("title") or "").strip()
@@ -100,7 +105,7 @@ def chunk_deliverable(rel_path: str, fm: dict[str, Any], body: str) -> list[Docu
                 continue
             where = f"{document}, p. {page}" if page is not None else document
             header = " — ".join(p for p in (title, where, programme_year, ", ".join(countries)) if p)
-            for piece in split_words(page_text):
+            for piece in split_words(page_text, **split):
                 index = len(docs)
                 docs.append(Document(id=f"{stem}#{index}", content=piece,
                                      meta={**base, "section": document, "page": page, "source_url": url or None,
@@ -108,13 +113,19 @@ def chunk_deliverable(rel_path: str, fm: dict[str, Any], body: str) -> list[Docu
     return docs
 
 
-def chunk_file(rel_path: str, text: str) -> list[Document]:
-    """Morceaux d'un fichier projet, programme ou livrable. ValueError si le front matter est absent ou invalide."""
+def chunk_file(rel_path: str, text: str, *, threshold: int = SPLIT_THRESHOLD_WORDS, window: int = WINDOW_WORDS,
+               overlap: int = OVERLAP_WORDS) -> list[Document]:
+    """Morceaux d'un fichier projet, programme ou livrable. ValueError si le front matter est absent ou invalide.
+
+    threshold/window/overlap : taille des morceaux ; seul le banc de recherche les change (CHUNKER_VERSION
+    ne concerne que les valeurs par defaut, celles de la couche vectorisee).
+    """
+    split = {"threshold": threshold, "window": window, "overlap": overlap}
     fm, body = parse_front_matter(text.replace("\r\n", "\n"))
     if not isinstance(fm, dict):
         raise ValueError("front matter is not a mapping")
     if fm.get("publication_id"):
-        return chunk_deliverable(rel_path, fm, body)
+        return chunk_deliverable(rel_path, fm, body, **split)
     doc_id = fm.get("project_id") or fm.get("doc_id")
     if not doc_id:
         raise ValueError("front matter has no project_id or doc_id")
@@ -132,7 +143,7 @@ def chunk_file(rel_path: str, text: str) -> list[Document]:
     stem = rel_path.removesuffix(".md")
     docs: list[Document] = []
     for section, section_text in split_sections(body):
-        for piece in split_words(section_text):
+        for piece in split_words(section_text, **split):
             index = len(docs)
             docs.append(Document(id=f"{stem}#{index}", content=piece,
                                  meta={**base, "section": section, "chunk_index": index,

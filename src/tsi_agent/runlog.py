@@ -50,6 +50,8 @@ class RunLog:
         self.cost_usd = 0.0
         self.extra: dict[str, Any] = {}
         self.final_summary: dict[str, Any] | None = None
+        # Ecouteurs appeles a chaque evenement (progression en direct, ex. page d'analyse d'impact).
+        self.listeners: list[Any] = []
         self._lock = threading.Lock()
         self._fh = self.path.open("a", encoding="utf-8")
 
@@ -69,6 +71,11 @@ class RunLog:
                 self.cost_usd += float(fields.get("cost_usd") or 0.0)
             if action == "alert":
                 self.alerts.append(str(fields.get("message") or target))
+        for listener in list(self.listeners):
+            try:
+                listener(record)
+            except Exception:  # un ecouteur defaillant ne doit jamais casser le run
+                _logger.exception("runlog listener failed")
 
     def summary(self) -> dict[str, Any]:
         with self._lock:

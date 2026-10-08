@@ -48,10 +48,32 @@ def main(argv: list[str] | None = None) -> int:
     chat = sub.add_parser("chat", help="chatbot local sur la couche vectorisée (page web)")
     chat.add_argument("--port", type=int, help="port local (défaut : chat_port des réglages)")
     chat.add_argument("--no-browser", action="store_true", help="ne pas ouvrir le navigateur")
+    rescore = sub.add_parser("impact-rescore",
+                             help="recalculer le score d'impact (0-10) des rapports existants, sans nouvelle analyse")
+    rescore.add_argument("project_ids", nargs="*", help="identifiants des projets (défaut : tous les rapports)")
+    ev = sub.add_parser("eval-retrieval",
+                        help="banc de recherche : la recherche retrouve-t-elle le bon passage ? (chatbot arrêté)")
+    ev.add_argument("--questions-file", help="jeu de questions (défaut : <out-dir>/questions.jsonl, réutilisé)")
+    ev.add_argument("--regenerate", action="store_true", help="rédiger un nouveau jeu de questions (LLM)")
+    ev.add_argument("--skip-chunk-sizes", action="store_true",
+                    help="ne pas mesurer les tailles de morceaux (~30 min de vectorisation)")
+    ev.add_argument("--n-project", type=int, default=60)
+    ev.add_argument("--n-deliverable", type=int, default=60)
+    ev.add_argument("--n-other", type=int, default=30)
+    ev.add_argument("--out-dir", default="output/eval")
+    agg = sub.add_parser("eval-aggregation",
+                         help="banc d'agrégation : le chatbot trouve-t-il tous les pays / projets ? (chatbot arrêté)")
+    agg.add_argument("--regenerate", action="store_true",
+                     help="refaire la vérité des thèmes libres (juge LLM) au lieu de la réutiliser")
+    only = agg.add_mutually_exclusive_group()
+    only.add_argument("--topics-only", action="store_true", help="questions sur les thèmes libres seulement")
+    only.add_argument("--metadata-only", action="store_true", help="questions sur les métadonnées seulement")
+    agg.add_argument("--out-dir", default="output/eval")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
     export.add_argument("--chat", action="store_true", help="exporter le pipeline du chatbot")
+    export.add_argument("--impact", action="store_true", help="exporter le pipeline d'analyse d'impact")
     export.add_argument("--deliverables", action="store_true", help="exporter le pipeline des livrables")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
@@ -66,6 +88,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if args.deliverables:
                 pipe = build_deliverables_pipeline(settings)
+            elif args.impact:
+                from tsi_agent.impact.pipeline import build_impact_pipeline
+                pipe = build_impact_pipeline(settings)
             elif args.chat:
                 from tsi_agent.chat import pipeline as chat_pipeline
                 pipe = chat_pipeline.build_chat_pipeline(settings, sources.get("policy_areas") or [])
@@ -79,6 +104,56 @@ def main(argv: list[str] | None = None) -> int:
             traceback.print_exc(file=sys.stderr)
             return 2
         print(f"Pipeline exporté vers {args.path}")
+        return 0
+    if args.command == "impact-rescore":
+        from tsi_agent.impact import scoring
+        try:
+            out = scoring.rescore_reports(settings, scoring.default_scorer(settings), args.project_ids)
+        except Exception as exc:
+            print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return 2
+        errors = 0
+        for r in out["results"]:
+            if "error" in r:
+                errors += 1
+                print(f"{r['project_id']} ERREUR : {r['error']}", file=sys.stderr)
+            else:
+                print(f"{r['project_id']} {r['impact_score']}/10 {r['impact_level']}")
+        print(f"Coût total : {out['cost_usd']:.4f} $ — run {out['run_id']}")
+        return 2 if errors else 0
+    if args.command == "eval-retrieval":
+        from tsi_agent.eval import runner as eval_runner
+        try:
+            out = eval_runner.run_eval(settings, out_dir=args.out_dir, questions_file=args.questions_file,
+                                       regenerate=args.regenerate, skip_chunk_sizes=args.skip_chunk_sizes,
+                                       n_project=args.n_project, n_deliverable=args.n_deliverable,
+                                       n_other=args.n_other)
+        except Exception as exc:
+            print(f"ERREUR : {exc} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return 2
+        print(f"Rapport : {out['report']}")
+        print(f"Détail par question : {out['csv']}")
+        print(f"Questions ({out['questions']}) : {out['questions_file']}")
+        print(f"Coût total : {out['cost_usd']:.4f} $ — run {out['run_id']}")
+        return 0
+    if args.command == "eval-aggregation":
+        from tsi_agent.eval import aggregation
+        try:
+            out = aggregation.run_eval_aggregation(settings, out_dir=args.out_dir, regenerate=args.regenerate,
+                                                   topics_only=args.topics_only, metadata_only=args.metadata_only,
+                                                   policy_areas=sources.get("policy_areas") or [])
+        except Exception as exc:
+            print(f"ERREUR : {exc} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return 2
+        print(f"Rapport : {out['report']}")
+        print(f"Détail par question : {out['csv']}")
+        if out.get("truth_file"):
+            print(f"Vérité des thèmes libres : {out['truth_file']}")
+        print(f"Questions : {out['questions']}")
+        print(f"Coût total : {out['cost_usd']:.4f} $ — run {out['run_id']}")
         return 0
     if args.command == "chat":
         import webbrowser

@@ -269,6 +269,91 @@ remplacer :
 
 Les quatre outils, le prompt et l'Agent ne changent pas.
 
+## Analyse d'impact
+
+L'onglet « Impact analysis » de la page du chatbot (`python -m tsi_agent chat`) évalue l'impact d'un projet choisi
+dans le catalogue (`output/projects/`). Un `Agent` Haystack lit le projet (`get_project`), ses livrables
+(`search_deliverables`), cherche des preuves sur le web (`web_search`) et lit les pages ou documents trouvés
+(`fetch_page`, HTML, PDF, Word). Il rend un rapport à sections fixes : présentation du projet, preuves d'impact
+positif, preuves d'impact négatif ou limites, impact par niveau (pays, Europe, monde), évaluation par objectif et
+sources. Les sources sont reconstruites par le code à partir des outils : toute citation [n] inconnue est retirée.
+
+```powershell
+.venv\Scripts\python -m tsi_agent chat                                # onglet Impact analysis
+.venv\Scripts\python -m tsi_agent export-yaml --impact impact.yaml
+```
+
+Une analyse à la fois, en arrière-plan ; la page affiche les étapes en direct. Chaque analyse est un run du journal
+(`logs/runs/`, `mode: impact`) et le rapport est enregistré dans `output/impact/<project_id>.md` (front matter :
+verdict, confiance, coût, durée), en remplaçant le précédent. Une réponse finale vide ou illisible n'écrase jamais
+un rapport existant.
+
+Une fois le rapport écrit, un appel LLM séparé (`impact_score_model`) lit le rapport terminé et lui attribue un score
+d'impact positif de 0 à 10 (0-3 Weak, 4-6 Moderate, 7-10 Strong) avec une justification ; la page l'affiche en
+jauge. Pour recalculer le score des rapports existants sans relancer l'analyse :
+
+```powershell
+.venv\Scripts\python -m tsi_agent impact-rescore                    # tous les rapports de output/impact
+.venv\Scripts\python -m tsi_agent impact-rescore <project_id> ...
+```
+
+Réglages (`config/settings.yaml`) : `impact_model`, `impact_score_model`, `impact_max_steps` (appels LLM par analyse),
+`impact_max_searches` (recherches web par analyse), `impact_page_words` (texte d'une page transmis à l'agent),
+`impact_page_max_mb` (taille maximale d'une page téléchargée), `impact_project_chars`, `impact_llm_timeout_s`,
+ainsi que `web_search_model` et `web_search_timeout_s` pour la recherche web. `fetch_page` ne lit que des URL
+http(s) publiques (adresses locales et privées refusées, y compris après redirection) et s'arrête au-delà de
+`impact_page_max_mb` Mo ou de 20 s.
+
+En local, la recherche web passe par le CLI `claude` (`ClaudeWebSearch`, outil natif WebSearch) et le LLM par
+`ClaudeCliChatGenerator`.
+
+**Passage à deepset :** le YAML exporté contient `ClaudeWebSearch` et `ClaudeCliChatGenerator` ; on les remplace à la
+main :
+- le `search_engine` de l'outil `web_search` (`ClaudeWebSearch`) par `SerperDevWebSearch` (package
+  `serperdev-haystack`, clé API Serper), qui a la même interface (`query` → `documents`, `links`) ;
+- le `chat_generator` enveloppé par le `LoggedChatGenerator` de l'Agent par un `OpenAIChatGenerator` ;
+- comme pour le chatbot, l'embedder et le document store des outils `get_project` et `search_deliverables`.
+
+Le lecteur de pages (`BoundedLinkFetcher`) peut rester tel quel ou être remplacé par le `LinkContentFetcher` de
+Haystack (sans limite de taille ni filtrage des adresses).
+
+## Banc de recherche
+
+Mesure si la recherche du chatbot retrouve le bon passage et le bon fichier (spec :
+`docs/superpowers/specs/2026-10-08-tsi-retrieval-bench-design.md`). **Arrêter le chatbot avant** (une seule
+ouverture de la base Qdrant).
+
+```powershell
+.venv\Scripts\python -m tsi_agent eval-retrieval                      # questions réutilisées si elles existent
+.venv\Scripts\python -m tsi_agent eval-retrieval --regenerate         # nouveau jeu de questions (Haiku)
+.venv\Scripts\python -m tsi_agent eval-retrieval --skip-chunk-sizes   # sans la mesure des tailles (~30 min)
+```
+
+150 morceaux tirés au hasard (graine fixe : 60 projets, 60 livrables, 30 programme ou résumés IA ; options
+`--n-project`, `--n-deliverable`, `--n-other`), une question par morceau rédigée par Haiku (moitié français, moitié
+anglais), enregistrée dans `output/eval/questions.jsonl` et réutilisée ensuite. Quatre variantes sont mesurées sur
+l'index actuel : A sémantique (actuel), B + filtre pays, C hybride sémantique + BM25 (RRF), D au plus 2 morceaux par
+fichier ; puis trois tailles de morceaux (150 / 250 / 400 mots) sur les projets et le programme, revectorisés dans un
+index temporaire en mémoire. Sorties : `output/eval/retrieval-<date>.md` (rapport) et `.csv` (rangs par question).
+
+## Banc d'agrégation
+
+Mesure si le chatbot retrouve **tous** les pays ou projets d'une question globale (« Quels pays ont des projets sur
+la santé ? »). **Arrêter le chatbot avant.**
+
+```powershell
+.venv\Scripts\python -m tsi_agent eval-aggregation                   # vérité des thèmes réutilisée si elle existe
+.venv\Scripts\python -m tsi_agent eval-aggregation --regenerate      # refaire la vérité des thèmes (juge Sonnet)
+.venv\Scripts\python -m tsi_agent eval-aggregation --metadata-only   # ou --topics-only
+```
+
+12 questions sur les métadonnées (pays par domaine, projets d'un pays dans un domaine, comptages ; vérité exacte tirée
+du catalogue des projets) et 16 sur 8 thèmes libres (cancer, hydrogène, feux de forêt, blanchiment, cybersécurité,
+retraites, intégration des migrants, justice numérique ; vérité = candidats par mots-clés + 300 premiers morceaux
+sémantiques, jugés par Sonnet, enregistrée dans `output/eval/aggregation_truth.json`). Chaque question passe par le
+vrai chatbot ; rappel, précision et F1 des pays cités (noms anglais/français, codes ISO) et des projets cités
+(sources, titres, identifiants). Sorties : `output/eval/aggregation-<date>.md` et `.csv`.
+
 ## Planification (Windows)
 
 À exécuter depuis le dossier du dépôt (les chemins sont résolus en absolu à partir du dossier courant) :

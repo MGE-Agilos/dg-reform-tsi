@@ -26,12 +26,30 @@ class Settings(BaseModel):
     chat_model: str = "sonnet"
     chat_max_steps: int = 6
     chat_port: int = 8765
+    # Outil find_projects : liste de candidats (sans seuil de score) jugee par l'agent.
+    finder_project_pool: int = 60  # projets gardes depuis la recherche sur les textes projet
+    finder_project_chunks: int = 400  # morceaux projet lus avant regroupement par projet
+    finder_deliverable_pool: int = 30  # projets gardes depuis la recherche sur les livrables
+    finder_deliverable_chunks: int = 300  # morceaux livrable lus avant regroupement par projet
+    finder_max_candidates: int = 150  # lignes de candidats listees au plus
     # Etage livrables (pipeline `deliverables`).
     deliverables_dir: str = "output/deliverables"
     deliverables_max_words: int = 15000
     deliverables_max_pdf_mb: float = 50
     deliverables_recheck_days: int = 7  # relances : pas de reverification des publications recentes
     deliverables_llm_timeout_s: int = 600  # prompts longs, jusqu'a 15 000 mots
+    # Analyse d'impact (onglet de la page web).
+    impact_dir: str = "output/impact"
+    impact_model: str = "opus"
+    impact_score_model: str = "opus"  # score de 0 a 10 calcule a partir du rapport
+    impact_max_steps: int = 20  # appels LLM maximum par analyse
+    impact_max_searches: int = 10  # recherches web maximum par analyse (impose par l'outil)
+    impact_page_words: int = 3000  # texte d'une page web transmis a l'agent
+    impact_page_max_mb: float = 20  # taille maximale d'une page ou d'un document telecharge
+    impact_project_chars: int = 20000  # texte du projet transmis a l'agent
+    impact_llm_timeout_s: int = 600  # le rapport final est long
+    web_search_model: str = "haiku"
+    web_search_timeout_s: int = 180
 
 
 def load_settings(path: str | Path = "config/settings.yaml") -> Settings:
