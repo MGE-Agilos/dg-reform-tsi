@@ -5,6 +5,7 @@ from haystack import component
 
 from tsi_agent import runlog
 from tsi_agent.countries import COUNTRIES, name_from_iso, slug_from_iso
+from tsi_agent.fuzzy import FuzzyMatch, match_thin_refs
 from tsi_agent.http import DEFAULT_USER_AGENT, FetchError, PoliteFetcher, shared_fetcher
 from tsi_agent.ids import slug_from_url, title_key
 from tsi_agent.models import ProgrammeDoc, ProjectRef, RawPage
@@ -120,6 +121,26 @@ def merge_refs(refs: list[ProjectRef]) -> list[ProjectRef]:
             merged.aliases = [a for a in merged.aliases if a not in ambiguous_keys]
         groups.append(merged)
     return groups
+
+
+def fuzzy_merge(refs: list[ProjectRef], views: list[ProjectRef] | None = None
+                ) -> tuple[list[ProjectRef], list[FuzzyMatch]]:
+    """Rattache les projets thin a la page detail du meme projet (regle floue de tsi_agent.fuzzy).
+
+    Le projet fusionne garde l'id de sa page detail ; l'id du thin passe dans ses alias (le writer
+    supprime alors le fichier thin, comme pour les fusions par cle titre).
+    """
+    matches = match_thin_refs(refs, views)
+    absorbed = {m.thin_index: m.detail_index for m in matches}
+    by_detail = {m.detail_index: m.thin_index for m in matches}
+    out: list[ProjectRef] = []
+    for i, ref in enumerate(refs):
+        if i in absorbed:
+            continue
+        out.append(combine(ref, refs[by_detail[i]]) if i in by_detail else ref)
+    for m in matches:
+        runlog.event(NAME, "discover", m.detail_id, "fuzzy_merge", thin_id=m.thin_id, score=round(m.score, 3))
+    return out, matches
 
 
 @component
