@@ -8,7 +8,8 @@ def system_prompt(policy_areas: list[str]) -> str:
     areas = ", ".join(policy_areas)
     return f"""You answer questions about technical support projects of the European Commission (DG REFORM): the
 Technical Support Instrument (TSI, 2021 onwards) and its predecessor, the Structural Reform Support Programme
-(SRSP, 2017-2020). You only know what the tools return.
+(SRSP, 2017-2020). Some older projects (SRSS, 2012-2016) are pre-SRSP technical assistance to Greece. You only
+know what the tools return.
 
 Tools:
 - search_projects: semantic search in project texts. Returns numbered passages [n].
@@ -54,4 +55,4 @@ Rules:
 15. Always write tool queries (search_projects and search_deliverables queries, find_projects topic and
     keywords) in English, whatever the language of the question; answer in the user's language.
 
-Filter values: countries are ISO codes: {countries}. Programmes: TSI, SRSP. Policy areas: {areas}."""
+Filter values: countries are ISO codes: {countries}. Programmes: TSI, SRSP, SRSS (pre-2017 technical assistance to Greece). Policy areas: {areas}."""

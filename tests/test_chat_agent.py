@@ -50,6 +50,17 @@ def test_system_prompt_has_rules_and_no_jinja():
     assert "{{" not in text and "{%" not in text
 
 
+def test_system_prompt_lists_the_srss_programme_value():
+    text = system_prompt(POLICY_AREAS)
+    assert "Programmes: TSI, SRSP, SRSS (pre-2017 technical assistance to Greece)" in text
+
+
+def test_tool_docstrings_mention_srss():
+    from tsi_agent.chat.tools import DeliverableSearch, ProjectFinder, ProjectLister, ProjectSearch
+    for cls in (ProjectSearch, DeliverableSearch, ProjectFinder, ProjectLister):
+        assert "SRSS" in cls.run.__doc__, cls.__name__
+
+
 def test_system_prompt_points_free_topics_to_find_projects_and_english_queries():
     text = system_prompt(POLICY_AREAS)
     assert "find_projects" in text and "keywords" in text and "AML" in text
