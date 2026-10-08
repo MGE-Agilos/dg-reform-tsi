@@ -81,6 +81,7 @@ def run_variants(questions: list[dict[str, Any]], store: Any, text_embedder: Any
             row[f"{v}_chunk"] = metrics.chunk_rank(docs, q["chunk_id"])
             row[f"{v}_file"] = metrics.file_rank(docs, q["doc_id"])
             row[f"{v}_project"] = metrics.project_rank(docs, projects)
+        row["has_project"] = bool(projects)
         row["B_filtered"] = bool(countries)
         row["A_top3"] = _top3(results["A"])
         rows.append(row)

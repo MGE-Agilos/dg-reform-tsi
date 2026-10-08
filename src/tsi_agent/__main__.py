@@ -51,6 +51,16 @@ def main(argv: list[str] | None = None) -> int:
     rescore = sub.add_parser("impact-rescore",
                              help="recalculer le score d'impact (0-10) des rapports existants, sans nouvelle analyse")
     rescore.add_argument("project_ids", nargs="*", help="identifiants des projets (défaut : tous les rapports)")
+    ev = sub.add_parser("eval-retrieval",
+                        help="banc de recherche : la recherche retrouve-t-elle le bon passage ? (chatbot arrêté)")
+    ev.add_argument("--questions-file", help="jeu de questions (défaut : <out-dir>/questions.jsonl, réutilisé)")
+    ev.add_argument("--regenerate", action="store_true", help="rédiger un nouveau jeu de questions (LLM)")
+    ev.add_argument("--skip-chunk-sizes", action="store_true",
+                    help="ne pas mesurer les tailles de morceaux (~30 min de vectorisation)")
+    ev.add_argument("--n-project", type=int, default=60)
+    ev.add_argument("--n-deliverable", type=int, default=60)
+    ev.add_argument("--n-other", type=int, default=30)
+    ev.add_argument("--out-dir", default="output/eval")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
@@ -104,6 +114,22 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{r['project_id']} {r['impact_score']}/10 {r['impact_level']}")
         print(f"Coût total : {out['cost_usd']:.4f} $ — run {out['run_id']}")
         return 2 if errors else 0
+    if args.command == "eval-retrieval":
+        from tsi_agent.eval import runner as eval_runner
+        try:
+            out = eval_runner.run_eval(settings, out_dir=args.out_dir, questions_file=args.questions_file,
+                                       regenerate=args.regenerate, skip_chunk_sizes=args.skip_chunk_sizes,
+                                       n_project=args.n_project, n_deliverable=args.n_deliverable,
+                                       n_other=args.n_other)
+        except Exception as exc:
+            print(f"ERREUR : {exc} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return 2
+        print(f"Rapport : {out['report']}")
+        print(f"Détail par question : {out['csv']}")
+        print(f"Questions ({out['questions']}) : {out['questions_file']}")
+        print(f"Coût total : {out['cost_usd']:.4f} $ — run {out['run_id']}")
+        return 0
     if args.command == "chat":
         import webbrowser
 

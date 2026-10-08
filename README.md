@@ -317,6 +317,25 @@ main :
 Le lecteur de pages (`BoundedLinkFetcher`) peut rester tel quel ou être remplacé par le `LinkContentFetcher` de
 Haystack (sans limite de taille ni filtrage des adresses).
 
+## Banc de recherche
+
+Mesure si la recherche du chatbot retrouve le bon passage et le bon fichier (spec :
+`docs/superpowers/specs/2026-10-08-tsi-retrieval-bench-design.md`). **Arrêter le chatbot avant** (une seule
+ouverture de la base Qdrant).
+
+```powershell
+.venv\Scripts\python -m tsi_agent eval-retrieval                      # questions réutilisées si elles existent
+.venv\Scripts\python -m tsi_agent eval-retrieval --regenerate         # nouveau jeu de questions (Haiku)
+.venv\Scripts\python -m tsi_agent eval-retrieval --skip-chunk-sizes   # sans la mesure des tailles (~30 min)
+```
+
+150 morceaux tirés au hasard (graine fixe : 60 projets, 60 livrables, 30 programme ou résumés IA ; options
+`--n-project`, `--n-deliverable`, `--n-other`), une question par morceau rédigée par Haiku (moitié français, moitié
+anglais), enregistrée dans `output/eval/questions.jsonl` et réutilisée ensuite. Quatre variantes sont mesurées sur
+l'index actuel : A sémantique (actuel), B + filtre pays, C hybride sémantique + BM25 (RRF), D au plus 2 morceaux par
+fichier ; puis trois tailles de morceaux (150 / 250 / 400 mots) sur les projets et le programme, revectorisés dans un
+index temporaire en mémoire. Sorties : `output/eval/retrieval-<date>.md` (rapport) et `.csv` (rangs par question).
+
 ## Planification (Windows)
 
 À exécuter depuis le dossier du dépôt (les chemins sont résolus en absolu à partir du dossier courant) :
