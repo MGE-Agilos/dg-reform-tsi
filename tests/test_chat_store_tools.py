@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from haystack import Document
 from haystack.components.embedders import MockDocumentEmbedder, MockTextEmbedder
@@ -244,18 +246,33 @@ def test_pipeline_has_five_tools_and_deliverable_tool_runs(tmp_path):
 
 def test_pipeline_wires_finder_settings(tmp_path):
     vdir = make_vector_store(tmp_path)
-    s = Settings(vectors_dir=str(vdir), embedding_dim=8, logs_dir=str(tmp_path / "logs"), finder_min_score=-2,
-                 finder_candidates=40, finder_max_projects=3)
+    s = Settings(vectors_dir=str(vdir), embedding_dim=8, logs_dir=str(tmp_path / "logs"), finder_project_pool=0,
+                 finder_project_chunks=40, finder_deliverable_pool=0, finder_deliverable_chunks=30,
+                 finder_max_candidates=3)
     pipe = build_chat_pipeline(s, [], chat_generator=_gen(),
                                text_embedder=MockTextEmbedder(model="mock", dimension=8))
     tool = next(t for t in pipe.get_component("agent").tools if t.name == "find_projects")
     finder = tool._component
-    assert (finder.min_score, finder.candidates, finder.max_projects) == (-2, 40, 3)
+    assert (finder.project_pool, finder.project_chunks, finder.deliverable_pool, finder.deliverable_chunks,
+            finder.max_candidates) == (0, 40, 0, 30, 3)
     out = tool.invoke(topic="support to energy regulators across member states", keywords=["property tax"],
                       known_sources=[{"ref": 1}])
-    assert out["sources"][0]["ref"] == 2 and out["sources"][0]["doc_id"] == THIN
-    assert Settings().finder_min_score == 0.80 and Settings().finder_candidates == 300
-    assert Settings().finder_max_projects == 60
+    assert [(s["ref"], s["doc_id"]) for s in out["sources"]] == [(2, THIN)]
+    d = Settings()
+    assert (d.finder_project_pool, d.finder_project_chunks, d.finder_deliverable_pool, d.finder_deliverable_chunks,
+            d.finder_max_candidates) == (60, 400, 30, 300, 150)
+    assert not hasattr(d, "finder_min_score")
+
+
+def test_settings_yaml_carries_finder_settings():
+    import yaml
+    from tsi_agent.config import load_settings
+    path = Path(__file__).resolve().parent.parent / "config" / "settings.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert not {"finder_min_score", "finder_candidates", "finder_max_projects"} & set(raw)
+    s = load_settings(path)
+    assert (s.finder_project_pool, s.finder_project_chunks, s.finder_deliverable_pool, s.finder_deliverable_chunks,
+            s.finder_max_candidates) == (60, 400, 30, 300, 150)
 
 
 def _gen():

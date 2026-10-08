@@ -26,10 +26,12 @@ class Settings(BaseModel):
     chat_model: str = "sonnet"
     chat_max_steps: int = 6
     chat_port: int = 8765
-    # Outil find_projects : seuil de pertinence (score cosinus e5), a regler avec eval-aggregation.
-    finder_min_score: float = 0.80
-    finder_candidates: int = 300  # morceaux semantiques lus avant regroupement par projet
-    finder_max_projects: int = 60  # projets gardes par la partie semantique (correspondances de titre en plus)
+    # Outil find_projects : liste de candidats (sans seuil de score) jugee par l'agent.
+    finder_project_pool: int = 60  # projets gardes depuis la recherche sur les textes projet
+    finder_project_chunks: int = 400  # morceaux projet lus avant regroupement par projet
+    finder_deliverable_pool: int = 30  # projets gardes depuis la recherche sur les livrables
+    finder_deliverable_chunks: int = 300  # morceaux livrable lus avant regroupement par projet
+    finder_max_candidates: int = 150  # lignes de candidats listees au plus
     # Etage livrables (pipeline `deliverables`).
     deliverables_dir: str = "output/deliverables"
     deliverables_max_words: int = 15000

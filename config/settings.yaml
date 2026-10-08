@@ -19,9 +19,11 @@ embedding_batch_size: 32
 chat_model: sonnet
 chat_max_steps: 6     # appels LLM maximum par question
 chat_port: 8765
-finder_min_score: 0.80    # seuil de pertinence de find_projects, a regler avec eval-aggregation
-finder_candidates: 300    # morceaux semantiques lus par find_projects avant regroupement par projet
-finder_max_projects: 60   # projets gardes par la partie semantique de find_projects
+finder_project_pool: 60          # find_projects : projets gardes depuis les textes projet
+finder_project_chunks: 400       # morceaux projet lus avant regroupement par projet
+finder_deliverable_pool: 30      # projets gardes depuis les livrables
+finder_deliverable_chunks: 300   # morceaux livrable lus avant regroupement par projet
+finder_max_candidates: 150       # lignes de candidats listees au plus
 
 # Livrables des projets (python -m tsi_agent deliverables)
 deliverables_dir: output/deliverables

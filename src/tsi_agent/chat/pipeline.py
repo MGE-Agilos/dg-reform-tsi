@@ -57,12 +57,15 @@ def build_chat_pipeline(settings: Settings, policy_areas: list[str], *, chat_gen
                       description="Semantic search in TSI/SRSP project texts; returns numbered passages to cite.",
                       outputs_to_string={"source": "result"}, **_SOURCES_IO),
         ComponentTool(ProjectFinder(text_embedder=embedder, retriever=retriever, document_store=store,
-                                    min_score=settings.finder_min_score, candidates=settings.finder_candidates,
-                                    max_projects=settings.finder_max_projects),
+                                    project_pool=settings.finder_project_pool,
+                                    project_chunks=settings.finder_project_chunks,
+                                    deliverable_pool=settings.finder_deliverable_pool,
+                                    deliverable_chunks=settings.finder_deliverable_chunks,
+                                    max_candidates=settings.finder_max_candidates),
                       name="find_projects",
-                      description="Find the distinct projects on a free topic (semantic relevance threshold plus "
-                                  "keywords in titles), with counts by country and year; returns numbered "
-                                  "projects [n] to cite.",
+                      description="List candidate projects on a free topic (best matches in project texts and "
+                                  "deliverables plus keywords in titles, no relevance threshold) for you to judge "
+                                  "one by one; returns numbered candidates [n] to cite.",
                       outputs_to_string={"source": "result"}, **_SOURCES_IO),
         ComponentTool(DeliverableSearch(text_embedder=embedder, retriever=retriever),
                       name="search_deliverables",

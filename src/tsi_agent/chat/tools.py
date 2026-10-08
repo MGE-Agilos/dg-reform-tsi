@@ -23,10 +23,12 @@ SNIPPET_CHARS = 1200
 READER_MAX_CHARS = 8000
 LISTER_DEFAULT_LIMIT = 20
 # find_projects : valeurs par defaut, remplacees par les reglages finder_* dans build_chat_pipeline.
-FINDER_MIN_SCORE = 0.80
-FINDER_CANDIDATES = 300
-FINDER_MAX_PROJECTS = 60
-FINDER_SNIPPET_CHARS = 160
+FINDER_PROJECT_POOL = 60
+FINDER_PROJECT_CHUNKS = 400
+FINDER_DELIVERABLE_POOL = 30
+FINDER_DELIVERABLE_CHUNKS = 300
+FINDER_MAX_CANDIDATES = 150
+FINDER_SNIPPET_CHARS = 140
 
 
 def build_filters(year_from: int | None = None, year_to: int | None = None, programme: str | None = None,
@@ -221,24 +223,30 @@ def _snippet(text: str | None) -> str:
 @component
 class ProjectFinder:
     def __init__(self, text_embedder: Any, retriever: Any, document_store: Any,
-                 min_score: float = FINDER_MIN_SCORE, candidates: int = FINDER_CANDIDATES,
-                 max_projects: int = FINDER_MAX_PROJECTS):
-        """:param min_score: score cosinus minimal d'un projet (meilleur morceau) pour la partie semantique ;
-        :param candidates: morceaux lus avant regroupement ; :param max_projects: projets semantiques gardes."""
+                 project_pool: int = FINDER_PROJECT_POOL, project_chunks: int = FINDER_PROJECT_CHUNKS,
+                 deliverable_pool: int = FINDER_DELIVERABLE_POOL,
+                 deliverable_chunks: int = FINDER_DELIVERABLE_CHUNKS, max_candidates: int = FINDER_MAX_CANDIDATES):
+        """:param project_pool: projets gardes depuis la recherche sur les textes projet ;
+        :param project_chunks: morceaux projet lus avant regroupement ; :param deliverable_pool: projets gardes
+        depuis la recherche sur les livrables ; :param deliverable_chunks: morceaux livrable lus ;
+        :param max_candidates: lignes de candidats listees au plus."""
         self.text_embedder = text_embedder
         self.retriever = retriever
         self.document_store = document_store
-        self.min_score = min_score
-        self.candidates = candidates
-        self.max_projects = max_projects
+        self.project_pool = project_pool
+        self.project_chunks = project_chunks
+        self.deliverable_pool = deliverable_pool
+        self.deliverable_chunks = deliverable_chunks
+        self.max_candidates = max_candidates
 
     def warm_up(self) -> None:
         if hasattr(self.text_embedder, "warm_up"):
             self.text_embedder.warm_up()
 
     def to_dict(self) -> dict[str, Any]:
-        return default_to_dict(self, min_score=self.min_score, candidates=self.candidates,
-                               max_projects=self.max_projects, document_store=self.document_store.to_dict(),
+        return default_to_dict(self, project_pool=self.project_pool, project_chunks=self.project_chunks,
+                               deliverable_pool=self.deliverable_pool, deliverable_chunks=self.deliverable_chunks,
+                               max_candidates=self.max_candidates, document_store=self.document_store.to_dict(),
                                text_embedder=component_to_dict(obj=self.text_embedder, name="text_embedder"),
                                retriever=component_to_dict(obj=self.retriever, name="retriever"))
 
@@ -249,13 +257,34 @@ class ProjectFinder:
         data["init_parameters"]["document_store"] = _deserialize_object(data["init_parameters"]["document_store"])
         return default_from_dict(cls, data)
 
+    def _best_by_project(self, embedding: list[float], filters: dict[str, Any] | None, top_k: int,
+                         countries: list[str] | None, projects: dict[str, dict[str, Any]]
+                         ) -> dict[str, tuple[float, Document]]:
+        """Meilleur morceau par projet (doc_id d'un morceau projet, meta.projects d'un morceau livrable)."""
+        best: dict[str, tuple[float, Document]] = {}
+        for doc in self.retriever.run(query_embedding=embedding, filters=filters, top_k=top_k)["documents"]:
+            if not _in_countries(doc, countries) or doc.score is None:
+                continue
+            ids = [doc.meta.get("doc_id")] if doc.meta.get("doc_type") == "project" else doc.meta.get("projects") or []
+            for pid in ids:
+                # Un livrable peut citer un projet hors filtres : seuls les projets retenus comptent.
+                if pid in projects and (pid not in best or doc.score > best[pid][0]):
+                    best[pid] = (doc.score, doc)
+        return best
+
+    @staticmethod
+    def _top(best: dict[str, tuple[float, Document]], size: int) -> list[str]:
+        return sorted(best, key=lambda pid: (-best[pid][0], pid))[: max(size, 0)]
+
     @component.output_types(result=str, sources=list[dict])
     def run(self, topic: str, keywords: list[str] | None = None, countries: list[str] | None = None,
             year_from: int | None = None, year_to: int | None = None, programme: str | None = None,
             policy_area: str | None = None, known_sources: list[dict] | None = None) -> dict[str, Any]:
-        """Find the distinct projects dealing with a free topic, over the whole corpus, with counts by country and
-        year. Combines a semantic match (project texts and deliverables, relevance threshold) with a keyword match
-        in project titles. Returns numbered projects [n] to cite.
+        """List CANDIDATE projects for a free topic, over the whole corpus, for you to judge. The pool combines
+        the projects whose texts best match the topic, the projects whose deliverables best match it, and the
+        projects whose title contains one of the keywords. There is no relevance threshold: many candidates are
+        off-topic. Keep only those whose title or snippet is really about the topic, then count them yourself.
+        Returns numbered candidates [n] to cite.
 
         :param topic: English description of the topic (e.g. "anti-money laundering and counter-terrorist
             financing").
@@ -269,32 +298,31 @@ class ProjectFinder:
         :param policy_area: Policy area slug (e.g. "green-transition").
         """
         t0 = time.monotonic()
-        # Metadonnees de tous les projets correspondant aux filtres (un par doc_id).
+        # Metadonnees de tous les projets correspondant aux filtres (un par doc_id) et premier morceau de chacun
+        # (extrait des candidats trouves par le titre seul).
         projects: dict[str, dict[str, Any]] = {}
+        first: dict[str, Document] = {}
         for doc in self.document_store.filter_documents(
                 filters=build_filters(year_from, year_to, programme, policy_area, countries=countries)):
             doc_id = doc.meta.get("doc_id")
-            if doc_id and doc_id not in projects and _in_countries(doc, countries):
-                projects[doc_id] = doc.meta
-
-        # Partie semantique : morceaux projet et livrable regroupes par projet, score = meilleur morceau.
-        embedding = self.text_embedder.run(text=topic)["embedding"]
-        filters = build_filters(year_from, year_to, programme, policy_area, doc_type=["project", "deliverable"],
-                                countries=countries)
-        docs = self.retriever.run(query_embedding=embedding, filters=filters, top_k=self.candidates)["documents"]
-        best: dict[str, tuple[float, Document]] = {}
-        for doc in docs:
-            if not _in_countries(doc, countries) or doc.score is None:
+            if not doc_id or not _in_countries(doc, countries):
                 continue
-            ids = [doc.meta.get("doc_id")] if doc.meta.get("doc_type") == "project" else doc.meta.get("projects") or []
-            for pid in ids:
-                # Un livrable peut citer un projet hors filtres : seuls les projets retenus ci-dessus comptent.
-                if pid in projects and (pid not in best or doc.score > best[pid][0]):
-                    best[pid] = (doc.score, doc)
-        ranked = sorted(best, key=lambda pid: -best[pid][0])[: self.max_projects]
-        semantic = [pid for pid in ranked if best[pid][0] >= self.min_score]
+            projects.setdefault(doc_id, doc.meta)
+            if doc_id not in first or (doc.meta.get("chunk_index") or 0) < (first[doc_id].meta.get("chunk_index") or 0):
+                first[doc_id] = doc
 
-        # Partie mots-cles : titres et titres de listing de tous les projets.
+        # Deux recherches separees : les gros rapports ne prennent pas la place des textes projet.
+        embedding = self.text_embedder.run(text=topic)["embedding"]
+        by_project = self._best_by_project(
+            embedding, build_filters(year_from, year_to, programme, policy_area, doc_type="project",
+                                     countries=countries), self.project_chunks, countries, projects)
+        by_deliverable = self._best_by_project(
+            embedding, build_filters(year_from, year_to, programme, policy_area, doc_type="deliverable",
+                                     countries=countries), self.deliverable_chunks, countries, projects)
+        from_projects = self._top(by_project, self.project_pool)
+        from_deliverables = self._top(by_deliverable, self.deliverable_pool)
+
+        # Mots-cles : titres et titres de listing de tous les projets.
         terms = [k for k in (keywords or []) if k and k.strip()]
         if len(topic.split()) <= 4:
             terms.append(topic)
@@ -303,34 +331,39 @@ class ProjectFinder:
                   if any(p.search(str(title)) for p in patterns
                          for title in [meta.get("title") or ""] + list(meta.get("listing_titles") or []))]
 
-        found = set(semantic) | set(titled)
-        title_set = set(titled)
-        ordered = sorted(found, key=lambda pid: (pid not in title_set, -(best[pid][0] if pid in best else -9.0),
-                                                 str(projects[pid].get("title"))))
-        metas = [projects[pid] for pid in ordered]
-        by_year = Counter(m.get("year") for m in metas)
-        lines = [f"Found {len(ordered)} distinct projects ({len(titled)} by title keywords, {len(semantic)} by "
-                 f"semantic match >= {self.min_score:g}).",
-                 "By country: " + _breakdown(c for m in metas for c in (m.get("countries") or [None])),
-                 "By year: " + ", ".join(f"{y}: {n}" for y, n in sorted(by_year.items(), key=lambda kv: -(kv[0] or 0))),
-                 f"Showing {min(self.max_projects, len(ordered))} of {len(ordered)}:"]
+        # Meilleur morceau toutes recherches confondues (score de tri et extrait), meme hors des pools.
+        best = dict(by_project)
+        for pid, hit in by_deliverable.items():
+            if pid not in best or hit[0] > best[pid][0]:
+                best[pid] = hit
+        via: dict[str, list[str]] = {pid: [] for pid in [*titled, *from_projects, *from_deliverables]}
+        for name, pids in (("title", titled), ("projects", from_projects), ("deliverables", from_deliverables)):
+            for pid in pids:
+                via[pid].append(name)
+        ordered = sorted(via, key=lambda pid: ("title" not in via[pid], -(best[pid][0] if pid in best else -9.0),
+                                               str(projects[pid].get("title")), pid))
+        lines = [f"Candidate projects for '{topic}': {len(ordered)} ({len(titled)} title matches, "
+                 f"{len(from_projects)} from project texts, {len(from_deliverables)} from deliverables). "
+                 "These are candidates, not answers: keep only those whose title or snippet is really about the "
+                 "topic."]
+        if len(ordered) > self.max_candidates:
+            lines.append(f"Showing the first {self.max_candidates} of {len(ordered)} candidates.")
         start = len(known_sources or [])
         sources: list[dict[str, Any]] = []
-        for i, pid in enumerate(ordered[: self.max_projects], start=start + 1):
+        for i, pid in enumerate(ordered[: self.max_candidates], start=start + 1):
             meta = projects[pid]
             score = round(best[pid][0], 3) if pid in best else None
-            match = ", ".join(([] if pid not in title_set else ["title"])
-                              + ([f"semantic {score}"] if score is not None else []))
+            snippet_doc = best[pid][1] if pid in best else first.get(pid)
             programme_year = " ".join(str(v) for v in (meta.get("programme"), meta.get("year")) if v)
             parts = [f"[{i}] {meta.get('title') or pid} ({pid})", programme_year,
-                     ", ".join(meta.get("countries") or []), f"match: {match}",
-                     _snippet(best[pid][1].content) if pid in best else "", meta.get("source_url") or ""]
+                     ", ".join(meta.get("countries") or []), "via: " + ", ".join(via[pid]),
+                     _snippet(snippet_doc.content if snippet_doc else None), meta.get("source_url") or ""]
             lines.append(" — ".join(p for p in parts if p))
             sources.append({"ref": i, "doc_id": pid, "title": meta.get("title") or pid, "url": meta.get("source_url"),
                             "section": None, "ai_generated": False, "score": score})
         runlog.event("ProjectFinder", "tool_call", "find_projects", topic=topic, keywords=keywords,
-                     countries=countries, filters=filters, found=len(ordered), title_matches=len(titled),
-                     duration_ms=round((time.monotonic() - t0) * 1000))
+                     candidates=len(ordered), title_matches=len(titled), from_projects=len(from_projects),
+                     from_deliverables=len(from_deliverables), duration_ms=round((time.monotonic() - t0) * 1000))
         return {"result": "\n".join(lines), "sources": sources}
 
 

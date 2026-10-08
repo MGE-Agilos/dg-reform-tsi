@@ -55,6 +55,8 @@ def test_system_prompt_points_free_topics_to_find_projects_and_english_queries()
     assert "find_projects" in text and "keywords" in text and "AML" in text
     assert "not be exhaustive" in text and "official policy area" in text
     assert "in English" in text
+    assert "EVERY candidate" in text and "get_project" in text and "kept projects" in text
+    assert "comes from a relevance threshold" not in text and "no relevance threshold" in text
 
 
 def test_system_prompt_points_aggregate_questions_to_breakdown_lines():
