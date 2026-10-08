@@ -74,6 +74,14 @@ def _source(ref: int, doc: Document, section: str | None = None, ai_generated: b
             "url": doc.meta.get("source_url"), "section": section, "ai_generated": ai_generated}
 
 
+def _breakdown(values: Any) -> str:
+    """Comptage "cle n, ..." par nombre decroissant puis cle ; valeur absente comptee sous "none", en dernier."""
+    counts = Counter(v or "none" for v in values)
+    none = counts.pop("none", 0)
+    parts = [f"{k} {n}" for k, n in sorted(counts.items(), key=lambda kv: (-kv[1], str(kv[0])))]
+    return ", ".join(parts + ([f"none {none}"] if none else []))
+
+
 def _deserialize_object(data: dict[str, Any]) -> Any:
     return import_class_by_name(data["type"]).from_dict(data)
 
@@ -214,6 +222,9 @@ class ProjectLister:
             title_contains: str | None = None, limit: int = LISTER_DEFAULT_LIMIT) -> dict[str, Any]:
         """Count and list distinct projects matching filters, over the whole corpus. Use it for any number or list.
 
+        The result gives the total, counts by programme, by year, by country and (without a policy_area filter) by
+        policy area, all computed over every matching project; the project list itself is truncated to `limit`.
+
         :param countries: ISO country codes (e.g. ["GR"]); a project matches if it involves any of them.
         :param year_from: From this year on.
         :param year_to: Up to this year.
@@ -239,7 +250,10 @@ class ProjectLister:
         lines = [f"Total matching projects: {len(ordered)} ("
                  + ", ".join(f"{k}: {v}" for k, v in sorted(by_programme.items())) + ")",
                  "By year: " + ", ".join(f"{y}: {n}" for y, n in sorted(by_year.items(), key=lambda kv: -(kv[0] or 0))),
-                 f"Showing {min(limit, len(ordered))} of {len(ordered)}:"]
+                 "By country: " + _breakdown(c for m in ordered for c in (m.get("countries") or [None]))]
+        if not policy_area:
+            lines.append("By policy area: " + _breakdown(m.get("policy_area") for m in ordered))
+        lines.append(f"Showing {min(limit, len(ordered))} of {len(ordered)}:")
         for m in ordered[:limit]:
             lines.append(f"- {m.get('title')} ({m.get('doc_id')}) — {m.get('programme')} {m.get('year')} — "
                          f"{', '.join(m.get('countries') or [])} — detail page: "

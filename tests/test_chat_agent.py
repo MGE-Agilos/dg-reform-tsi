@@ -50,6 +50,12 @@ def test_system_prompt_has_rules_and_no_jinja():
     assert "{{" not in text and "{%" not in text
 
 
+def test_system_prompt_points_aggregate_questions_to_breakdown_lines():
+    text = system_prompt(POLICY_AREAS)
+    assert "By country" in text and "By policy area" in text
+    assert "which countries" in text.lower() and "truncated" in text and "limit" in text
+
+
 def test_logged_generator_logs_llm_call_and_forwards_tools(tmp_path):
     inner = ScriptedGenerator(["hello"])
     gen = LoggedChatGenerator(chat_generator=inner)

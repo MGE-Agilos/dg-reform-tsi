@@ -141,6 +141,33 @@ def test_lister_limit_and_lines(store):
     assert "By year: 2026: 1, 2022: 1, 2019: 1, 2016: 1" in out
 
 
+def test_lister_breakdown_by_country_and_policy_area(store):
+    out = ProjectLister(document_store=store).run(limit=1)["result"]
+    lines = out.splitlines()
+    # tous les projets correspondants, pas seulement ceux affiches ; tri par nombre puis code
+    others = ["AT", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "FI", "FR", "HR", "HU", "IE", "IT", "LT", "LU", "LV",
+              "MT", "NL", "PL", "PT", "RO", "SE", "SI", "SK"]
+    assert lines[2] == "By country: ES 3, GR 2, " + ", ".join(f"{c} 1" for c in others)
+    assert lines[3] == ("By policy area: competitiveness 1, green-transition 1, "
+                        "labour-market-and-social-protection 1, none 1")
+    assert lines[1].startswith("By year:") and lines[4] == "Showing 1 of 4:"
+    filtered = ProjectLister(document_store=store).run(policy_area="competitiveness")["result"]
+    assert "By country: ES 1" in filtered and "By policy area" not in filtered
+    assert "none" not in ProjectLister(document_store=store).run(countries=["ES"])["result"].split("By policy")[0]
+
+
+def test_lister_counts_projects_without_countries_as_none():
+    class Store:
+        def filter_documents(self, filters=None):
+            return [Document(content="x", meta={"doc_id": "a", "doc_type": "project", "countries": [], "year": 2022,
+                                                "programme": "TSI", "policy_area": "green-transition"}),
+                    Document(content="x", meta={"doc_id": "b", "doc_type": "project", "countries": ["HR"],
+                                                "year": 2021, "programme": "TSI", "policy_area": None})]
+    out = ProjectLister(document_store=Store()).run()["result"]
+    assert "By country: HR 1, none 1" in out
+    assert "By policy area: green-transition 1, none 1" in out
+
+
 def test_reader_rebuilds_project_text(store):
     out = ProjectReader(document_store=store).run(doc_id=ENERGY, known_sources=[{"ref": 1}])
     text = out["result"]
