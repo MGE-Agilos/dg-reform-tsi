@@ -77,17 +77,28 @@ def test_similarity_rejects_other_phase_and_close_spelling_with_other_words():
     assert title_similarity("Waste management", "Water management") == 0
 
 
+def discover_merge(refs):
+    """Enchainement du decouvreur : cle titre exacte (merge_refs) puis regle floue."""
+    from tsi_agent.components.discoverer import ambiguous_title_keys, merge_refs
+    return fuzzy_merge(merge_refs(refs), excluded_thin_ids=ambiguous_title_keys(refs))
+
+
 def test_real_pairs_merge_and_keep_the_detail_id():
-    for d, t in [(ROMANIA_DETAIL, ROMANIA_THIN), (BIM_DETAIL, BIM_THIN), (POLAND_DETAIL, POLAND_THIN)]:
-        merged, matches = fuzzy_merge([t, d])
+    # Romania et BIM : meme cle titre une fois l'annee lue sur la page (regle existante) ; Poland : regle floue
+    # (le spotlight ne donne ni annee ni programme).
+    for d, t, rule in [(ROMANIA_DETAIL, ROMANIA_THIN, "key"), (BIM_DETAIL, BIM_THIN, "key"),
+                       (POLAND_DETAIL, POLAND_THIN, "fuzzy")]:
+        merged, matches = discover_merge([t, d])
         assert len(merged) == 1, d.project_id
         m = merged[0]
         assert m.project_id == d.project_id and m.detail_url == d.detail_url
         assert t.project_id in m.aliases
         assert m.programme == t.programme and m.year == t.year
         assert set(t.listing_urls) <= set(m.listing_urls)
-        assert [(x.detail_id, x.thin_id) for x in matches] == [(d.project_id, t.project_id)]
-        assert matches[0].score == 1.0
+        if rule == "fuzzy":
+            assert [(x.detail_id, x.thin_id, x.score) for x in matches] == [(d.project_id, t.project_id, 1.0)]
+        else:
+            assert matches == []
 
 
 def test_same_title_other_country_does_not_merge():
@@ -117,8 +128,8 @@ def test_two_detail_pages_never_merge():
 
 
 def test_year_and_programme_compatibility():
-    d = detail("capital-market-diagnostic-croatia", "Capital market diagnostic", programme="SRSP", year=2019,
-               countries=["HR"])
+    d = detail("capital-market-diagnostic-croatia", "Capital market diagnostic in Croatia", programme="SRSP",
+               year=2019, countries=["HR"])
     same = thin("srsp-2019-capital-market-diagnostic", "Capital market diagnostic", "SRSP", 2019, ["HR"])
     next_year = thin("srsp-2020-capital-market-diagnostic", "Capital market diagnostic", "SRSP", 2020, ["HR"])
     far = thin("srsp-2017-capital-market-diagnostic", "Capital market diagnostic", "SRSP", 2017, ["HR"])
@@ -156,13 +167,13 @@ def test_ambiguous_candidates_are_not_merged():
 def test_each_thin_ref_goes_to_one_detail_page_at_most():
     a = detail("better-regulation-austria", "Better regulation in Austria", programme="SRSP", year=2020,
                countries=["AT"])
-    b = detail("better-regulation", "Better regulation", programme="SRSP", year=2020)
+    b = detail("better-regulation", "Better regulation", programme="SRSP")
     t = thin("srsp-2020-better-regulation", "Better regulation", "SRSP", 2020, ["AT"])
     # Meme score : la page dont le pays est connu et commun l'emporte ; l'autre page reste seule.
     assert [(m.detail_id, m.thin_id) for m in match_thin_refs([b, a, t])] == [
         ("better-regulation-austria", "srsp-2020-better-regulation")]
     # Deux pages strictement equivalentes : ambigu, aucune fusion.
-    c = detail("better-regulation-0", "Better regulation", programme="SRSP", year=2020)
+    c = detail("better-regulation-0", "Better regulation", programme="SRSP")
     assert match_thin_refs([b, c, t]) == []
 
 
@@ -180,5 +191,33 @@ def test_fuzzy_merge_is_order_independent():
     refs = [ROMANIA_DETAIL, ROMANIA_THIN, BIM_DETAIL, BIM_THIN, POLAND_DETAIL, POLAND_THIN]
     expected = sorted([ROMANIA_DETAIL.project_id, BIM_DETAIL.project_id, POLAND_DETAIL.project_id])
     for perm in itertools.permutations(refs):
-        merged, _ = fuzzy_merge(list(perm))
+        merged, _ = discover_merge(list(perm))
         assert sorted(r.project_id for r in merged) == expected
+
+
+def test_generic_flagship_title_stays_a_separate_thin_project():
+    # Cas reel : "Industrial ecosystems" (TSI 2023) pointe vers une page detail propre au Portugal, une autre
+    # propre a l'Italie, et apparait sans lien pour Chypre. merge_refs garde la mention sans lien a part
+    # (cle ambigue) : la fusion floue ne doit pas la rattacher a l'une des pages.
+    from tsi_agent.components.discoverer import ambiguous_title_keys, merge_refs
+    base = dict(title="Industrial ecosystems", programme="TSI", year=2023, multi_country=True)
+    pt = ProjectRef(project_id="strengthening-portugals-policy-frameworks-stimulate-greening-smes-and-green-entrepreneurship",
+                    detail_url=f"{BASE}/green-transition/strengthening-portugals-policy-frameworks-stimulate-greening-"
+                               "smes-and-green-entrepreneurship_en", countries=["PT"], **base)
+    it = ProjectRef(project_id="industrial-ecosystems-italy", detail_url=f"{BASE}/competitiveness/industrial-ecosystems-italy_en",
+                    countries=["IT"], **base)
+    cy = ProjectRef(project_id="tsi-2023-industrial-ecosystems", countries=["CY"], **base)
+    pt_thin = ProjectRef(project_id="tsi-2023-industrial-ecosystems", countries=["PT"], **base)
+    refs = [pt, it, cy, pt_thin]
+    merged = merge_refs(refs)
+    assert len(merged) == 3
+    out, matches = fuzzy_merge(merged, excluded_thin_ids=ambiguous_title_keys(refs))
+    assert len(out) == 3 and matches == []
+
+
+def test_same_title_key_is_left_to_merge_refs():
+    # Meme cle titre (programme, annee, titre) : merge_refs a deja decide (conflit de pages detail) ; pas de 2e avis.
+    d = detail("x-detail", "Better regulation", programme="SRSP", year=2020, countries=["AT"])
+    t = thin("srsp-2020-better-regulation", "Better regulation", "SRSP", 2020, ["AT"])
+    assert match_thin_refs([d, t]) == []
+    assert len(match_thin_refs([d.model_copy(update={"year": None}), t])) == 1

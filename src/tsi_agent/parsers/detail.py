@@ -56,9 +56,8 @@ def _results_kind(headings: list[str]) -> str | None:
     return None
 
 
-def parse_detail(html: bytes | str) -> DetailParse:
-    soup = soup_of(html)
-    main = main_of(soup)
+def _meta(soup, main) -> tuple[str, str | None, int | None]:
+    """(titre h1, programme, annee) de la page."""
     h1 = soup.find("h1")
     meta: dict[str, str] = {}
     for dt in main.select("dl.ecl-description-list dt"):
@@ -66,6 +65,20 @@ def parse_detail(html: bytes | str) -> DetailParse:
         if dd is not None:
             meta[clean_text(dt.get_text(" "))] = clean_text(dd.get_text(" "))
     year_match = re.search(r"\d{4}", meta.get("Year", ""))
+    return (clean_text(h1.get_text(" ")) if h1 else "", _programme(meta.get("Funding Programme", "")),
+            int(year_match.group(0)) if year_match else None)
+
+
+def parse_detail_meta(html: bytes | str) -> tuple[str, str | None, int | None]:
+    """(titre, programme, annee) seulement : plus leger que parse_detail."""
+    soup = soup_of(html)
+    return _meta(soup, main_of(soup))
+
+
+def parse_detail(html: bytes | str) -> DetailParse:
+    soup = soup_of(html)
+    main = main_of(soup)
+    title, programme, year = _meta(soup, main)
     title_h2 = main.find("h2")
     intro = blocks_markdown(_until_next_heading(title_h2)) if title_h2 is not None else ""
     sections = []
@@ -75,10 +88,10 @@ def parse_detail(html: bytes | str) -> DetailParse:
             continue
         sections.append((heading, blocks_markdown(_until_next_heading(h3))))
     return DetailParse(
-        title=clean_text(h1.get_text(" ")) if h1 else "",
+        title=title,
         text=main_text(html),
-        programme=_programme(meta.get("Funding Programme", "")),
-        year=int(year_match.group(0)) if year_match else None,
+        programme=programme,
+        year=year,
         intro=intro,
         sections=sections,
         results=_results_kind([h for h, _ in sections]),

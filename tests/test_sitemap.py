@@ -257,3 +257,31 @@ def test_cached_detail_page_supplies_year_for_matching_only():
     disc2._fetcher = FakeFetcher()  # rien en cache : annee inconnue = compatible, fusion
     assert len(disc2.run(pages=[RawPage(kind="policy_area", key="competitiveness", url="https://x/comp_en",
                                         content=html.encode()), thin])["refs"]) == 1
+
+
+def test_fuzzy_compares_the_official_title_of_a_cached_detail_page():
+    # Cas reel : une page detail commune a quatre autorites (HR, MT, PL, RO), listee en Croatie sous
+    # "EU Supervisory Digital Finance Academy - Hanfa" ; mention thin roumaine "... - ASF". Les titres de listing
+    # se ressemblent (0.953) mais le titre officiel de la page ("Enhancing supervisory capacity of four NCAs...")
+    # non : pas de fusion quand la page est en cache.
+    url = f"{BASE}/financial-sector-and-access-finance/enhancing-supervisory-capacity-four-ncas-sustainable-finance-area_en"
+    hr = ('<details class="ecl-accordion__item"><summary>2022</summary><div class="ecl-accordion__content">'
+          f'<ul><li><a href="{url}">EU Supervisory Digital Finance Academy - Hanfa</a></li></ul></div></details>')
+    ro = ('<details class="ecl-accordion__item"><summary>2022</summary><div class="ecl-accordion__content">'
+          f'<ul><li><a href="{url}">Implementation of Sustainable Finance Framework in Romania</a></li>'
+          '<li>EU Supervisory Digital Finance Academy - ASF</li></ul></div></details>')
+    pages = [RawPage(kind="factsheet", key="HR", url="https://x/croatia_en", content=hr.encode()),
+             RawPage(kind="factsheet", key="RO", url="https://x/romania_en", content=ro.encode())]
+    page = (b"<html><body><h1>Enhancing supervisory capacity of four NCAs in sustainable finance area</h1><main>"
+            b"<dl class='ecl-description-list'><dt>Funding Programme</dt><dd>Technical Support Instrument (TSI)</dd>"
+            b"<dt>Year</dt><dd>2022</dd></dl></main></body></html>")
+    disc = ProjectDiscoverer()
+    disc._fetcher = FakeFetcher(cached_pages={url: page})
+    out = disc.run(pages=pages)
+    assert len(out["refs"]) == 2 and out["report"]["duplicates_merged"] == []
+    # Le ref garde son titre de listing (le titre officiel vient de la page lors de l'extraction).
+    assert by_id(out["refs"])["enhancing-supervisory-capacity-four-ncas-sustainable-finance-area"].title == \
+        "EU Supervisory Digital Finance Academy - Hanfa"
+    disc2 = ProjectDiscoverer()
+    disc2._fetcher = FakeFetcher()  # page absente du cache : seuls les titres de listing sont comparables
+    assert len(disc2.run(pages=pages)["refs"]) == 1

@@ -9,7 +9,8 @@ avec un ratio difflib >= THRESHOLD, et
   pres, le score doit atteindre NEAR_YEAR_THRESHOLD (cas reel : "... implement the Pillar Two Directive" 2025
   contre "... implement the FASTER Directive" 2026, ratio 0.918, deux projets distincts),
 - pays communs (si connus des deux cotes).
-Jamais deux pages detail ensemble. Chaque page detail prend au plus un thin et inversement : le meilleur
+Jamais deux pages detail ensemble, jamais deux refs de meme cle titre exacte (merge_refs a deja tranche :
+fusion, ou refus pour un titre "flagship" generique), jamais un thin exclu par l'appelant (cle ambigue). Chaque page detail prend au plus un thin et inversement : le meilleur
 candidat ; en cas d'egalite parfaite entre deux candidats, rien n'est fusionne (ambigu).
 """
 
@@ -19,6 +20,7 @@ import unicodedata
 from dataclasses import dataclass
 
 from tsi_agent.countries import COUNTRIES
+from tsi_agent.ids import title_key
 from tsi_agent.models import ProjectRef
 
 THRESHOLD = 0.85
@@ -127,17 +129,24 @@ def _rank(d: ProjectRef, t: ProjectRef) -> tuple[int, int] | None:
     return None if year is None or country is None else (year, country)
 
 
+def _exact_key(ref: ProjectRef) -> str | None:
+    return title_key(ref.programme, ref.year, ref.title) if ref.programme and ref.year else None
+
+
 def match_thin_refs(refs: list[ProjectRef], views: list[ProjectRef] | None = None,
-                    threshold: float = THRESHOLD) -> list[FuzzyMatch]:
+                    threshold: float = THRESHOLD, excluded_thin_ids: set[str] | None = None) -> list[FuzzyMatch]:
     """Paires (page detail, thin) a fusionner, par score decroissant.
 
     `views` : meme longueur que `refs`, vues completees (annee/programme lus sur la page detail en cache,
     pays deduits du titre) utilisees pour les controles de compatibilite ; les refs ne sont pas modifiees.
+    `excluded_thin_ids` : thin jamais rattaches (mentions sans lien d'un titre flagship generique).
     """
     views = views if views is not None else refs
+    excluded = excluded_thin_ids or set()
     norms = [_norm(v.title) for v in views]
+    keys = [_exact_key(r) for r in refs]
     details = [i for i, r in enumerate(refs) if r.detail_url]
-    thins = [i for i, r in enumerate(refs) if not r.detail_url]
+    thins = [i for i, r in enumerate(refs) if not r.detail_url and r.project_id not in excluded]
     by_prefix: dict[str, list[int]] = {}
     for t in thins:
         for p in norms[t].prefixes:
@@ -150,6 +159,8 @@ def match_thin_refs(refs: list[ProjectRef], views: list[ProjectRef] | None = Non
                 if t in seen:
                     continue
                 seen.add(t)
+                if keys[d] is not None and keys[d] == keys[t]:
+                    continue
                 rank = _rank(views[d], views[t])
                 if rank is None:
                     continue

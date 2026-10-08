@@ -209,3 +209,11 @@ def test_srsp_heading_kind():
     assert heading_kind("Funding") is None
     assert heading_kind("Title of the request") is None
     assert heading_kind("1") is None
+
+
+def test_parse_detail_meta_matches_parse_detail():
+    from tsi_agent.parsers.detail import parse_detail_meta
+    html = fixture_bytes("detail_licensing_romania.html")
+    full = parse_detail(html)
+    assert parse_detail_meta(html) == (full.title, full.programme, full.year) == (
+        "Comprehensive redesign of the licensing system in Romania", "SRSP", 2019)
