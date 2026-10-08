@@ -23,7 +23,7 @@ Pour l'exécution locale, le CLI `claude` doit être installé et connecté à u
 # Pilote : Croatie seulement, 3 projets envoyés au LLM au maximum
 .venv\Scripts\python -m tsi_agent run --countries HR --limit 3
 
-# Voir ce qui serait extrait, sans LLM ni écriture
+# Voir ce qui serait extrait, sans LLM ni écriture (alias : --discover-only)
 .venv\Scripts\python -m tsi_agent run --dry-run
 
 # Run complet incrémental (le premier envoie environ 620 projets au LLM ; plusieurs heures, surtout
@@ -46,14 +46,78 @@ Un run interrompu (Ctrl-C, limite de souscription) reprend là où il s'était a
 
 Codes de sortie : `0` run terminé, `1` arrêt sur la limite de la souscription (le run suivant reprend), `2` erreur inattendue (détail dans `logs/runs/<run_id>.summary.json`, champ `error`).
 
-**`--dry-run`** fait la découverte et la détection sans appeler le LLM ni rien écrire, puis affiche trois
-compteurs : les pages détail candidates (`detail_candidates` — tous les projets qui ont une page détail ;
-leur hash n'est vérifié qu'au run réel, donc certains peuvent en fait être déjà à jour), les projets thin à
-écrire (`thin_to_write`) et les délistages (`delisted`).
+**`--dry-run`** (alias **`--discover-only`**) fait la découverte (sitemap compris) et la détection sans
+appeler le LLM ni écrire de fichier projet, puis affiche :
+
+- le bilan de la découverte : nombre de projets après fusion, URLs projet du sitemap (et combien manquent
+  aux listings), fusions de pages du sitemap avec des projets thin (les 30 premières paires
+  `slug sitemap -> id thin (score, règle)`, règle `title_key` ou `fuzzy`), nouveaux projets, doublons
+  fusionnés (thin + page détail déjà connue). Le bilan complet est enregistré dans
+  `logs/runs/<run_id>.discovery.json` : à relire avant le run réel ;
+- trois compteurs : les pages détail candidates (`detail_candidates` — tous les projets qui ont une page
+  détail ; leur hash n'est vérifié qu'au run réel, donc certains peuvent en fait être déjà à jour), les
+  projets thin à écrire (`thin_to_write`) et les délistages (`delisted`).
+
+Le premier `--dry-run` après l'ajout du sitemap récupère environ 170 pages détail absentes des listings
+(au moins 2 s par requête, soit 6 à 10 minutes) ; elles restent ensuite en cache HTTP.
 
 **Débit adaptatif :** le site répond par des HTTP 429 au-delà d'environ 1 requête/s soutenue. Après un 429,
 l'agent ralentit durablement (l'intervalle minimum entre requêtes double, jusqu'à 15 s) et ne réaccélère que
 progressivement, après 50 requêtes réussies d'affilée. C'est la première cause de durée d'un run complet.
+
+## Sources
+
+Déclarées dans `config/sources.yaml` :
+
+| Source | Ce qu'elle apporte |
+|---|---|
+| 27 factsheets pays TSI (`factsheet_url`) | Projets TSI par pays et par année, avec ou sans lien vers une page détail |
+| Page « Projects in the spotlight » (`spotlight_url`) | Pages détail mises en avant (TSI et SRSP) |
+| 10 pages de domaine politique (`policy_areas`) | Pages détail liées depuis chaque domaine |
+| PDF « List of approved technical support requests under the SRSP » (`srsp_pdf_url`) | Projets SRSP 2017-2020 par pays (projets thin), et en annexe les projets SRSS (voir plus bas) |
+| Sitemap du site (`sitemap_url`) | Pages détail qu'aucun listing ne référence |
+| Documents programme (`programme_docs`) | Textes programme (performance TSI) |
+
+**Étape sitemap.** L'index `sitemap.xml` et ses pages (`sitemap.xml_en?page=N`) sont lus à chaque run
+complet (pas dans les runs pilotes `--countries`, comme le PDF SRSP ; tout ou rien : un sitemap incomplet est
+ignoré). Seules les URLs `.../technical-support-instrument-0/<domaine>/<slug>_en` sont retenues, hors rubriques
+de `sitemap_excluded_areas` (pages de navigation `our-projects`, `our-projects-0`, `what-we-do`,
+`other-eu-support-opportunities`, `our-partners`, et `flagship-technical-support-projects` : ce sont des
+descriptions d'appels flagship, sans programme ni année, pas des pages projet). Chaque URL qui n'est la page
+détail d'aucun projet déjà découvert est récupérée (cache HTTP) et lue comme une page détail : titre, programme
+et année de la page, domaine de l'URL ; les pays restent vides (la page n'en donne pas : le LLM les lit dans
+le texte, comme pour les pages des domaines politiques). Une page sans programme ni année est ignorée ; un
+échec temporaire est reporté au run suivant (le projet n'est ni écrit ni dé-listé). Ces projets ont pour
+source l'index du sitemap.
+
+**Fusion avec les projets thin.** Une page du sitemap rejoint le projet thin correspondant (PDF SRSP,
+mention de factsheet sans lien) par la règle existante (même programme, année et titre), sinon par une
+règle floue, qui s'applique aussi entre les pages détail déjà connues et les projets thin (doublons) :
+
+- titres normalisés (minuscules, sans ponctuation, sans mots vides ni noms ou adjectifs de pays) avec un
+  ratio `difflib` ≥ 0,85, les mêmes marqueurs de phase (« phase II », « 2050 »…) et au moins la moitié des
+  mots en commun (comparés sur leurs 5 premières lettres : « supporting » = « support », « waste » ≠ « water ») ;
+- même programme, année égale ou à un an près (score ≥ 0,95 dans ce cas), pays communs (ou inconnus d'un côté) ;
+- pour une page détail en cache, c'est son titre officiel qui est comparé, et son année et son programme
+  qui sont contrôlés ;
+- jamais deux pages détail ensemble, jamais une mention sans lien d'un titre *flagship* générique ; chaque
+  page prend au plus un projet thin (le meilleur candidat), et rien n'est fusionné en cas d'égalité.
+
+Le projet fusionné garde l'id de sa page détail ; l'id du projet thin passe dans ses `aliases`. À l'écriture
+du projet détaillé, le fichier thin `output/projects/<id thin>.md` et son entrée d'état sont supprimés (comme
+pour les autres fusions) ; sa date `first_seen` est conservée. Au `index` suivant, les morceaux vectorisés de
+l'ancien fichier sont retirés et le nouveau fichier est vectorisé. Les livrables ne concernent que les
+projets avec page détail : aucun n'est rattaché à un id thin.
+
+**Programme SRSS.** L'annexe du PDF SRSP (« List of approved technical assistance projects covered by transfer
+of funds from European Structural and Investment Funds », pages 36 à 39) liste 82 projets d'assistance
+technique à la Grèce de 2012 à 2016, antérieurs au SRSP et exclus de ses chiffres officiels. Ils portent
+`programme: SRSS` (Structural Reform Support Service) et gardent leur id `srsp-<année>-...`. Le chatbot
+accepte le filtre `programme: "SRSS"`.
+
+**Lacune connue : Malte.** Le PDF SRSP n'a pas de section Malte et aucune autre source utilisée ne publie la
+liste des projets SRSP maltais (une trentaine selon les chiffres officiels) : seuls ceux qui ont une page
+détail (trouvée par le sitemap ou un listing) sont présents.
 
 ## Ce qu'est un « projet »
 
