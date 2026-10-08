@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from tsi_agent import __main__ as cli
@@ -174,3 +176,34 @@ def test_impact_rescore_selected_and_errors(tmp_path, monkeypatch, capsys):
     assert cli.main(["--settings", str(settings), "impact-rescore", "aaa"]) == 2
     assert "timeout" in capsys.readouterr().err
     assert "impact_score" not in (impact / "aaa.md").read_text(encoding="utf-8")
+
+
+def test_discover_only_is_the_dry_run_and_prints_the_discovery(monkeypatch, capsys, tmp_path):
+    seen = {}
+    report_file = tmp_path / "r.discovery.json"
+    report = {"refs": 2140, "detail": 860, "sitemap": {"urls": 670, "new_urls": 190, "fetched": 188,
+                                                       "not_project_pages": ["u"], "failed": [], "deferred": []},
+              "merged_into_thin": [{"sitemap_slug": f"slug-{i}", "thin_id": f"srsp-2019-thin-{i}", "score": 0.9,
+                                    "rule": "fuzzy", "title": "T", "programme": "SRSP", "year": 2019}
+                                   for i in range(35)],
+              "new_projects": [{"project_id": "new-one", "title": "New", "programme": "TSI", "year": 2024,
+                                "url": "https://x/new-one_en"}],
+              "duplicates_merged": [{"detail_id": "d", "thin_id": "t", "score": 1.0}]}
+    report_file.write_text(json.dumps(report), encoding="utf-8")
+
+    def fake(settings, sources, **kw):
+        seen.update(kw)
+        return {"quota_exceeded": False, "dry_run": {"discovery": {"file": str(report_file)}}}
+
+    monkeypatch.setattr(cli, "run_extraction", fake)
+    assert cli.main(["run", "--discover-only"]) == 0
+    assert seen["dry_run"] is True
+    out = capsys.readouterr().out
+    assert "Projects after merge: 2140" in out
+    assert "Sitemap project URLs: 670 (190 not in the listings)" in out
+    assert "Merged into thin projects: 35" in out
+    assert "slug-0 -> srsp-2019-thin-0 (0.900, fuzzy)" in out
+    assert "slug-29 -> " in out and "slug-30 -> " not in out and "... 5 more" in out
+    assert "New projects: 1" in out and "new-one" in out
+    assert "Duplicates merged (thin + detail page): 1" in out
+    assert str(report_file) in out

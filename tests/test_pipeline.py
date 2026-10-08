@@ -111,3 +111,18 @@ def test_yaml_roundtrip_for_deepset(settings):
 def test_llm_schema_is_ascii_for_the_windows_command_line():
     from tsi_agent.models import ProjectContent
     json.dumps(ProjectContent.model_json_schema()).encode("ascii")
+
+
+def test_dry_run_saves_the_discovery_report(settings):
+    summary = run_extraction(settings, SOURCES, countries=["HR"], dry_run=True, run_id="d2",
+                             pipeline_factory=factory(FakeChatGenerator(), FakeFetcher(default=fake_site)))
+    discovery = summary["dry_run"]["discovery"]
+    path = discovery.pop("file")
+    assert path.endswith("d2.discovery.json")
+    report = json.loads(open(path, encoding="utf-8").read())
+    assert report["refs"] == discovery["refs"] > 60
+    assert discovery == {"refs": report["refs"], "detail": report["detail"], "sitemap_urls": 0,
+                         "sitemap_new_urls": 0, "merged_into_thin": 0, "new_projects": 0,
+                         "duplicates_merged": len(report["duplicates_merged"]), "not_project_pages": 0,
+                         "sitemap_failed": 0, "sitemap_deferred": 0}
+    assert LocalProjectStore(settings.output_dir).all() == {}

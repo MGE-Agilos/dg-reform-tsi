@@ -1,5 +1,6 @@
 """Exécution par lots : le pipeline est relancé jusqu'à épuisement des projets à traiter."""
 
+import json
 from typing import Any, Callable
 
 from pathlib import Path
@@ -17,6 +18,49 @@ from tsi_agent.render import parse_front_matter, render
 from tsi_agent.store import _retry_on_lock, shared_store
 
 PipelineFactory = Callable[..., Pipeline]
+MAX_PAIRS_SHOWN = 30
+
+
+def save_discovery_report(logs_dir: str, run_id: str, report: dict[str, Any]) -> dict[str, Any]:
+    """Ecrit le bilan complet de la decouverte dans `<logs_dir>/runs/<run_id>.discovery.json` ; renvoie les compteurs."""
+    path = Path(logs_dir) / "runs" / f"{run_id}.discovery.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=1, ensure_ascii=False), encoding="utf-8")
+    sitemap = report.get("sitemap", {})
+    return {"refs": report.get("refs", 0), "detail": report.get("detail", 0),
+            "sitemap_urls": sitemap.get("urls", 0), "sitemap_new_urls": sitemap.get("new_urls", 0),
+            "merged_into_thin": len(report.get("merged_into_thin", [])),
+            "new_projects": len(report.get("new_projects", [])),
+            "duplicates_merged": len(report.get("duplicates_merged", [])),
+            "not_project_pages": len(sitemap.get("not_project_pages", [])),
+            "sitemap_failed": len(sitemap.get("failed", [])), "sitemap_deferred": len(sitemap.get("deferred", [])),
+            "file": str(path)}
+
+
+def format_discovery(report: dict[str, Any], path: str, max_pairs: int = MAX_PAIRS_SHOWN) -> str:
+    """Bilan lisible de la decouverte (--dry-run), pour relire les fusions avant l'extraction reelle."""
+    sitemap = report.get("sitemap", {})
+    merged = report.get("merged_into_thin", [])
+    new = report.get("new_projects", [])
+    dups = report.get("duplicates_merged", [])
+    lines = [f"Projects after merge: {report.get('refs', 0)} ({report.get('detail', 0)} with a detail page)",
+             f"Sitemap project URLs: {sitemap.get('urls', 0)} ({sitemap.get('new_urls', 0)} not in the listings)",
+             f"  not project pages: {len(sitemap.get('not_project_pages', []))}, failed: "
+             f"{len(sitemap.get('failed', []))}, deferred: {len(sitemap.get('deferred', []))}",
+             f"Merged into thin projects: {len(merged)}"]
+    lines += [f"  {m['sitemap_slug']} -> {m['thin_id']} ({m['score']:.3f}, {m['rule']})" for m in merged[:max_pairs]]
+    if len(merged) > max_pairs:
+        lines.append(f"  ... {len(merged) - max_pairs} more")
+    lines.append(f"New projects: {len(new)}")
+    lines += [f"  {p['project_id']} ({p.get('programme')} {p.get('year')})" for p in new[:max_pairs]]
+    if len(new) > max_pairs:
+        lines.append(f"  ... {len(new) - max_pairs} more")
+    lines.append(f"Duplicates merged (thin + detail page): {len(dups)}")
+    lines += [f"  {d['detail_id']} <- {d['thin_id']} ({d['score']:.3f})" for d in dups[:max_pairs]]
+    if len(dups) > max_pairs:
+        lines.append(f"  ... {len(dups) - max_pairs} more")
+    lines.append(f"Full report: {path}")
+    return "\n".join(lines)
 
 
 def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = False,
@@ -40,12 +84,16 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
             if not dry_run:
                 data["detail_fetcher"] = {"full": full}
                 data["writer"] = {"run_id": run.run_id}
-            out = pipeline.run(data, include_outputs_from={"detector", "detail_fetcher", "extractor", "writer"})
+            out = pipeline.run(data, include_outputs_from={"discoverer", "detector", "detail_fetcher", "extractor",
+                                                          "writer"})
             chunks += 1
             det = out["detector"]
             if dry_run:
                 run.extra["dry_run"] = {"detail_candidates": len(det["detail"]), "thin_to_write": len(det["thin"]),
                                         "delisted": len(det["delisted"])}
+                report = out.get("discoverer", {}).get("report")
+                if report is not None:
+                    run.extra["dry_run"]["discovery"] = save_discovery_report(settings.logs_dir, run.run_id, report)
                 break
             for key, value in out.get("writer", {}).get("stats", {}).items():
                 written[key] = written.get(key, 0) + value
