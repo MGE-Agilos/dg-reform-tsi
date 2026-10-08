@@ -23,7 +23,8 @@ def build_pipeline(settings: Settings, sources: dict[str, Any], *, dry_run: bool
             "user_agent": settings.user_agent}
     p = Pipeline()
     p.add_component("listing", SourceListingFetcher(sources=sources, **http))
-    p.add_component("discoverer", ProjectDiscoverer(**http))
+    p.add_component("discoverer", ProjectDiscoverer(sitemap_excluded_areas=sources.get("sitemap_excluded_areas"),
+                                                    **http))
     p.add_component("detector", ChangeDetector(output_dir=settings.output_dir))
     p.connect("listing.pages", "discoverer.pages")
     p.connect("discoverer.refs", "detector.refs")
