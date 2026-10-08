@@ -210,7 +210,7 @@ QUESTIONS = [
 ]
 ANSWERS = {"Which countries?": ("Croatia and Slovenia [1].", [{"doc_id": "x"}], ["list_projects"]),
            "Combien ?": ("La Croatie compte 6 projets.", [], ["list_projects", "list_projects"]),
-           "Which projects?": ("See [1].", [{"doc_id": "a"}, {"doc_id": "z"}], ["search_projects"])}
+           "Which projects?": ("See [1].", [{"doc_id": "a"}, {"doc_id": "z"}], ["find_projects", "search_projects"])}
 
 
 def test_run_aggregation_scores_each_question(tmp_path):
@@ -244,6 +244,9 @@ def test_render_report_and_csv(tmp_path):
     assert "cancer" in md and "40" in md
     lecture = md.split("## Lecture")[1]
     assert "list_projects" in lecture and "recommand" not in lecture.lower()
+    assert ("Thèmes libres : list_projects appelé dans 0/1 questions, find_projects dans 1/1, une recherche "
+            "sémantique dans 1/1.") in lecture
+    assert "find_projects dans 0/2" in lecture
     path = tmp_path / "a.csv"
     agg_report.write_csv(rows, path)
     with path.open(encoding="utf-8-sig", newline="") as fh:

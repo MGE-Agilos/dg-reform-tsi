@@ -113,9 +113,10 @@ def _lecture(rows: list[dict[str, Any]]) -> list[str]:
         group = [r for r in rows if r.get("source") == source and not r.get("error")]
         if group:
             used = sum(1 for r in group if "list_projects" in (r.get("tools") or []))
+            found = sum(1 for r in group if "find_projects" in (r.get("tools") or []))
             searched = sum(1 for r in group if {"search_projects", "search_deliverables"} & set(r.get("tools") or []))
-            facts.append(f"{label} : list_projects appelé dans {used}/{len(group)} questions, une recherche "
-                         f"sémantique dans {searched}/{len(group)}.")
+            facts.append(f"{label} : list_projects appelé dans {used}/{len(group)} questions, find_projects dans "
+                         f"{found}/{len(group)}, une recherche sémantique dans {searched}/{len(group)}.")
     scored = [r for r in rows if r.get("recall") is not None]
     if scored:
         low = min(scored, key=lambda r: (r["recall"], r["id"]))
