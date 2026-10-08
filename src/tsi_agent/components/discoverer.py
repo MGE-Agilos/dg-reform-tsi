@@ -218,7 +218,7 @@ class ProjectDiscoverer:
 
     @component.output_types(refs=list[ProjectRef], programme_docs=list[ProgrammeDoc],
                             suspect_countries=list[str], scope=dict[str, Any], deferred_ids=list[str],
-                            report=dict[str, Any])
+                            report=dict[str, Any], excluded_thin_ids=list[str])
     def run(self, pages: list[RawPage]) -> dict[str, Any]:
         refs: list[ProjectRef] = []
         docs: list[ProgrammeDoc] = []
@@ -270,7 +270,8 @@ class ProjectDiscoverer:
         for r in resolved:
             if r.detail_url and not r.policy_area:
                 r.policy_area = policy_area_from_url(r.detail_url)
-        merged, fuzzy = self._fuzzy_with_hints(merge_refs(resolved), ambiguous_title_keys(resolved))
+        ambiguous = ambiguous_title_keys(resolved)
+        merged, fuzzy = self._fuzzy_with_hints(merge_refs(resolved), ambiguous)
         report = self._report(merged, fuzzy, thin_ids, {r.detail_url for r in from_sitemap}, sitemap_report)
         kept_docs = []
         for doc in docs:
@@ -282,7 +283,7 @@ class ProjectDiscoverer:
         runlog.event(NAME, "discover", None, "ok", raw_refs=len(refs), projects=len(merged),
                      detail=sum(r.detail_page for r in merged), programme_docs=len(kept_docs))
         return {"refs": merged, "programme_docs": kept_docs, "suspect_countries": suspect, "scope": scope,
-                "deferred_ids": deferred, "report": report}
+                "deferred_ids": deferred, "report": report, "excluded_thin_ids": sorted(ambiguous)}
 
     # --- sitemap -----------------------------------------------------------------------------------------------
     def _sitemap_ref(self, url: str, listing_url: str) -> tuple[str, Any]:

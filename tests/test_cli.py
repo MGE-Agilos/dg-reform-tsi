@@ -188,7 +188,11 @@ def test_discover_only_is_the_dry_run_and_prints_the_discovery(monkeypatch, caps
                                    for i in range(35)],
               "new_projects": [{"project_id": "new-one", "title": "New", "programme": "TSI", "year": 2024,
                                 "url": "https://x/new-one_en"}],
-              "duplicates_merged": [{"detail_id": "d", "thin_id": "t", "score": 1.0}]}
+              "duplicates_merged": [{"detail_id": "d", "thin_id": "t", "score": 1.0}],
+              "judge": {"judged": 60, "llm_calls": 6, "errors": 0,
+                        "merged_by_judge": [{"sitemap_slug": "adultdigitalup", "thin_id": "tsi-2021-improve",
+                                             "confidence": "high", "reason": "reworded", "cached": False}],
+                        "rejected": [{"sitemap_slug": "x"}, {"sitemap_slug": "y"}]}}
     report_file.write_text(json.dumps(report), encoding="utf-8")
 
     def fake(settings, sources, **kw):
@@ -206,4 +210,7 @@ def test_discover_only_is_the_dry_run_and_prints_the_discovery(monkeypatch, caps
     assert "slug-29 -> " in out and "slug-30 -> " not in out and "... 5 more" in out
     assert "New projects: 1" in out and "new-one" in out
     assert "Duplicates merged (thin + detail page): 1" in out
+    assert "Judged by LLM (no rule merge, candidates found): 60 (6 LLM calls, 0 errors)" in out
+    assert "Merged by the LLM judge: 1" in out and "adultdigitalup -> tsi-2021-improve (high: reworded)" in out
+    assert "Rejected by the LLM judge: 2" in out
     assert str(report_file) in out

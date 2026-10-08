@@ -58,6 +58,11 @@ def normalize_title(title: str) -> list[str]:
     return [w for w in _tokens(title) if w not in _DROP]
 
 
+def prefix_tokens(title: str) -> frozenset[str]:
+    """Mots significatifs du titre reduits a leurs PREFIX_LEN premieres lettres (ensemble)."""
+    return frozenset(w[:PREFIX_LEN] for w in normalize_title(title))
+
+
 def countries_in_text(text: str) -> list[str]:
     """Codes ISO des pays nommes dans le texte (noms, adjectifs, regions), dans l'ordre du referentiel."""
     padded = " " + " ".join(_tokens(text)) + " "
@@ -80,7 +85,7 @@ class _Norm:
 
 def _norm(title: str) -> _Norm:
     words = normalize_title(title)
-    return _Norm(" ".join(words), frozenset(w[:PREFIX_LEN] for w in words),
+    return _Norm(" ".join(words), prefix_tokens(title),
                  frozenset(w for w in _tokens(title) if _MARKER.match(w)))
 
 

@@ -103,6 +103,21 @@ règle floue, qui s'applique aussi entre les pages détail déjà connues et les
 - jamais deux pages détail ensemble, jamais une mention sans lien d'un titre *flagship* générique ; chaque
   page prend au plus un projet thin (le meilleur candidat), et rien n'est fusionné en cas d'égalité.
 
+**Arbitrage LLM.** Une page du sitemap restée sans fusion est soumise à un LLM (CLI `claude`, sonnet, sortie
+structurée, lots de 10 pages) avec au plus 3 projets thin candidats : même programme, année égale ou à un an
+près, pays compatibles (pays de la page devinés du titre, sinon du début du texte), classés par proximité des
+mots (Jaccard ≥ 0,25, mots sans mots vides ni pays). Le LLM reçoit le titre, le programme, l'année, les pays
+devinés et le début du texte de la page, et pour chaque candidat son titre, programme, année, pays et sa source
+(factsheet, PDF SRSP, page de domaine). Même projet = même demande d'assistance (même pays ou institution
+bénéficiaire, même réforme), titre éventuellement reformulé ; une autre phase, un autre pays ou un projet
+multi-pays face à une demande d'un seul pays = projets différents. Seules les réponses de confiance `high` ou
+`medium` fusionnent, comme une fusion floue. Les décisions sont enregistrées dans
+`output/state/merge_decisions.json` (clé : slug de la page + ids des candidats) : un nouveau run ne rappelle
+pas le LLM. On peut les relire et les corriger : `"override": "<id thin>"` force la fusion, `"override":
+"none"` l'interdit. Le bilan `--dry-run` liste les pages jugées, les fusions décidées par le LLM (avec la
+confiance et la raison) et les refus ; chaque décision est journalisée (`merge_judge`). Le `--dry-run`
+appelle donc le LLM (une dizaine d'appels au premier passage) et écrit ce fichier de décisions.
+
 Le projet fusionné garde l'id de sa page détail ; l'id du projet thin passe dans ses `aliases`. À l'écriture
 du projet détaillé, le fichier thin `output/projects/<id thin>.md` et son entrée d'état sont supprimés (comme
 pour les autres fusions) ; sa date `first_seen` est conservée. Au `index` suivant, les morceaux vectorisés de
