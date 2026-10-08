@@ -1,4 +1,4 @@
-"""Pipeline Haystack du chatbot : un Agent avec quatre outils sur la couche vectorisee (export YAML deepset)."""
+"""Pipeline Haystack du chatbot : un Agent avec cinq outils sur la couche vectorisee (export YAML deepset)."""
 
 from typing import Any
 
@@ -8,7 +8,7 @@ from haystack.tools import ComponentTool
 
 from tsi_agent.chat.generator import LoggedChatGenerator
 from tsi_agent.chat.prompt import system_prompt
-from tsi_agent.chat.tools import DeliverableSearch, ProjectLister, ProjectReader, ProjectSearch
+from tsi_agent.chat.tools import DeliverableSearch, ProjectFinder, ProjectLister, ProjectReader, ProjectSearch
 from tsi_agent.components.claude_cli import ClaudeCliChatGenerator
 from tsi_agent.config import Settings
 from tsi_agent.qdrant_local import LocalQdrantEmbeddingRetriever, collection_exists, open_store
@@ -55,6 +55,14 @@ def build_chat_pipeline(settings: Settings, policy_areas: list[str], *, chat_gen
         ComponentTool(ProjectSearch(text_embedder=embedder, retriever=retriever),
                       name="search_projects",
                       description="Semantic search in TSI/SRSP project texts; returns numbered passages to cite.",
+                      outputs_to_string={"source": "result"}, **_SOURCES_IO),
+        ComponentTool(ProjectFinder(text_embedder=embedder, retriever=retriever, document_store=store,
+                                    min_score=settings.finder_min_score, candidates=settings.finder_candidates,
+                                    max_projects=settings.finder_max_projects),
+                      name="find_projects",
+                      description="Find the distinct projects on a free topic (semantic relevance threshold plus "
+                                  "keywords in titles), with counts by country and year; returns numbered "
+                                  "projects [n] to cite.",
                       outputs_to_string={"source": "result"}, **_SOURCES_IO),
         ComponentTool(DeliverableSearch(text_embedder=embedder, retriever=retriever),
                       name="search_deliverables",

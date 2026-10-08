@@ -21,8 +21,10 @@ DELIVERABLES = "Deliverables (AI-generated summary)"
 AI_SECTIONS = {SUMMARY, DELIVERABLES}
 # Listes d'URL et titres de listing : deja en metadonnees, sans valeur pour la recherche.
 SKIPPED_SECTIONS = {"Sources", "Listed in country factsheets as"}
+# listing_titles : titres des listings (recherche par mots du titre de find_projects). Ajoute sans changer
+# CHUNKER_VERSION : present dans les fichiers revectorises ; `index --full` pour toute la couche.
 PROJECT_FIELDS = ("title", "programme", "year", "countries", "multi_country", "policy_area", "detail_page",
-                  "results", "spotlight", "highlighted", "listed")
+                  "results", "spotlight", "highlighted", "listed", "listing_titles")
 
 _TITLE = re.compile(r"\A# [^\n]*(?:\n|\Z)")
 _HEADING = re.compile(r"^## (.+?)[ \t]*$", re.MULTILINE)

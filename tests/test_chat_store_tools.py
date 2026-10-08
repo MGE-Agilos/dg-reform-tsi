@@ -230,16 +230,32 @@ def test_deliverable_search_logs_tool_call(store, tmp_path):
     assert run.final_summary["counts"]["tool_call:ok"] == 1
 
 
-def test_pipeline_has_four_tools_and_deliverable_tool_runs(tmp_path):
+def test_pipeline_has_five_tools_and_deliverable_tool_runs(tmp_path):
     vdir = make_vector_store(tmp_path)
     add_deliverables(open_store(str(vdir), 8))
     s = Settings(vectors_dir=str(vdir), embedding_dim=8, logs_dir=str(tmp_path / "logs"))
     pipe = build_chat_pipeline(s, [], chat_generator=_gen(),
                                text_embedder=MockTextEmbedder(model="mock", dimension=8))
     tools = {t.name: t for t in pipe.get_component("agent").tools}
-    assert list(tools) == ["search_projects", "search_deliverables", "list_projects", "get_project"]
+    assert list(tools) == ["search_projects", "find_projects", "search_deliverables", "list_projects", "get_project"]
     out = tools["search_deliverables"].invoke(query="survey", publication_id="pub-tax")
     assert out["sources"][0]["doc_id"] == "pub-tax"
+
+
+def test_pipeline_wires_finder_settings(tmp_path):
+    vdir = make_vector_store(tmp_path)
+    s = Settings(vectors_dir=str(vdir), embedding_dim=8, logs_dir=str(tmp_path / "logs"), finder_min_score=-2,
+                 finder_candidates=40, finder_max_projects=3)
+    pipe = build_chat_pipeline(s, [], chat_generator=_gen(),
+                               text_embedder=MockTextEmbedder(model="mock", dimension=8))
+    tool = next(t for t in pipe.get_component("agent").tools if t.name == "find_projects")
+    finder = tool._component
+    assert (finder.min_score, finder.candidates, finder.max_projects) == (-2, 40, 3)
+    out = tool.invoke(topic="support to energy regulators across member states", keywords=["property tax"],
+                      known_sources=[{"ref": 1}])
+    assert out["sources"][0]["ref"] == 2 and out["sources"][0]["doc_id"] == THIN
+    assert Settings().finder_min_score == 0.80 and Settings().finder_candidates == 300
+    assert Settings().finder_max_projects == 60
 
 
 def _gen():

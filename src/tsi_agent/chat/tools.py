@@ -1,11 +1,12 @@
-"""Outils de l'agent chatbot : recherche semantique (projets, texte integral des livrables), liste/comptage
-de projets, lecture d'un projet.
+"""Outils de l'agent chatbot : recherche semantique (projets, texte integral des livrables), recherche des
+projets d'un theme libre (find_projects), liste/comptage de projets, lecture d'un projet.
 
 Composants Haystack exposes via ComponentTool. Les filtres annee/programme/domaine/detail passent par les
 filtres Haystack standards (meme comportement InMemory et OpenSearch) ; le filtre pays est applique ici en
 Python, un filtre sur un champ liste n'ayant pas la meme semantique selon le store.
 """
 
+import re
 import time
 from collections import Counter
 from typing import Any
@@ -21,6 +22,11 @@ SEARCH_CANDIDATES_WITH_FILTER = 100
 SNIPPET_CHARS = 1200
 READER_MAX_CHARS = 8000
 LISTER_DEFAULT_LIMIT = 20
+# find_projects : valeurs par defaut, remplacees par les reglages finder_* dans build_chat_pipeline.
+FINDER_MIN_SCORE = 0.80
+FINDER_CANDIDATES = 300
+FINDER_MAX_PROJECTS = 60
+FINDER_SNIPPET_CHARS = 160
 
 
 def build_filters(year_from: int | None = None, year_to: int | None = None, programme: str | None = None,
@@ -116,7 +122,7 @@ class ProjectSearch:
             known_sources: list[dict] | None = None) -> dict[str, Any]:
         """Semantic search in the TSI/SRSP project texts. Returns numbered passages [n] to cite.
 
-        :param query: What to look for, in any language (e.g. "reform of the healthcare system").
+        :param query: What to look for, in English (e.g. "reform of the healthcare system").
         :param countries: ISO country codes to keep (e.g. ["HR", "SI"]; Greece is "GR").
         :param year_from: Keep projects from this year on (e.g. 2022).
         :param year_to: Keep projects up to this year.
@@ -164,7 +170,7 @@ class DeliverableSearch(ProjectSearch):
         """Semantic search in the full text of the projects' deliverables (reports, presentations). Returns numbered
         passages [n] with the document and page, to cite.
 
-        :param query: What to look for, in any language (e.g. "survey sample size and response rate").
+        :param query: What to look for, in English (e.g. "survey sample size and response rate").
         :param countries: ISO country codes of the related projects (e.g. ["HR", "SI"]; Greece is "GR").
         :param year_from: Keep deliverables of projects from this year on.
         :param year_to: Keep deliverables of projects up to this year.
@@ -201,6 +207,131 @@ class DeliverableSearch(ProjectSearch):
                      publication_id=publication_id, project_id=project_id, filters=filters, results=len(docs),
                      duration_ms=round((time.monotonic() - t0) * 1000))
         return {"result": result, "sources": sources}
+
+
+def _term_pattern(term: str) -> "re.Pattern[str]":
+    """Mot ou expression entiere, insensible a la casse, pluriel simple accepte ("reform" trouve "reforms")."""
+    return re.compile(rf"(?<!\w){re.escape(term.strip())}(?:s|es)?(?!\w)", re.IGNORECASE)
+
+
+def _snippet(text: str | None) -> str:
+    return " ".join((text or "").split())[:FINDER_SNIPPET_CHARS]
+
+
+@component
+class ProjectFinder:
+    def __init__(self, text_embedder: Any, retriever: Any, document_store: Any,
+                 min_score: float = FINDER_MIN_SCORE, candidates: int = FINDER_CANDIDATES,
+                 max_projects: int = FINDER_MAX_PROJECTS):
+        """:param min_score: score cosinus minimal d'un projet (meilleur morceau) pour la partie semantique ;
+        :param candidates: morceaux lus avant regroupement ; :param max_projects: projets semantiques gardes."""
+        self.text_embedder = text_embedder
+        self.retriever = retriever
+        self.document_store = document_store
+        self.min_score = min_score
+        self.candidates = candidates
+        self.max_projects = max_projects
+
+    def warm_up(self) -> None:
+        if hasattr(self.text_embedder, "warm_up"):
+            self.text_embedder.warm_up()
+
+    def to_dict(self) -> dict[str, Any]:
+        return default_to_dict(self, min_score=self.min_score, candidates=self.candidates,
+                               max_projects=self.max_projects, document_store=self.document_store.to_dict(),
+                               text_embedder=component_to_dict(obj=self.text_embedder, name="text_embedder"),
+                               retriever=component_to_dict(obj=self.retriever, name="retriever"))
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProjectFinder":
+        deserialize_component_inplace(data["init_parameters"], key="text_embedder")
+        deserialize_component_inplace(data["init_parameters"], key="retriever")
+        data["init_parameters"]["document_store"] = _deserialize_object(data["init_parameters"]["document_store"])
+        return default_from_dict(cls, data)
+
+    @component.output_types(result=str, sources=list[dict])
+    def run(self, topic: str, keywords: list[str] | None = None, countries: list[str] | None = None,
+            year_from: int | None = None, year_to: int | None = None, programme: str | None = None,
+            policy_area: str | None = None, known_sources: list[dict] | None = None) -> dict[str, Any]:
+        """Find the distinct projects dealing with a free topic, over the whole corpus, with counts by country and
+        year. Combines a semantic match (project texts and deliverables, relevance threshold) with a keyword match
+        in project titles. Returns numbered projects [n] to cite.
+
+        :param topic: English description of the topic (e.g. "anti-money laundering and counter-terrorist
+            financing").
+        :param keywords: 3-8 English keywords, synonyms or acronyms searched in project titles (e.g.
+            ["money laundering", "AML", "CFT", "financial intelligence", "FIU"]).
+        :param countries: ISO country codes (e.g. ["HR", "SI"]; Greece is "GR"); a project matches if it involves
+            any of them.
+        :param year_from: Keep projects from this year on.
+        :param year_to: Keep projects up to this year.
+        :param programme: "TSI" (2021 onwards) or "SRSP" (2017-2020).
+        :param policy_area: Policy area slug (e.g. "green-transition").
+        """
+        t0 = time.monotonic()
+        # Metadonnees de tous les projets correspondant aux filtres (un par doc_id).
+        projects: dict[str, dict[str, Any]] = {}
+        for doc in self.document_store.filter_documents(
+                filters=build_filters(year_from, year_to, programme, policy_area, countries=countries)):
+            doc_id = doc.meta.get("doc_id")
+            if doc_id and doc_id not in projects and _in_countries(doc, countries):
+                projects[doc_id] = doc.meta
+
+        # Partie semantique : morceaux projet et livrable regroupes par projet, score = meilleur morceau.
+        embedding = self.text_embedder.run(text=topic)["embedding"]
+        filters = build_filters(year_from, year_to, programme, policy_area, doc_type=["project", "deliverable"],
+                                countries=countries)
+        docs = self.retriever.run(query_embedding=embedding, filters=filters, top_k=self.candidates)["documents"]
+        best: dict[str, tuple[float, Document]] = {}
+        for doc in docs:
+            if not _in_countries(doc, countries) or doc.score is None:
+                continue
+            ids = [doc.meta.get("doc_id")] if doc.meta.get("doc_type") == "project" else doc.meta.get("projects") or []
+            for pid in ids:
+                # Un livrable peut citer un projet hors filtres : seuls les projets retenus ci-dessus comptent.
+                if pid in projects and (pid not in best or doc.score > best[pid][0]):
+                    best[pid] = (doc.score, doc)
+        ranked = sorted(best, key=lambda pid: -best[pid][0])[: self.max_projects]
+        semantic = [pid for pid in ranked if best[pid][0] >= self.min_score]
+
+        # Partie mots-cles : titres et titres de listing de tous les projets.
+        terms = [k for k in (keywords or []) if k and k.strip()]
+        if len(topic.split()) <= 4:
+            terms.append(topic)
+        patterns = [_term_pattern(t) for t in terms]
+        titled = [pid for pid, meta in projects.items()
+                  if any(p.search(str(title)) for p in patterns
+                         for title in [meta.get("title") or ""] + list(meta.get("listing_titles") or []))]
+
+        found = set(semantic) | set(titled)
+        title_set = set(titled)
+        ordered = sorted(found, key=lambda pid: (pid not in title_set, -(best[pid][0] if pid in best else -9.0),
+                                                 str(projects[pid].get("title"))))
+        metas = [projects[pid] for pid in ordered]
+        by_year = Counter(m.get("year") for m in metas)
+        lines = [f"Found {len(ordered)} distinct projects ({len(titled)} by title keywords, {len(semantic)} by "
+                 f"semantic match >= {self.min_score:g}).",
+                 "By country: " + _breakdown(c for m in metas for c in (m.get("countries") or [None])),
+                 "By year: " + ", ".join(f"{y}: {n}" for y, n in sorted(by_year.items(), key=lambda kv: -(kv[0] or 0))),
+                 f"Showing {min(self.max_projects, len(ordered))} of {len(ordered)}:"]
+        start = len(known_sources or [])
+        sources: list[dict[str, Any]] = []
+        for i, pid in enumerate(ordered[: self.max_projects], start=start + 1):
+            meta = projects[pid]
+            score = round(best[pid][0], 3) if pid in best else None
+            match = ", ".join(([] if pid not in title_set else ["title"])
+                              + ([f"semantic {score}"] if score is not None else []))
+            programme_year = " ".join(str(v) for v in (meta.get("programme"), meta.get("year")) if v)
+            parts = [f"[{i}] {meta.get('title') or pid} ({pid})", programme_year,
+                     ", ".join(meta.get("countries") or []), f"match: {match}",
+                     _snippet(best[pid][1].content) if pid in best else "", meta.get("source_url") or ""]
+            lines.append(" — ".join(p for p in parts if p))
+            sources.append({"ref": i, "doc_id": pid, "title": meta.get("title") or pid, "url": meta.get("source_url"),
+                            "section": None, "ai_generated": False, "score": score})
+        runlog.event("ProjectFinder", "tool_call", "find_projects", topic=topic, keywords=keywords,
+                     countries=countries, filters=filters, found=len(ordered), title_matches=len(titled),
+                     duration_ms=round((time.monotonic() - t0) * 1000))
+        return {"result": "\n".join(lines), "sources": sources}
 
 
 @component

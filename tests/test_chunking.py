@@ -61,6 +61,7 @@ def test_detail_file_with_sections():
     assert first["source_file"] == "projects/energy-regulation-academy.md"
     assert first["source_url"].endswith("/green-transition/energy-regulation-academy_en")
     assert first["context_header"].startswith("The Energy Regulation Academy — TSI 2026 — Austria")
+    assert first["listing_titles"] == ["Energy Regulation Academy"]
     assert [d.meta["ai_generated"] for d in docs] == [False, True, False, False, False]
     assert all("https://" not in d.content for d in docs)
     assert docs[0].content.startswith("The Energy Regulation Academy is a capacity-building initiative")
