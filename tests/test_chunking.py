@@ -153,3 +153,18 @@ def test_deliverable_long_page_is_windowed_and_word_document_has_no_page():
 
 def test_deliverable_front_matter_without_publication_id_is_still_a_project():
     assert chunk_file("projects/x.md", read("vec_thin.md"))[0].meta["doc_type"] == "project"
+
+
+def test_chunk_file_window_is_parametrizable_without_changing_defaults():
+    text = read("vec_detail_long_section.md")
+    default = chunk_file("projects/x.md", text)
+    assert [d.content for d in chunk_file("projects/x.md", text, threshold=300, window=250, overlap=40)] == \
+        [d.content for d in default]
+    small = chunk_file("projects/x.md", text, threshold=200, window=150, overlap=24)
+    large = chunk_file("projects/x.md", text, threshold=450, window=400, overlap=64)
+    assert len(small) > len(default) > len(large)
+    assert max(len(d.content.split()) for d in small) <= 150
+    assert all(d.id == f"projects/x#{i}" for i, d in enumerate(small))
+    deliv = read("vec_deliverable.md")
+    assert len(chunk_file("deliverables/g.md", deliv, threshold=60, window=50, overlap=8)) > \
+        len(chunk_file("deliverables/g.md", deliv))
