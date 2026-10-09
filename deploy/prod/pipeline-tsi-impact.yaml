@@ -2,7 +2,8 @@
 # Outils : search_projects, search_deliverables (index tsi-corpus) et web_search : sous-pipeline qui appelle OpenAI
 # (Responses API) avec sa recherche web integree et renvoie constats + URL. Un Agent Haystack ne peut pas melanger
 # cet outil integre d'OpenAI et ses propres outils (il remplace les outils du generateur par les siens), d'ou le
-# sous-appel. 4 recherches au plus pour rester sous la limite de duree d'une recherche. Score 0-10 donne par
+# sous-appel. 3 recherches au plus, contexte de recherche reduit : chaque recherche OpenAI prend plusieurs dizaines
+# de secondes et une recherche (Search) de la plateforme est coupee apres 2 minutes. Score 0-10 donne par
 # l'agent dans la derniere ligne du rapport. Requete attendue : le titre ou l'id du projet.
 components:
   agent:
@@ -40,7 +41,7 @@ components:
            decrees, action plans), indicators before and after, evaluations, OECD / World Bank / European Commission
            documents (European Semester country reports, recovery and resilience plans), government sites, press
            articles, criticism. Use precise English queries naming the country, the institution and the reform. At most
-           4 web searches: you have a strict time limit.
+           3 web searches, each one slow: you have a strict time limit.
 
         Rules:
         - Cite project and deliverable passages with their number [n]; cite web sources with a Markdown link to the source URL
@@ -260,7 +261,7 @@ components:
                         Report the most relevant findings for an impact assessment (laws, decisions, indicators,
                         evaluations, criticism), most authoritative sources first: official, OECD, World Bank,
                         European Commission, then press. One line per finding: the finding with its date, then the
-                        source URL in parentheses. Only report what the sources say; at most 400 words, in English.
+                        source URL in parentheses. Only report what the sources say; at most 200 words, in English.
                         If nothing relevant is found, say so.
                         {% endmessage %}
                   searcher:
@@ -274,6 +275,7 @@ components:
                       model: gpt-5.4
                       tools:
                       - type: web_search
+                        search_context_size: low
                       generation_kwargs:
                         reasoning:
                           effort: low

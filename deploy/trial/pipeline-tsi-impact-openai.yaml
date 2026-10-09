@@ -36,7 +36,8 @@ components:
            (laws, decrees, action plans), indicators before and after, evaluations, OECD / World Bank / European
            Commission documents (European Semester country reports, recovery and resilience plans), government
            sites, press articles, criticism. Use precise English queries naming the country, the institution and
-           the reform. At most 4 web searches: you have a strict time limit.
+           the reform. At most 3 web searches, each one slow: you have a strict
+           time limit.
 
         Rules:
         - Cite project passages with their number [n]; cite web sources with a Markdown link to the source URL given
@@ -163,7 +164,7 @@ components:
                         Report the most relevant findings for an impact assessment (laws, decisions, indicators,
                         evaluations, criticism), most authoritative sources first: official, OECD, World Bank,
                         European Commission, then press. One line per finding: the finding with its date, then the
-                        source URL in parentheses. Only report what the sources say; at most 400 words, in English.
+                        source URL in parentheses. Only report what the sources say; at most 200 words, in English.
                         If nothing relevant is found, say so.
                         {% endmessage %}
                   searcher:
@@ -177,6 +178,7 @@ components:
                       model: gpt-5.4
                       tools:
                       - type: web_search
+                        search_context_size: low
                       generation_kwargs:
                         reasoning:
                           effort: low

@@ -43,7 +43,7 @@ son workspace**. Trois protections :
 ## À fournir ou vérifier côté client
 
 - **Plan** : embeddings hébergés `DeepsetNvidia*` (modèle `intfloat/multilingual-e5-base`) disponibles ;
-  durée maximale d'une recherche (2 minutes dans la doc : l'analyse d'impact est limitée à 4 recherches web
+  durée maximale d'une recherche (2 minutes dans la doc : l'analyse d'impact est limitée à 3 recherches web
   pour cette raison) ; volume de documents de l'index (~84 000).
 - **URL de l'API** de la plateforme du client (région) et une **clé API du workspace** pour le téléversement.
 - **Intégration OpenAI** (*Settings > Integrations*) avec la clé du client : elle sert aussi à la recherche web
@@ -120,8 +120,10 @@ Analyse d'impact (`tsi-impact`), le titre du projet comme requête :
 intégré `web_search` d'OpenAI, et renvoie les constats avec leurs URL sources. L'agent principal ne peut pas
 utiliser directement cet outil intégré : un Agent Haystack remplace les outils de son générateur par ses propres
 outils (`search_projects`, `search_deliverables`), d'où ce sous-appel, sur le modèle de la version locale (sous-appel
-au CLI Claude). Chaque recherche est donc un appel OpenAI de plus : 4 recherches au plus par analyse, pour la
-durée et le coût. Le générateur `OpenAIResponsesChatGenerator` avec outils intégrés demande Haystack 3.2.
+au CLI Claude). Chaque recherche est donc un appel OpenAI de plus, qui
+prend plusieurs dizaines de secondes : 3 recherches au plus par analyse, contexte de recherche réduit
+(`search_context_size: low`), réponse de 200 mots. Sur le trial, 4 recherches avec le contexte par défaut ont
+dépassé la limite de 2 minutes (`CancelledError`). Le générateur `OpenAIResponsesChatGenerator` avec outils intégrés demande Haystack 3.2.
 
 ## Mises à jour du corpus
 
@@ -135,6 +137,6 @@ sur la plateforme : le supprimer dans *Files* (son nom figure dans l'export pré
 |---|---|
 | `list_projects`, `find_projects` : comptes et listes exacts sur tout le corpus | recherche seulement : listes non exhaustives (le prompt le fait dire à l'agent) |
 | `get_project` : texte complet d'un projet | passages les plus pertinents seulement |
-| impact : Opus, 10 recherches (WebSearch du CLI), `fetch_page`, score par un second appel | gpt-5.4, 4 recherches web OpenAI, score dans le rapport |
+| impact : Opus, 10 recherches (WebSearch du CLI), `fetch_page`, score par un second appel | gpt-5.4, 3 recherches web OpenAI, score dans le rapport |
 
 Ces outils peuvent revenir comme composants custom si le besoin est confirmé en production.
