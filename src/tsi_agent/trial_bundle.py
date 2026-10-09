@@ -22,7 +22,8 @@ MAX_BYTES = 9_000_000  # marge sous la limite de 10 MB par fichier du plan d'ess
 FOLDERS = ("projects", "programme")
 MULTI = "multi-country"
 PROGRAMME = "programme"
-_HEADING = re.compile(r"^#{1,6}[ \t]+", re.MULTILINE)
+# Marqueurs de titre en debut de ligne, repetes ("# # x") ou seuls ("#") : sinon faux titre de section.
+_HEADING = re.compile(r"^[ \t]{0,3}(?:#+(?:[ \t]+|$))+", re.MULTILINE)
 
 
 def bundle_key(meta: dict) -> str:
