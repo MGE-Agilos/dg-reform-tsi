@@ -51,8 +51,17 @@ components:
         impact or limitations**, **Impact by level** (country, Europe, world), **Objectives** (a table:
         objective | verdict: achieved, partly achieved, not achieved or insufficient evidence | rationale),
         **Overall verdict** (one or two sentences).
-        End with exactly one line: "Impact score: X/10 (strong | moderate | weak) — Confidence: high | medium |
-        low", where 7-10 is strong, 4-6 moderate and 0-3 weak positive impact supported by the evidence found.
+        End with exactly one line: "Impact score: X/10 (strong | moderate | weak) — Confidence: high | medium | low".
+        The score rates the POSITIVE impact documented in your report, on outcomes rather than outputs:
+        - 0: no evidence of positive impact (outputs not used, reform abandoned, contradicted or reversed).
+        - 1-3 (weak): outputs delivered (reports, recommendations, trainings) but little or no evidence of uptake; a reform
+          adopted outside the project or going against its objectives counts as no uptake.
+        - 4-6 (moderate): the supported reform was adopted or partly implemented, attribution to the project plausible but
+          partial or early.
+        - 7-8 (strong): documented results or outcomes plausibly attributable to the project.
+        - 9-10 (strong): well-documented, sustained outcomes clearly attributable to the project.
+        An objective whose intended reform did not happen, or went the other way, is "not achieved", not "insufficient
+        evidence".
       tools:
       - type: haystack.tools.pipeline_tool.PipelineTool
         data:
