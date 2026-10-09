@@ -7,7 +7,8 @@ préalable sur le trial (`deploy/trial/`) : même découpage, mêmes prompts, m�
 |---|---|
 | `index-tsi-corpus.yaml` | index `tsi-corpus` : découpage par section `#`, e5 multilingue hébergé, OpenSearch |
 | `pipeline-tsi-chat.yaml` | chatbot : Agent gpt-5.4 + `search_projects` + `search_deliverables` |
-| `pipeline-tsi-impact.yaml` | analyse d'impact : Agent gpt-5.4 + `search_projects` + `search_deliverables` + `web_search` (recherche web OpenAI) |
+| `pipeline-tsi-impact.yaml` | analyse d'impact : Agent gpt-5.4 + `search_projects` + `search_deliverables` + `web_search` (SearchApi) |
+| `pipeline-tsi-impact-openai-search.yaml` | variante non retenue : recherche web intégrée d'OpenAI (trop lente pour la limite de 2 minutes) |
 | `upload.ps1` | téléversement par le SDK, avec contrôles ; clé lue dans l'environnement |
 | `build/` (non versionné) | `files/` à téléverser et `manifest.json` (chiffres attendus), générés par `prod-export` |
 
@@ -43,19 +44,20 @@ son workspace**. Trois protections :
 ## À fournir ou vérifier côté client
 
 - **Plan** : embeddings hébergés `DeepsetNvidia*` (modèle `intfloat/multilingual-e5-base`) disponibles ;
-  durée maximale d'une recherche (2 minutes dans la doc : l'analyse d'impact est limitée à 3 recherches web
+  durée maximale d'une recherche (2 minutes dans la doc : l'analyse d'impact est limitée à 4 recherches web
   pour cette raison) ; volume de documents de l'index (~84 000).
 - **URL de l'API** de la plateforme du client (région) et une **clé API du workspace** pour le téléversement.
-- **Intégration OpenAI** (*Settings > Integrations*) avec la clé du client : elle sert aussi à la recherche web
-  (outil intégré d'OpenAI, facturé par OpenAI à l'appel en plus des tokens ; aucun autre compte nécessaire).
-  L'organisation OpenAI du client doit avoir accès à l'outil `web_search` de l'API Responses.
+- **Intégrations** (*Settings > Integrations*) : **OpenAI** (clé du client) et **SearchApi** (compte du client,
+  offre payante : l'essai gratuit se limite à 100 recherches ; offres à partir de 40 $/mois pour 10 000
+  recherches ; une analyse d'impact en fait 4 au plus). Si la recherche web signale une clé manquante, ajouter
+  aussi un secret `SEARCHAPI_API_KEY` dans le workspace.
 - **Modèle** : `gpt-5.4` doit figurer dans la liste des modèles OpenAI de la plateforme.
 
 ## Étapes
 
 ### 1. Workspace et intégrations
 
-Créer le workspace `tsi-reform` (*Settings > Organization > Workspaces*), connecter OpenAI, créer une clé API
+Créer le workspace `tsi-reform` (*Settings > Organization > Workspaces*), connecter OpenAI et SearchApi, créer une clé API
 pour ce workspace (*Settings > Workspace > API Keys*).
 
 ### 2. Générer et téléverser le corpus
@@ -116,14 +118,15 @@ Analyse d'impact (`tsi-impact`), le titre du projet comme requête :
 
 ## Recherche web
 
-`web_search` est un sous-pipeline : il envoie la requête de l'agent à gpt-5.4 par l'API Responses avec l'outil
-intégré `web_search` d'OpenAI, et renvoie les constats avec leurs URL sources. L'agent principal ne peut pas
-utiliser directement cet outil intégré : un Agent Haystack remplace les outils de son générateur par ses propres
-outils (`search_projects`, `search_deliverables`), d'où ce sous-appel, sur le modèle de la version locale (sous-appel
-au CLI Claude). Chaque recherche est donc un appel OpenAI de plus, qui
-prend plusieurs dizaines de secondes : 3 recherches au plus par analyse, contexte de recherche réduit
-(`search_context_size: low`), réponse de 200 mots. Sur le trial, 4 recherches avec le contexte par défaut ont
-dépassé la limite de 2 minutes (`CancelledError`). Le générateur `OpenAIResponsesChatGenerator` avec outils intégrés demande Haystack 3.2.
+`web_search` interroge SearchApi (moteur Google, 5 résultats), lit les pages trouvées et renvoie leur URL et le
+début de leur texte : c'est la configuration validée sur le trial (~30 s par analyse, scores cohérents avec la
+version locale). L'analyse elle-même est faite par gpt-5.4.
+
+Variante `pipeline-tsi-impact-openai-search.yaml` : recherche web intégrée d'OpenAI, par un sous-pipeline
+(gpt-5.4 + outil `web_search` de l'API Responses ; un Agent Haystack ne peut pas mélanger cet outil intégré et
+ses propres outils). Plus de compte SearchApi, mais chaque recherche prend plusieurs dizaines de secondes : sur
+le trial, l'analyse a été coupée après 2 à 3 minutes (`CancelledError`), même allégée (3 recherches, contexte
+réduit). À n'envisager que si le plan du client autorise une durée plus longue ou les Jobs.
 
 ## Mises à jour du corpus
 
@@ -137,6 +140,6 @@ sur la plateforme : le supprimer dans *Files* (son nom figure dans l'export pré
 |---|---|
 | `list_projects`, `find_projects` : comptes et listes exacts sur tout le corpus | recherche seulement : listes non exhaustives (le prompt le fait dire à l'agent) |
 | `get_project` : texte complet d'un projet | passages les plus pertinents seulement |
-| impact : Opus, 10 recherches (WebSearch du CLI), `fetch_page`, score par un second appel | gpt-5.4, 3 recherches web OpenAI, score dans le rapport |
+| impact : Opus, 10 recherches (WebSearch du CLI), `fetch_page`, score par un second appel | gpt-5.4, 4 recherches web SearchApi, score dans le rapport |
 
 Ces outils peuvent revenir comme composants custom si le besoin est confirmé en production.
