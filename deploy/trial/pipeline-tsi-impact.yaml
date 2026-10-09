@@ -3,10 +3,6 @@
 # pages lues directement par l'outil web_search (pas d'outil fetch_page separe), score 0-10 donne par l'agent
 # dans le rapport (pas de second appel de notation). Requete attendue : le titre ou l'id du projet.
 components:
-  history_parser:
-    type: deepset_cloud_custom_nodes.parsers.chat_history_parser.DeepsetChatHistoryParser
-    init_parameters: {}
-
   agent:
     type: haystack.components.agents.agent.Agent
     init_parameters:
@@ -208,8 +204,6 @@ components:
       return_only_referenced_documents: true
 
 connections:
-- sender: history_parser.messages
-  receiver: agent.messages
 - sender: agent.messages
   receiver: adapter.messages
 - sender: adapter.output
@@ -218,9 +212,10 @@ connections:
   receiver: answer_builder.documents
 
 inputs:
+  messages:
+  - agent.messages
   query:
   - answer_builder.query
-  - history_parser.history_and_query
 
 outputs:
   answers: answer_builder.answers

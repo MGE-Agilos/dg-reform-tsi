@@ -84,7 +84,7 @@ Haystack est **3.2.0** (versions 3.x requises). Puis **Deploy**, et tester dans 
 
 Si l'éditeur signale une erreur de composant, la copier telle quelle : les trois YAML se chargent dans
 Haystack 3.2 en local avec les vraies intégrations (Anthropic, OpenSearch, SearchApi) ; seuls les composants
-propres à deepset (parseur d'historique, embedders e5 hébergés, rappel de streaming) n'ont pas pu être
+propres à deepset (embedders e5 hébergés, rappel de streaming) n'ont pas pu être
 vérifiés hors plateforme.
 
 ### 6. Questions de test
