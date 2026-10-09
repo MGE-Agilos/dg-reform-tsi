@@ -1,0 +1,322 @@
+# Pipeline "tsi-impact" (production) : analyse d'impact d'un projet, OpenAI gpt-5.4.
+# Outils : search_projects, search_deliverables (index tsi-corpus) et web_search (SearchApi, 4 recherches au plus
+# pour rester sous la limite de duree d'une recherche ; a relever si le plan du client le permet). Score 0-10 donne
+# par l'agent dans la derniere ligne du rapport. Requete attendue : le titre ou l'id du projet.
+components:
+  agent:
+    type: haystack.components.agents.agent.Agent
+    init_parameters:
+      chat_generator:
+        type: haystack.components.generators.chat.openai.OpenAIChatGenerator
+        init_parameters:
+          api_key:
+            type: env_var
+            env_vars:
+            - OPENAI_API_KEY
+            strict: false
+          model: gpt-5.4
+          generation_kwargs:
+            max_completion_tokens: 8000
+      exit_conditions:
+      - text
+      max_agent_steps: 12
+      raise_on_tool_invocation_failure: false
+      state_schema:
+        documents:
+          type: list[haystack.Document]
+      streaming_callback: deepset_cloud_custom_nodes.callbacks.streaming.streaming_callback
+      system_prompt: |-
+        You are an impact analyst for the European Commission's DG REFORM. You assess the impact of one Technical
+        Support Instrument (TSI) or SRSP project on its country, on Europe and on the world, against the project's own
+        objectives. The user gives a project title or id.
+
+        Method:
+        1. Call search_projects with the project title (and country) to read the project: identify its objectives and the
+           actions carried out. Passages end with the project id and its source URL. Use search_deliverables for details
+           from its reports (recommendations, figures, outputs).
+        2. Search the web with web_search for evidence of impact: adoption and implementation of the reform (laws,
+           decrees, action plans), indicators before and after, evaluations, OECD / World Bank / European Commission
+           documents (European Semester country reports, recovery and resilience plans), government sites, press
+           articles, criticism. Use precise English queries naming the country, the institution and the reform. At most
+           4 web searches: you have a strict time limit.
+
+        Rules:
+        - Cite project and deliverable passages with their number [n]; cite web sources with a Markdown link to the URL
+          given by web_search, e.g. ([OECD 2024](https://...)). Never invent a source, a URL, a figure or an impact.
+        - Distinguish correlation from causation: say how directly the evidence can be attributed to the project (causal
+          link established, plausible, or unclear).
+        - When evidence is missing or too recent, say so: a short, honest report is better than a speculative one.
+        - Write in English, concise and factual.
+
+        Answer with a Markdown report with these sections:
+        **Project overview** (objectives and actions), **Evidence of positive impact**, **Evidence of negative impact or
+        limitations**, **Impact by level** (country, Europe, world), **Objectives** (a table: objective | verdict:
+        achieved, partly achieved, not achieved or insufficient evidence | rationale), **Overall verdict** (one or two
+        sentences).
+        End with exactly one line: "Impact score: X/10 (strong | moderate | weak) — Confidence: high | medium | low",
+        where 7-10 is strong, 4-6 moderate and 0-3 weak positive impact supported by the evidence found.
+      tools:
+      - type: haystack.tools.pipeline_tool.PipelineTool
+        data:
+          name: search_projects
+          description: >-
+            Semantic and keyword search in the texts of TSI and SRSP projects and in the TSI country and policy
+            area factsheets (not the deliverables). Returns numbered passages. Write a precise English query naming the
+            country, the institution or the reform.
+          input_mapping:
+            query:
+            - retriever.query
+            documents:
+            - builder.existing_documents
+          output_mapping:
+            builder.prompt: formatted_docs
+            retriever.documents: documents
+          inputs_from_state:
+            documents: documents
+          outputs_to_state:
+            documents:
+              source: documents
+          outputs_to_string:
+            source: formatted_docs
+          parameters:
+          is_pipeline_async: false
+          pipeline:
+            components:
+              retriever:
+                type: haystack_integrations.components.retrievers.opensearch.open_search_hybrid_retriever.OpenSearchHybridRetriever
+                init_parameters:
+                  document_store:
+                    type: haystack_integrations.document_stores.opensearch.document_store.OpenSearchDocumentStore
+                    init_parameters:
+                      hosts:
+                      - ${OPENSEARCH_HOST}
+                      http_auth:
+                      - ${OPENSEARCH_USER}
+                      - ${OPENSEARCH_PASSWORD}
+                      use_ssl: true
+                      verify_certs: false
+                      index: tsi-corpus
+                      embedding_dim: 768
+                      similarity: cosine
+                  top_k: 8
+                  fuzziness: 0
+                  filters_bm25:
+                    field: meta.doc_type
+                    operator: in
+                    value:
+                    - project
+                    - programme
+                  filters_embedding:
+                    field: meta.doc_type
+                    operator: in
+                    value:
+                    - project
+                    - programme
+                  embedder:
+                    type: deepset_cloud_custom_nodes.embedders.nvidia.text_embedder.DeepsetNvidiaTextEmbedder
+                    init_parameters:
+                      model: intfloat/multilingual-e5-base
+                      prefix: 'query: '
+                      normalize_embeddings: true
+              builder:
+                type: haystack.components.builders.prompt_builder.PromptBuilder
+                init_parameters:
+                  required_variables:
+                  - existing_documents
+                  - docs
+                  template: |-
+                    {%- if existing_documents is not none -%}
+                    {%- set existing_doc_len = existing_documents|length -%}
+                    {%- else -%}
+                    {%- set existing_doc_len = 0 -%}
+                    {%- endif -%}
+                    {%- for doc in docs %}
+                    <document reference="{{loop.index + existing_doc_len}}">
+                    {{ doc.content }}
+                    </document>
+                    {% endfor -%}
+            connections:
+            - sender: retriever.documents
+              receiver: builder.docs
+            max_runs_per_component: 100
+            metadata: {}
+      - type: haystack.tools.pipeline_tool.PipelineTool
+        data:
+          name: search_deliverables
+          description: >-
+            Semantic and keyword search in the full text of the projects' deliverables (reports, studies,
+            roadmaps, presentations). Returns numbered passages with the document and the page. Write a precise English query
+            with the project title or topic and the country.
+          input_mapping:
+            query:
+            - retriever.query
+            documents:
+            - builder.existing_documents
+          output_mapping:
+            builder.prompt: formatted_docs
+            retriever.documents: documents
+          inputs_from_state:
+            documents: documents
+          outputs_to_state:
+            documents:
+              source: documents
+          outputs_to_string:
+            source: formatted_docs
+          parameters:
+          is_pipeline_async: false
+          pipeline:
+            components:
+              retriever:
+                type: haystack_integrations.components.retrievers.opensearch.open_search_hybrid_retriever.OpenSearchHybridRetriever
+                init_parameters:
+                  document_store:
+                    type: haystack_integrations.document_stores.opensearch.document_store.OpenSearchDocumentStore
+                    init_parameters:
+                      hosts:
+                      - ${OPENSEARCH_HOST}
+                      http_auth:
+                      - ${OPENSEARCH_USER}
+                      - ${OPENSEARCH_PASSWORD}
+                      use_ssl: true
+                      verify_certs: false
+                      index: tsi-corpus
+                      embedding_dim: 768
+                      similarity: cosine
+                  top_k: 6
+                  fuzziness: 0
+                  filters_bm25:
+                    field: meta.doc_type
+                    operator: '=='
+                    value: deliverable
+                  filters_embedding:
+                    field: meta.doc_type
+                    operator: '=='
+                    value: deliverable
+                  embedder:
+                    type: deepset_cloud_custom_nodes.embedders.nvidia.text_embedder.DeepsetNvidiaTextEmbedder
+                    init_parameters:
+                      model: intfloat/multilingual-e5-base
+                      prefix: 'query: '
+                      normalize_embeddings: true
+              builder:
+                type: haystack.components.builders.prompt_builder.PromptBuilder
+                init_parameters:
+                  required_variables:
+                  - existing_documents
+                  - docs
+                  template: |-
+                    {%- if existing_documents is not none -%}
+                    {%- set existing_doc_len = existing_documents|length -%}
+                    {%- else -%}
+                    {%- set existing_doc_len = 0 -%}
+                    {%- endif -%}
+                    {%- for doc in docs %}
+                    <document reference="{{loop.index + existing_doc_len}}">
+                    {{ doc.content }}
+                    </document>
+                    {% endfor -%}
+            connections:
+            - sender: retriever.documents
+              receiver: builder.docs
+            max_runs_per_component: 100
+            metadata: {}
+      - type: haystack.tools.component_tool.ComponentTool
+        data:
+          name: web_search
+          description: >-
+            Search the web and read the top results. Returns, for each result, its URL and the beginning of the
+            page text. Use precise English queries.
+          inputs_from_state:
+          parameters:
+          component:
+            type: haystack.core.super_component.super_component.SuperComponent
+            init_parameters:
+              input_mapping:
+                query:
+                - search.query
+              output_mapping:
+                builder.prompt: result
+              is_pipeline_async: false
+              pipeline:
+                components:
+                  search:
+                    type: haystack_integrations.components.websearch.searchapi.websearch.SearchApiWebSearch
+                    init_parameters:
+                      api_key:
+                        type: env_var
+                        env_vars:
+                        - SEARCHAPI_API_KEY
+                        strict: false
+                      top_k: 5
+                  fetcher:
+                    type: haystack.components.fetchers.link_content.LinkContentFetcher
+                    init_parameters:
+                      raise_on_failure: false
+                      retry_attempts: 1
+                      timeout: 5
+                  converter:
+                    type: haystack.components.converters.html.HTMLToDocument
+                    init_parameters:
+                      extraction_kwargs: {}
+                      store_full_path: false
+                  builder:
+                    type: haystack.components.builders.prompt_builder.PromptBuilder
+                    init_parameters:
+                      required_variables:
+                      - docs
+                      template: |-
+                        {% for doc in docs %}
+                        {% if doc.content and doc.meta.url|length > 0 %}
+                        <search-result url="{{ doc.meta.url }}">
+                        {{ doc.content|truncate(4000) }}
+                        </search-result>
+                        {% endif %}
+                        {% endfor %}
+                connections:
+                - sender: search.links
+                  receiver: fetcher.urls
+                - sender: fetcher.streams
+                  receiver: converter.sources
+                - sender: converter.documents
+                  receiver: builder.docs
+                max_runs_per_component: 100
+                metadata: {}
+
+  adapter:
+    type: haystack.components.converters.output_adapter.OutputAdapter
+    init_parameters:
+      template: '{{ [(messages|last).text] }}'
+      output_type: list[str]
+      custom_filters: {}
+      unsafe: false
+
+  answer_builder:
+    type: haystack.components.builders.answer_builder.AnswerBuilder
+    init_parameters:
+      reference_pattern: \[(\d+)\]
+      last_message_only: false
+      return_only_referenced_documents: true
+
+connections:
+- sender: agent.messages
+  receiver: adapter.messages
+- sender: adapter.output
+  receiver: answer_builder.replies
+- sender: agent.documents
+  receiver: answer_builder.documents
+
+inputs:
+  messages:
+  - agent.messages
+  query:
+  - answer_builder.query
+
+outputs:
+  answers: answer_builder.answers
+  documents: agent.documents
+
+pipeline_output_type: chat
+
+max_runs_per_component: 100
+
+metadata: {}

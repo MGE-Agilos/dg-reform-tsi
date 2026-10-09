@@ -72,6 +72,10 @@ def main(argv: list[str] | None = None) -> int:
     bundle = sub.add_parser("trial-bundle",
                             help="regrouper projets et programme en fichiers par pays (trial Haystack Enterprise)")
     bundle.add_argument("--out", default="deploy/trial/build", help="dossier de sortie (vidé des tsi-* d'abord)")
+    prod = sub.add_parser("prod-export",
+                          help="un fichier par projet, programme et livrable + métadonnées (production Haystack Enterprise)")
+    prod.add_argument("--out", default="deploy/prod/build/files",
+                      help="dossier à téléverser (vidé des tsi-* d'abord) ; manifest.json écrit dans le dossier parent")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
@@ -112,6 +116,11 @@ def main(argv: list[str] | None = None) -> int:
         from tsi_agent.trial_bundle import build
         print(json.dumps(build(Path(settings.output_dir), Path(args.out)), indent=2, ensure_ascii=False))
         return 0
+    if args.command == "prod-export":
+        from tsi_agent.prod_export import export
+        manifest = export(Path(settings.output_dir), Path(args.out))
+        print(json.dumps(manifest, indent=2, ensure_ascii=False))
+        return 1 if manifest["meta_type_problems"] or manifest["files_over_10mb"] else 0
     if args.command == "impact-rescore":
         from tsi_agent.impact import scoring
         try:

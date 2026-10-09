@@ -1,0 +1,125 @@
+import json
+import re
+
+from tsi_agent.prod_export import CORPUS, check_meta_types, export
+
+PROJECT = """---
+project_id: alpha
+title: Alpha
+programme: TSI
+year: 2022
+countries: [GR]
+multi_country: false
+policy_area: green-transition
+results: achieved
+detail_page: true
+source_urls:
+- https://example.eu/alpha
+---
+
+# Alpha
+
+Intro of Alpha.
+
+## Context
+
+Some context.
+"""
+
+DELIVERABLE = """---
+publication_id: alpha-report
+title: Alpha report
+date: 1 May 2024
+projects:
+- alpha
+countries:
+- GR
+year: 2022
+programme: TSI
+policy_area: green-transition
+---
+
+# Alpha report
+
+## Final Report
+
+Source: https://example.eu/alpha-report.pdf
+
+--- page 1 ---
+# Executive summary
+# # Share of # # firms
+#
+The reform reduced delays by half in two years.
+
+--- page 2 ---
+Recommendations follow for the ministry and its agencies.
+"""
+
+PROGRAMME = """---
+doc_id: country-greece
+title: TSI country factsheet - Greece
+source_url: https://example.eu/greece
+---
+
+# TSI country factsheet - Greece
+
+Greece has 120 reform projects.
+"""
+
+
+def write_corpus(root):
+    for folder in ("projects", "programme", "deliverables"):
+        (root / folder).mkdir(parents=True)
+    (root / "projects" / "alpha.md").write_text(PROJECT, encoding="utf-8")
+    (root / "projects" / "broken.md").write_text("no front matter", encoding="utf-8")
+    (root / "programme" / "country-greece.md").write_text(PROGRAMME, encoding="utf-8")
+    (root / "deliverables" / "alpha-report.md").write_text(DELIVERABLE, encoding="utf-8")
+
+
+def test_export_writes_one_file_per_document_with_meta_and_manifest(tmp_path):
+    write_corpus(tmp_path / "output")
+    out = tmp_path / "build" / "files"
+    (out).mkdir(parents=True)
+    (out / "tsi-old.md").write_text("x", encoding="utf-8")
+    manifest = export(tmp_path / "output", out)
+
+    names = sorted(p.name for p in out.iterdir())
+    assert names == ["tsi-deliverable-alpha-report.md", "tsi-deliverable-alpha-report.md.meta.json",
+                     "tsi-programme-country-greece.md", "tsi-programme-country-greece.md.meta.json",
+                     "tsi-project-alpha.md", "tsi-project-alpha.md.meta.json"]
+    assert manifest["files_by_type"] == {"project": 1, "programme": 1, "deliverable": 1}
+    assert manifest["chunks_by_type"] == {"project": 2, "programme": 1, "deliverable": 2}
+    assert manifest["skipped"] == ["projects/broken.md"] and manifest["meta_type_problems"] == []
+    assert json.loads((tmp_path / "build" / "manifest.json").read_text(encoding="utf-8")) == manifest
+
+    project_meta = json.loads((out / "tsi-project-alpha.md.meta.json").read_text(encoding="utf-8"))
+    assert project_meta == {
+        "corpus": CORPUS, "doc_type": "project", "doc_id": "alpha", "title": "Alpha", "countries": ["GR"],
+        "programme": "TSI", "year": 2022, "policy_area": "green-transition", "results": "achieved",
+        "projects": ["alpha"], "multi_country": False, "detail_page": True,
+        "source_url": "https://example.eu/alpha", "chunks": 2}
+    deliverable_meta = json.loads((out / "tsi-deliverable-alpha-report.md.meta.json").read_text(encoding="utf-8"))
+    assert deliverable_meta["doc_type"] == "deliverable" and deliverable_meta["projects"] == ["alpha"]
+    assert "source_url" not in deliverable_meta and "results" not in deliverable_meta
+    programme_meta = json.loads((out / "tsi-programme-country-greece.md.meta.json").read_text(encoding="utf-8"))
+    assert programme_meta["projects"] == [] and "year" not in programme_meta
+
+
+def test_deliverable_sections_cite_document_page_and_projects(tmp_path):
+    write_corpus(tmp_path / "output")
+    out = tmp_path / "files"
+    export(tmp_path / "output", out)
+    text = (out / "tsi-deliverable-alpha-report.md").read_text(encoding="utf-8")
+    headings = re.findall(r"^# .*$", text, re.MULTILINE)
+    assert headings == ["# Alpha report — Final Report, p. 1 — TSI 2022 — Greece",
+                        "# Alpha report — Final Report, p. 2 — TSI 2022 — Greece"]
+    assert "Executive summary\nShare of # # firms\n\nThe reform" in text    # titres internes neutralises
+    assert len(re.findall(r"^\s{0,3}#", text, re.MULTILINE)) == 2
+    assert "Deliverable id: alpha-report · Projects: alpha · Source: https://example.eu/alpha-report.pdf" in text
+
+
+def test_check_meta_types():
+    assert check_meta_types([{"doc_id": "a", "year": 2022, "countries": ["GR"]}]) == []
+    problems = check_meta_types([{"doc_id": "a", "year": "2022"}, {"doc_id": "b", "year": True},
+                                 {"doc_id": "c", "foo": 1}])
+    assert problems == ["a: year='2022' n'est pas int", "b: year=True n'est pas int", "c: cle inattendue foo"]

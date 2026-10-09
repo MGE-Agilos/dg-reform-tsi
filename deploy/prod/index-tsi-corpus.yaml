@@ -1,0 +1,75 @@
+# Index "tsi-corpus" (production) : fichiers tsi-*.md produits par `python -m tsi_agent prod-export`, un par projet,
+# programme ou livrable, avec leur .meta.json (copie sur chaque morceau : doc_type, pays, programme, annee, projets).
+# Chaque section "# ..." est deja un morceau de la couche locale (250 mots, titre de contexte) :
+# decoupage au niveau 1 uniquement, sans second decoupage. e5 multilingue heberge par deepset, prefixe "passage: ".
+# Filtre de fichiers de l'index (Index > Settings, index desactive) : prefixe `tsi-` ET metadonnee corpus == dg-reform-tsi.
+components:
+  FileTypeRouter:
+    type: haystack.components.routers.file_type_router.FileTypeRouter
+    init_parameters:
+      mime_types:
+      - text/markdown
+
+  TextFileToDocument:
+    type: haystack.components.converters.txt.TextFileToDocument
+    init_parameters:
+      encoding: utf-8
+      store_full_path: false
+
+  MarkdownHeaderSplitter:
+    type: haystack.components.preprocessors.markdown_header_splitter.MarkdownHeaderSplitter
+    init_parameters:
+      keep_headers: true
+      header_split_levels:
+      - 1
+      secondary_split:
+      skip_empty_documents: true
+
+  DeepsetNvidiaDocumentEmbedder:
+    type: deepset_cloud_custom_nodes.embedders.nvidia.document_embedder.DeepsetNvidiaDocumentEmbedder
+    init_parameters:
+      model: intfloat/multilingual-e5-base
+      prefix: 'passage: '
+      suffix: ''
+      batch_size: 32
+      normalize_embeddings: true
+      truncate: END
+
+  DocumentWriter:
+    type: haystack.components.writers.document_writer.DocumentWriter
+    init_parameters:
+      document_store:
+        type: haystack_integrations.document_stores.opensearch.document_store.OpenSearchDocumentStore
+        init_parameters:
+          hosts:
+          - ${OPENSEARCH_HOST}
+          http_auth:
+          - ${OPENSEARCH_USER}
+          - ${OPENSEARCH_PASSWORD}
+          use_ssl: true
+          verify_certs: false
+          index: tsi-corpus
+          embedding_dim: 768
+          similarity: cosine
+          create_index: true
+          max_chunk_bytes: 104857600
+          return_embedding: false
+      policy: OVERWRITE
+
+connections:
+- sender: FileTypeRouter.text/markdown
+  receiver: TextFileToDocument.sources
+- sender: TextFileToDocument.documents
+  receiver: MarkdownHeaderSplitter.documents
+- sender: MarkdownHeaderSplitter.documents
+  receiver: DeepsetNvidiaDocumentEmbedder.documents
+- sender: DeepsetNvidiaDocumentEmbedder.documents
+  receiver: DocumentWriter.documents
+
+inputs:
+  files:
+  - FileTypeRouter.sources
+
+max_runs_per_component: 100
+
+metadata: {}
