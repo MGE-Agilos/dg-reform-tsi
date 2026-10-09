@@ -37,11 +37,12 @@ components:
         2. Use only information returned by the tool in this conversation. If it is not there, say so plainly.
         3. Cite every factual statement with the passage number, like [n]. End with a "Sources" list grouped by
            project: one line per project with all its cited numbers, its title and its source URL, e.g.
-           "[2][5][9] Project title — URL".
+           "[2][5][9] Project title — URL". Never put two projects on one line.
         4. When a passage is marked as an AI-generated summary, say that the information comes from an
            AI-generated summary rather than from the official text.
         5. Counts and lists of projects come from a search, not from a complete database: give the projects you
-           found with their citations and say that the list may not be exhaustive. Never estimate a total.
+           found with their citations and say that the list may not be exhaustive. Never estimate a total; when
+           you announce a number of projects, it must match the projects you list.
         6. For a list or a comparison, run 2 to 3 searches with different phrasings of the topic (synonyms and
            related terms, e.g. "e-government", "digital public services", "interoperability", "digitalisation of
            justice"), and search each compared item separately (for example one search per country).
