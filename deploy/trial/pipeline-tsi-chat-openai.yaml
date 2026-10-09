@@ -1,0 +1,164 @@
+# Pipeline "tsi-chat" (trial, essai du modele de production) : index tsi-projects du trial, modele OpenAI gpt-5.4
+# comme deploy/prod/pipeline-tsi-chat.yaml. A coller a la place de pipeline-tsi-chat.yaml dans le pipeline tsi-chat.
+components:
+  agent:
+    type: haystack.components.agents.agent.Agent
+    init_parameters:
+      chat_generator:
+        type: haystack.components.generators.chat.openai.OpenAIChatGenerator
+        init_parameters:
+          api_key:
+            type: env_var
+            env_vars:
+            - OPENAI_API_KEY
+            strict: false
+          model: gpt-5.4
+          generation_kwargs:
+            max_completion_tokens: 4096
+      exit_conditions:
+      - text
+      max_agent_steps: 12
+      raise_on_tool_invocation_failure: false
+      state_schema:
+        documents:
+          type: list[haystack.Document]
+      streaming_callback: deepset_cloud_custom_nodes.callbacks.streaming.streaming_callback
+      system_prompt: |-
+        You answer questions about technical support projects of the European Commission (DG REFORM): the
+        Technical Support Instrument (TSI, 2021 onwards) and its predecessor, the Structural Reform Support
+        Programme (SRSP, 2017-2020). Some older projects (SRSS, 2012-2016) are pre-SRSP technical assistance to
+        Greece. You only know what the search_projects tool returns.
+
+        The tool returns numbered passages. Each passage starts with a heading "project title — programme year —
+        countries — section" and ends with the project id, policy area, results and source URL.
+
+        Rules:
+        1. Answer in the language of the user's question.
+        2. Use only information returned by the tool in this conversation. If it is not there, say so plainly.
+        3. Cite every factual statement with the passage number, like [n]. End with a "Sources" list: one line
+           per cited number with the project title and its source URL.
+        4. When a passage is marked as an AI-generated summary, say that the information comes from an
+           AI-generated summary rather than from the official text.
+        5. Counts and lists of projects come from a search, not from a complete database: give the projects you
+           found with their citations and say that the list may not be exhaustive. Never estimate a total.
+        6. For a comparison, search each compared item separately (for example one search per country).
+        7. Projects without a detail page ("Detail page: no") are only known by their title, country and year:
+           say so.
+        8. For follow-up questions, reuse the context of the conversation (countries, topics, projects cited).
+        9. You have a limited number of steps: after a few searches, answer with what you found.
+        10. Be concise: at most about 250 words unless the user asks for details or a full list; use a short
+            table only for comparisons. Use headings sparingly (at most one level).
+        11. Always write search queries in English, naming the country, the institution and the topic, whatever
+            the language of the question.
+      tools:
+      - type: haystack.tools.pipeline_tool.PipelineTool
+        data:
+          name: search_projects
+          description: >-
+            Semantic and keyword search in the texts of TSI and SRSP projects and in the TSI country and policy
+            area factsheets. Returns numbered passages. Write a precise English query naming the country, the
+            institution or the reform.
+          input_mapping:
+            query:
+            - retriever.query
+            documents:
+            - builder.existing_documents
+          output_mapping:
+            builder.prompt: formatted_docs
+            retriever.documents: documents
+          inputs_from_state:
+            documents: documents
+          outputs_to_state:
+            documents:
+              source: documents
+          outputs_to_string:
+            source: formatted_docs
+          parameters:
+          is_pipeline_async: false
+          pipeline:
+            components:
+              retriever:
+                type: haystack_integrations.components.retrievers.opensearch.open_search_hybrid_retriever.OpenSearchHybridRetriever
+                init_parameters:
+                  document_store:
+                    type: haystack_integrations.document_stores.opensearch.document_store.OpenSearchDocumentStore
+                    init_parameters:
+                      hosts:
+                      - ${OPENSEARCH_HOST}
+                      http_auth:
+                      - ${OPENSEARCH_USER}
+                      - ${OPENSEARCH_PASSWORD}
+                      use_ssl: true
+                      verify_certs: false
+                      index: tsi-projects
+                      embedding_dim: 768
+                      similarity: cosine
+                  top_k: 10
+                  fuzziness: 0
+                  embedder:
+                    type: deepset_cloud_custom_nodes.embedders.nvidia.text_embedder.DeepsetNvidiaTextEmbedder
+                    init_parameters:
+                      model: intfloat/multilingual-e5-base
+                      prefix: 'query: '
+                      normalize_embeddings: true
+              builder:
+                type: haystack.components.builders.prompt_builder.PromptBuilder
+                init_parameters:
+                  required_variables:
+                  - existing_documents
+                  - docs
+                  template: |-
+                    {%- if existing_documents is not none -%}
+                    {%- set existing_doc_len = existing_documents|length -%}
+                    {%- else -%}
+                    {%- set existing_doc_len = 0 -%}
+                    {%- endif -%}
+                    {%- for doc in docs %}
+                    <document reference="{{loop.index + existing_doc_len}}">
+                    {{ doc.content }}
+                    </document>
+                    {% endfor -%}
+            connections:
+            - sender: retriever.documents
+              receiver: builder.docs
+            max_runs_per_component: 100
+            metadata: {}
+
+  adapter:
+    type: haystack.components.converters.output_adapter.OutputAdapter
+    init_parameters:
+      template: '{{ [(messages|last).text] }}'
+      output_type: list[str]
+      custom_filters: {}
+      unsafe: false
+
+  answer_builder:
+    type: haystack.components.builders.answer_builder.AnswerBuilder
+    init_parameters:
+      reference_pattern: \[(\d+)\]
+      last_message_only: false
+      return_only_referenced_documents: true
+
+connections:
+- sender: agent.messages
+  receiver: adapter.messages
+- sender: adapter.output
+  receiver: answer_builder.replies
+- sender: agent.documents
+  receiver: answer_builder.documents
+
+inputs:
+  messages:
+  - agent.messages
+  query:
+  - answer_builder.query
+
+outputs:
+  answers: answer_builder.answers
+  documents: agent.documents
+
+pipeline_output_type: chat
+
+max_runs_per_component: 100
+
+metadata: {}
