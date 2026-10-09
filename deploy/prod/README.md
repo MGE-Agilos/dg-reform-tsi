@@ -128,6 +128,20 @@ ses propres outils). Plus de compte SearchApi, mais chaque recherche prend plusi
 le trial, l'analyse a été coupée après 2 à 3 minutes (`CancelledError`), même allégée (3 recherches, contexte
 réduit). À n'envisager que si le plan du client autorise une durée plus longue ou les Jobs.
 
+## Validation sur le trial (9 octobre 2026)
+
+Configuration de `tsi-impact` (gpt-5.4, SearchApi, grille de notation) essayée sur le trial avec l'index de projets
+(`deploy/trial/pipeline-tsi-impact-openai.yaml`) :
+
+| Projet | Score | Référence (local Opus / trial Claude) |
+|---|---|---|
+| Barnahus Slovenia | 7/10 (strong) | 8/10 / 7/10 |
+| Pension scheme Lithuania | 2/10 (weak), deux exécutions | 2/10 / 2/10 |
+
+Sans la grille détaillée, gpt-5.4 notait la Lituanie 4/10 (livrables comptés comme impact). Durée bien en dessous
+de la limite de 2 minutes. Chatbot gpt-5.4 : réponses correctes et citées, listes moins complètes qu'avec Claude
+d'où la règle 6 (2 à 3 recherches reformulées) ; livrables et filtres `doc_type` à valider chez le client.
+
 ## Mises à jour du corpus
 
 Relancer l'extraction (`run`, `deliverables`), puis `prod-export` et `upload.ps1` : `OVERWRITE` remplace les
