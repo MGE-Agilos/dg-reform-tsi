@@ -69,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
     only.add_argument("--topics-only", action="store_true", help="questions sur les thèmes libres seulement")
     only.add_argument("--metadata-only", action="store_true", help="questions sur les métadonnées seulement")
     agg.add_argument("--out-dir", default="output/eval")
+    bundle = sub.add_parser("trial-bundle",
+                            help="regrouper projets et programme en fichiers par pays (trial Haystack Enterprise)")
+    bundle.add_argument("--out", default="deploy/trial/build", help="dossier de sortie (vidé des tsi-* d'abord)")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
@@ -104,6 +107,10 @@ def main(argv: list[str] | None = None) -> int:
             traceback.print_exc(file=sys.stderr)
             return 2
         print(f"Pipeline exporté vers {args.path}")
+        return 0
+    if args.command == "trial-bundle":
+        from tsi_agent.trial_bundle import build
+        print(json.dumps(build(Path(settings.output_dir), Path(args.out)), indent=2, ensure_ascii=False))
         return 0
     if args.command == "impact-rescore":
         from tsi_agent.impact import scoring

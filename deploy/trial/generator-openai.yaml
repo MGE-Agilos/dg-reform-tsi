@@ -1,0 +1,14 @@
+# Passage en production sur OpenAI : remplacer le bloc `chat_generator:` de l'agent (pipeline-tsi-chat.yaml et
+# pipeline-tsi-impact.yaml) par celui-ci. La cle vient de l'integration OpenAI (Settings > Integrations), jamais
+# d'un fichier. Choisir le modele dans la liste proposee par la plateforme ; gpt-5.4 est celui des modeles RAG Chat.
+      chat_generator:
+        type: haystack.components.generators.chat.openai.OpenAIChatGenerator
+        init_parameters:
+          api_key:
+            type: env_var
+            env_vars:
+            - OPENAI_API_KEY
+            strict: false
+          model: gpt-5.4
+          generation_kwargs:
+            max_completion_tokens: 8000
