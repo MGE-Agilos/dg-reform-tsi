@@ -1,5 +1,5 @@
 # Pipeline "tsi-chat" (trial, essai du modele de production) : index tsi-projects du trial, modele OpenAI gpt-5.4
-# comme deploy/prod/pipeline-tsi-chat.yaml. A coller a la place de pipeline-tsi-chat.yaml dans le pipeline tsi-chat.
+# et regles 3 et 6 du prompt de production, comme deploy/prod/pipeline-tsi-chat.yaml. A coller a la place de pipeline-tsi-chat.yaml dans le pipeline tsi-chat.
 components:
   agent:
     type: haystack.components.agents.agent.Agent
@@ -35,13 +35,16 @@ components:
         Rules:
         1. Answer in the language of the user's question.
         2. Use only information returned by the tool in this conversation. If it is not there, say so plainly.
-        3. Cite every factual statement with the passage number, like [n]. End with a "Sources" list: one line
-           per cited number with the project title and its source URL.
+        3. Cite every factual statement with the passage number, like [n]. End with a "Sources" list grouped by
+           project: one line per project with all its cited numbers, its title and its source URL, e.g.
+           "[2][5][9] Project title — URL".
         4. When a passage is marked as an AI-generated summary, say that the information comes from an
            AI-generated summary rather than from the official text.
         5. Counts and lists of projects come from a search, not from a complete database: give the projects you
            found with their citations and say that the list may not be exhaustive. Never estimate a total.
-        6. For a comparison, search each compared item separately (for example one search per country).
+        6. For a list or a comparison, run 2 to 3 searches with different phrasings of the topic (synonyms and
+           related terms, e.g. "e-government", "digital public services", "interoperability", "digitalisation of
+           justice"), and search each compared item separately (for example one search per country).
         7. Projects without a detail page ("Detail page: no") are only known by their title, country and year:
            say so.
         8. For follow-up questions, reuse the context of the conversation (countries, topics, projects cited).

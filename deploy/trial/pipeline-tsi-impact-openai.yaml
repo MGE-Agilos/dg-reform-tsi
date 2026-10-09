@@ -1,6 +1,6 @@
-# Pipeline "tsi-impact" (trial, essai de la configuration de production) : index tsi-projects du trial, mais modele
-# OpenAI gpt-5.4 et recherche web OpenAI integree (sous-pipeline web_search), comme deploy/prod/pipeline-tsi-impact.yaml.
-# A coller a la place de pipeline-tsi-impact.yaml dans le pipeline tsi-impact du trial.
+# Pipeline "tsi-impact" (trial, essai de la configuration de production) : index tsi-projects du trial, modele
+# OpenAI gpt-5.4 et recherche web SearchApi, comme deploy/prod/pipeline-tsi-impact.yaml (sans search_deliverables :
+# pas de livrables sur le trial). A coller a la place de pipeline-tsi-impact.yaml dans le pipeline tsi-impact.
 components:
   agent:
     type: haystack.components.agents.agent.Agent
@@ -32,16 +32,15 @@ components:
         Method:
         1. Call search_projects with the project title (and country) to read the project: identify its
            objectives and the actions carried out. Passages end with the project id and its source URL.
-        2. Search the web with web_search (it returns findings with their source URLs) for evidence of impact: adoption and implementation of the reform
+        2. Search the web with web_search for evidence of impact: adoption and implementation of the reform
            (laws, decrees, action plans), indicators before and after, evaluations, OECD / World Bank / European
            Commission documents (European Semester country reports, recovery and resilience plans), government
            sites, press articles, criticism. Use precise English queries naming the country, the institution and
-           the reform. At most 3 web searches, each one slow: you have a strict
-           time limit.
+           the reform. At most 4 web searches: you have a strict time limit.
 
         Rules:
-        - Cite project passages with their number [n]; cite web sources with a Markdown link to the source URL given
-          by web_search, e.g. ([OECD 2024](https://...)). Never invent a source, a URL, a figure or an impact.
+        - Cite project passages with their number [n]; cite web sources with a Markdown link to the URL given by
+          web_search, e.g. ([OECD 2024](https://...)). Never invent a source, a URL, a figure or an impact.
         - Distinguish correlation from causation: say how directly the evidence can be attributed to the
           project (causal link established, plausible, or unclear).
         - When evidence is missing or too recent, say so: a short, honest report is better than a speculative one.
@@ -130,70 +129,61 @@ components:
         data:
           name: web_search
           description: >-
-            Search the web (OpenAI web search) and return the main findings, each with its source URL. Use one
-            precise English query per call, naming the country, the institution and the reform.
+            Search the web and read the top results. Returns, for each result, its URL and the beginning of the
+            page text. Use precise English queries.
           inputs_from_state:
           parameters:
-            type: object
-            properties:
-              query:
-                type: string
-                description: Precise English web search query.
-            required:
-            - query
           component:
             type: haystack.core.super_component.super_component.SuperComponent
             init_parameters:
               input_mapping:
                 query:
-                - prompt.query
+                - search.query
               output_mapping:
-                adapter.output: result
+                builder.prompt: result
               is_pipeline_async: false
               pipeline:
                 components:
-                  prompt:
-                    type: haystack.components.builders.chat_prompt_builder.ChatPromptBuilder
-                    init_parameters:
-                      required_variables:
-                      - query
-                      template: |-
-                        {% message role="user" %}
-                        Search the web for: {{ query }}
-
-                        Report the most relevant findings for an impact assessment (laws, decisions, indicators,
-                        evaluations, criticism), most authoritative sources first: official, OECD, World Bank,
-                        European Commission, then press. One line per finding: the finding with its date, then the
-                        source URL in parentheses. Only report what the sources say; at most 200 words, in English.
-                        If nothing relevant is found, say so.
-                        {% endmessage %}
-                  searcher:
-                    type: haystack.components.generators.chat.openai_responses.OpenAIResponsesChatGenerator
+                  search:
+                    type: haystack_integrations.components.websearch.searchapi.websearch.SearchApiWebSearch
                     init_parameters:
                       api_key:
                         type: env_var
                         env_vars:
-                        - OPENAI_API_KEY
+                        - SEARCHAPI_API_KEY
                         strict: false
-                      model: gpt-5.4
-                      tools:
-                      - type: web_search
-                        search_context_size: low
-                      generation_kwargs:
-                        reasoning:
-                          effort: low
-                  adapter:
-                    type: haystack.components.converters.output_adapter.OutputAdapter
+                      top_k: 5
+                  fetcher:
+                    type: haystack.components.fetchers.link_content.LinkContentFetcher
                     init_parameters:
-                      template: '{{ replies[-1].text }}'
-                      output_type: str
-                      custom_filters: {}
-                      unsafe: false
+                      raise_on_failure: false
+                      retry_attempts: 1
+                      timeout: 5
+                  converter:
+                    type: haystack.components.converters.html.HTMLToDocument
+                    init_parameters:
+                      extraction_kwargs: {}
+                      store_full_path: false
+                  builder:
+                    type: haystack.components.builders.prompt_builder.PromptBuilder
+                    init_parameters:
+                      required_variables:
+                      - docs
+                      template: |-
+                        {% for doc in docs %}
+                        {% if doc.content and doc.meta.url|length > 0 %}
+                        <search-result url="{{ doc.meta.url }}">
+                        {{ doc.content|truncate(4000) }}
+                        </search-result>
+                        {% endif %}
+                        {% endfor %}
                 connections:
-                - sender: prompt.prompt
-                  receiver: searcher.messages
-                - sender: searcher.replies
-                  receiver: adapter.replies
+                - sender: search.links
+                  receiver: fetcher.urls
+                - sender: fetcher.streams
+                  receiver: converter.sources
+                - sender: converter.documents
+                  receiver: builder.docs
                 max_runs_per_component: 100
                 metadata: {}
 
