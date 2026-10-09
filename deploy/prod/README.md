@@ -7,7 +7,7 @@ préalable sur le trial (`deploy/trial/`) : même découpage, mêmes prompts, m�
 |---|---|
 | `index-tsi-corpus.yaml` | index `tsi-corpus` : découpage par section `#`, e5 multilingue hébergé, OpenSearch |
 | `pipeline-tsi-chat.yaml` | chatbot : Agent gpt-5.4 + `search_projects` + `search_deliverables` |
-| `pipeline-tsi-impact.yaml` | analyse d'impact : Agent gpt-5.4 + `search_projects` + `search_deliverables` + `web_search` |
+| `pipeline-tsi-impact.yaml` | analyse d'impact : Agent gpt-5.4 + `search_projects` + `search_deliverables` + `web_search` (recherche web OpenAI) |
 | `upload.ps1` | téléversement par le SDK, avec contrôles ; clé lue dans l'environnement |
 | `build/` (non versionné) | `files/` à téléverser et `manifest.json` (chiffres attendus), générés par `prod-export` |
 
@@ -46,17 +46,17 @@ son workspace**. Trois protections :
   durée maximale d'une recherche (2 minutes dans la doc : l'analyse d'impact est limitée à 4 recherches web
   pour cette raison) ; volume de documents de l'index (~84 000).
 - **URL de l'API** de la plateforme du client (région) et une **clé API du workspace** pour le téléversement.
-- **Intégrations** (*Settings > Integrations*) : **OpenAI** (clé du client) et **SearchApi** (offre payante :
-  l'offre gratuite se limite à 100 recherches ; une analyse d'impact en fait 4 au plus). Si la recherche web
-  signale une clé manquante, ajouter aussi un secret `SEARCHAPI_API_KEY` dans le workspace.
+- **Intégration OpenAI** (*Settings > Integrations*) avec la clé du client : elle sert aussi à la recherche web
+  (outil intégré d'OpenAI, facturé par OpenAI à l'appel en plus des tokens ; aucun autre compte nécessaire).
+  L'organisation OpenAI du client doit avoir accès à l'outil `web_search` de l'API Responses.
 - **Modèle** : `gpt-5.4` doit figurer dans la liste des modèles OpenAI de la plateforme.
 
 ## Étapes
 
 ### 1. Workspace et intégrations
 
-Créer le workspace `tsi-reform` (*Settings > Organization > Workspaces*), connecter OpenAI et SearchApi, créer
-une clé API pour ce workspace (*Settings > Workspace > API Keys*).
+Créer le workspace `tsi-reform` (*Settings > Organization > Workspaces*), connecter OpenAI, créer une clé API
+pour ce workspace (*Settings > Workspace > API Keys*).
 
 ### 2. Générer et téléverser le corpus
 
@@ -114,6 +114,15 @@ Analyse d'impact (`tsi-impact`), le titre du projet comme requête :
   Lithuania » : attendu ~2/10 (trial 2, local 2).
 - Sources web en liens Markdown cliquables ; dernière ligne « Impact score: X/10 … — Confidence: … ».
 
+## Recherche web
+
+`web_search` est un sous-pipeline : il envoie la requête de l'agent à gpt-5.4 par l'API Responses avec l'outil
+intégré `web_search` d'OpenAI, et renvoie les constats avec leurs URL sources. L'agent principal ne peut pas
+utiliser directement cet outil intégré : un Agent Haystack remplace les outils de son générateur par ses propres
+outils (`search_projects`, `search_deliverables`), d'où ce sous-appel, sur le modèle de la version locale (sous-appel
+au CLI Claude). Chaque recherche est donc un appel OpenAI de plus : 4 recherches au plus par analyse, pour la
+durée et le coût. Le générateur `OpenAIResponsesChatGenerator` avec outils intégrés demande Haystack 3.2.
+
 ## Mises à jour du corpus
 
 Relancer l'extraction (`run`, `deliverables`), puis `prod-export` et `upload.ps1` : `OVERWRITE` remplace les
@@ -126,6 +135,6 @@ sur la plateforme : le supprimer dans *Files* (son nom figure dans l'export pré
 |---|---|
 | `list_projects`, `find_projects` : comptes et listes exacts sur tout le corpus | recherche seulement : listes non exhaustives (le prompt le fait dire à l'agent) |
 | `get_project` : texte complet d'un projet | passages les plus pertinents seulement |
-| impact : Opus, 10 recherches, `fetch_page`, score par un second appel | gpt-5.4, 4 recherches, pages lues par l'outil de recherche, score dans le rapport |
+| impact : Opus, 10 recherches (WebSearch du CLI), `fetch_page`, score par un second appel | gpt-5.4, 4 recherches web OpenAI, score dans le rapport |
 
 Ces outils peuvent revenir comme composants custom si le besoin est confirmé en production.
