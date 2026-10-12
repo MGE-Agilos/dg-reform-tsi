@@ -328,3 +328,8 @@ def test_project_reader_max_chars(tmp_path):
     short = ProjectReader(document_store=store, max_chars=300).run(doc_id="energy-regulation-academy")
     assert len(short["result"]) == 300
     assert ProjectReader(document_store=store).to_dict()["init_parameters"]["max_chars"] == 8000
+
+
+def test_build_filters_accepts_the_srss_programme():
+    filters = build_filters(programme="srss")
+    assert {"field": "meta.programme", "operator": "==", "value": "SRSS"} in filters["conditions"]

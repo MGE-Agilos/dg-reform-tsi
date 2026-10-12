@@ -12,7 +12,8 @@ from tsi_agent.countries import COUNTRIES
 from tsi_agent.deliverables_pipeline import build_deliverables_pipeline
 from tsi_agent.index_pipeline import build_index_pipeline
 from tsi_agent.pipeline import build_pipeline
-from tsi_agent.runner import refresh_deliverables_metadata, run_deliverables, run_extraction, run_index
+from tsi_agent.runner import (format_discovery, refresh_deliverables_metadata, run_deliverables, run_extraction,
+                              run_index)
 
 
 def _countries(value: str) -> list[str]:
@@ -34,7 +35,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--limit", type=int,
                      help="nombre maximal de projets envoyés au LLM (projets détaillés)")
     run.add_argument("--chunk-size", type=int)
-    run.add_argument("--dry-run", action="store_true", help="découverte seule, sans LLM ni écriture")
+    run.add_argument("--dry-run", "--discover-only", dest="dry_run", action="store_true",
+                     help="découverte seule (sitemap compris), sans LLM ni écriture de projets ; bilan des fusions "
+                          "dans logs/runs/<run_id>.discovery.json")
     run.add_argument("--model")
     index = sub.add_parser("index", help="vectoriser les fichiers extraits nouveaux ou modifiés (couche RAG)")
     index.add_argument("--full", action="store_true", help="revectoriser tous les fichiers")
@@ -217,6 +220,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         return 2
+    discovery = (summary.get("dry_run") or {}).get("discovery")
+    if discovery and Path(discovery["file"]).exists():
+        report = json.loads(Path(discovery["file"]).read_text(encoding="utf-8"))
+        print(format_discovery(report, discovery["file"]))
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     return 1 if summary.get("quota_exceeded") else 0
 

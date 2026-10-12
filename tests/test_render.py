@@ -74,6 +74,16 @@ def test_thin_bodies():
     assert "SRSP list of approved technical support requests (Austria, 2019)" in thin_body(srsp)
 
 
+def test_thin_body_of_pre_srsp_greek_project():
+    srss = ProjectRef(project_id="srsp-2014-z", title="Z", programme="SRSS", year=2014, countries=["GR"],
+                      listing_urls=["https://x/srsp.pdf"])
+    body = thin_body(srss)
+    assert ("Pre-SRSP technical assistance project (Greece, 2014), listed in the annex of the SRSP list of approved "
+            "technical support requests (projects financed by a transfer of funds from the European Structural and "
+            "Investment Funds). No detail page is published.") in body
+    assert "under TSI" not in body
+
+
 def test_programme_doc_text():
     doc = ProgrammeDoc(doc_id="country-croatia", title="Croatia", url="https://x/croatia_en", text="138 projects")
     fm, body = parse_front_matter(programme_doc_text(doc, "r1", "2026-09-30"))

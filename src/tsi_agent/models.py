@@ -7,12 +7,13 @@ from pydantic import BaseModel, Field
 
 from tsi_agent.ids import sha256_text
 
-Programme = Literal["TSI", "SRSP"]
-PageKind = Literal["factsheet", "spotlight", "policy_area", "srsp_pdf", "programme_doc"]
+# SRSS : assistance technique a la Grece anterieure au SRSP (2012-2016, annexe du PDF SRSP).
+Programme = Literal["TSI", "SRSP", "SRSS"]
+PageKind = Literal["factsheet", "spotlight", "policy_area", "srsp_pdf", "programme_doc", "sitemap"]
 
 
 class RawPage(BaseModel):
-    """Page source brute. `key` = slug pays, slug domaine ou id de document."""
+    """Page source brute. `key` = slug pays, slug domaine, id de document ou URL de l'index du sitemap."""
 
     kind: PageKind
     key: str

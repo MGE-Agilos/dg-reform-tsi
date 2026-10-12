@@ -128,7 +128,7 @@ class ProjectSearch:
         :param countries: ISO country codes to keep (e.g. ["HR", "SI"]; Greece is "GR").
         :param year_from: Keep projects from this year on (e.g. 2022).
         :param year_to: Keep projects up to this year.
-        :param programme: "TSI" (2021 onwards) or "SRSP" (2017-2020).
+        :param programme: "TSI" (2021 onwards), "SRSP" (2017-2020) or "SRSS" (pre-2017 technical assistance to Greece).
         :param policy_area: Policy area slug (e.g. "green-transition").
         :param detail_only: Keep only projects that have a detail page (richer descriptions).
         :param include_programme: Also search country factsheets and policy area pages (programme figures).
@@ -176,7 +176,7 @@ class DeliverableSearch(ProjectSearch):
         :param countries: ISO country codes of the related projects (e.g. ["HR", "SI"]; Greece is "GR").
         :param year_from: Keep deliverables of projects from this year on.
         :param year_to: Keep deliverables of projects up to this year.
-        :param programme: "TSI" (2021 onwards) or "SRSP" (2017-2020).
+        :param programme: "TSI" (2021 onwards), "SRSP" (2017-2020) or "SRSS" (pre-2017 technical assistance to Greece).
         :param policy_area: Policy area slug (e.g. "green-transition").
         :param publication_id: Keep only this publication (id as returned in earlier results).
         :param project_id: Keep only deliverables linked to this project id.
@@ -294,7 +294,7 @@ class ProjectFinder:
             any of them.
         :param year_from: Keep projects from this year on.
         :param year_to: Keep projects up to this year.
-        :param programme: "TSI" (2021 onwards) or "SRSP" (2017-2020).
+        :param programme: "TSI" (2021 onwards), "SRSP" (2017-2020) or "SRSS" (pre-2017 technical assistance to Greece).
         :param policy_area: Policy area slug (e.g. "green-transition").
         """
         t0 = time.monotonic()
@@ -392,7 +392,7 @@ class ProjectLister:
         :param countries: ISO country codes (e.g. ["GR"]); a project matches if it involves any of them.
         :param year_from: From this year on.
         :param year_to: Up to this year.
-        :param programme: "TSI" or "SRSP".
+        :param programme: "TSI", "SRSP" or "SRSS" (pre-2017 technical assistance to Greece).
         :param policy_area: Policy area slug (e.g. "health-and-long-term-care").
         :param detail_only: Only projects with a detail page.
         :param title_contains: Case-insensitive word or phrase that must appear in the project title.

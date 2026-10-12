@@ -11,6 +11,7 @@ from tsi_agent.urls import is_detail_candidate
 NAME = "ChangeDetector"
 DROP_RATIO = 0.7      # moins de 70 % des projets connus d'un pays => pays suspect
 DROP_MIN_KNOWN = 5    # en dessous, on ne juge pas une chute
+PDF_PROGRAMMES = ("SRSP", "SRSS")  # projets lus dans le PDF SRSP (annexe SRSS comprise)
 
 
 def _in_scope(entry: StoreEntry, scope: dict[str, Any]) -> bool:
@@ -22,7 +23,7 @@ def _in_scope(entry: StoreEntry, scope: dict[str, Any]) -> bool:
     "fetched" (anciens appelants/tests), on retombe sur la regle pays/SRSP historique.
     """
     if scope.get("fetched") is None:
-        if entry.programme == "SRSP":
+        if entry.programme in PDF_PROGRAMMES:
             return bool(scope.get("srsp"))
         if not entry.countries:
             return bool(scope.get("all_countries"))
@@ -64,8 +65,9 @@ class ChangeDetector:
 
     def _dropped_countries(self, refs: list[ProjectRef], known: dict[str, StoreEntry],
                            scope: dict[str, Any]) -> list[str]:
-        now = Counter(c for r in refs if r.programme != "SRSP" for c in r.countries)
-        before = Counter(c for e in known.values() if e.listed and e.programme != "SRSP" for c in e.countries)
+        now = Counter(c for r in refs if r.programme not in PDF_PROGRAMMES for c in r.countries)
+        before = Counter(c for e in known.values() if e.listed and e.programme not in PDF_PROGRAMMES
+                         for c in e.countries)
         dropped = []
         for country in scope.get("countries", []):
             if before[country] >= DROP_MIN_KNOWN and now[country] < DROP_RATIO * before[country]:

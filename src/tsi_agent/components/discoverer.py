@@ -5,12 +5,15 @@ from haystack import component
 
 from tsi_agent import runlog
 from tsi_agent.countries import COUNTRIES, name_from_iso, slug_from_iso
+from tsi_agent.fuzzy import FuzzyMatch, countries_in_text, match_thin_refs
 from tsi_agent.http import DEFAULT_USER_AGENT, FetchError, PoliteFetcher, shared_fetcher
 from tsi_agent.ids import slug_from_url, title_key
 from tsi_agent.models import ProgrammeDoc, ProjectRef, RawPage
 from tsi_agent.parsers import main_text
+from tsi_agent.parsers.detail import parse_detail, parse_detail_meta
 from tsi_agent.parsers.factsheet import parse_factsheet
 from tsi_agent.parsers.policy_area import parse_policy_area
+from tsi_agent.parsers.sitemap import DEFAULT_EXCLUDED_AREAS, parse_sitemap, sitemap_project_urls
 from tsi_agent.parsers.spotlight import parse_spotlight
 from tsi_agent.parsers.srsp_pdf import parse_srsp_pdf
 from tsi_agent.urls import is_canonical_detail, is_final_detail, policy_area_from_url
@@ -47,6 +50,20 @@ def combine(a: ProjectRef, b: ProjectRef) -> ProjectRef:
     )
 
 
+def _detail_urls_by_key(refs: list[ProjectRef]) -> dict[str, set[str]]:
+    urls_by_key: dict[str, set[str]] = {}
+    for ref in refs:
+        key = ref_title_key(ref)
+        if key and ref.detail_url:
+            urls_by_key.setdefault(key, set()).add(ref.detail_url)
+    return urls_by_key
+
+
+def ambiguous_title_keys(refs: list[ProjectRef]) -> set[str]:
+    """Cles titre associees a plus d'une page detail (titre "flagship" generique, une page par pays)."""
+    return {k for k, urls in _detail_urls_by_key(refs).items() if len(urls) > 1}
+
+
 def merge_refs(refs: list[ProjectRef]) -> list[ProjectRef]:
     """Même projet = même URL détail ou même clé titre (programme, année, titre), transitivement.
 
@@ -74,11 +91,7 @@ def merge_refs(refs: list[ProjectRef]) -> list[ProjectRef]:
     def detail_urls(root: int) -> set[str]:
         return {refs[m].detail_url for m in members[root] if refs[m].detail_url}
 
-    urls_by_key: dict[str, set[str]] = {}
-    for ref in refs:
-        key = ref_title_key(ref)
-        if key and ref.detail_url:
-            urls_by_key.setdefault(key, set()).add(ref.detail_url)
+    urls_by_key = _detail_urls_by_key(refs)
     ambiguous_keys = {k for k, urls in urls_by_key.items() if len(urls) > 1}
     for k in sorted(ambiguous_keys):
         runlog.event(NAME, "discover", k, "ambiguous_title", urls=sorted(urls_by_key[k]))
@@ -122,20 +135,47 @@ def merge_refs(refs: list[ProjectRef]) -> list[ProjectRef]:
     return groups
 
 
+def fuzzy_merge(refs: list[ProjectRef], views: list[ProjectRef] | None = None,
+                excluded_thin_ids: set[str] | None = None) -> tuple[list[ProjectRef], list[FuzzyMatch]]:
+    """Rattache les projets thin a la page detail du meme projet (regle floue de tsi_agent.fuzzy).
+
+    Le projet fusionne garde l'id de sa page detail ; l'id du thin passe dans ses alias (le writer
+    supprime alors le fichier thin, comme pour les fusions par cle titre).
+    """
+    matches = match_thin_refs(refs, views, excluded_thin_ids=excluded_thin_ids)
+    absorbed = {m.thin_index: m.detail_index for m in matches}
+    by_detail = {m.detail_index: m.thin_index for m in matches}
+    out: list[ProjectRef] = []
+    for i, ref in enumerate(refs):
+        if i in absorbed:
+            continue
+        out.append(combine(ref, refs[by_detail[i]]) if i in by_detail else ref)
+    for m in matches:
+        runlog.event(NAME, "discover", m.detail_id, "fuzzy_merge", thin_id=m.thin_id, score=round(m.score, 3))
+    return out, matches
+
+
 @component
 class ProjectDiscoverer:
     """Parse les listings, résout les liens non canoniques, fusionne, produit les documents programme."""
 
     def __init__(self, cache_dir: str = ".cache/http", min_interval_s: float = 2.0,
-                 user_agent: str = DEFAULT_USER_AGENT):
+                 user_agent: str = DEFAULT_USER_AGENT, sitemap_excluded_areas: list[str] | None = None):
+        """:param sitemap_excluded_areas: rubriques du sitemap qui ne sont pas des pages projet (defaut :
+        DEFAULT_EXCLUDED_AREAS)."""
         self.cache_dir = cache_dir
         self.min_interval_s = min_interval_s
         self.user_agent = user_agent
+        self.sitemap_excluded_areas = (list(sitemap_excluded_areas) if sitemap_excluded_areas is not None
+                                       else list(DEFAULT_EXCLUDED_AREAS))
         self._fetcher: PoliteFetcher | None = None
         # Mémo par instance (donc par process) : évite de rappeler le fetcher ou le parseur PDF
         # pour la même URL/le même contenu à chaque lot d'un même run.
         self._resolve_cache: dict[str, tuple[str, str | None]] = {}
         self._srsp_cache: dict[str, list[ProjectRef]] = {}
+        # Page du sitemap -> ("ref", ProjectRef) | ("not_project", None) | ("failed", erreur)
+        self._sitemap_cache: dict[str, tuple[str, Any]] = {}
+        self._hint_cache: dict[str, tuple[str | None, int | None, str | None]] = {}
 
     def _get_fetcher(self) -> PoliteFetcher:
         if self._fetcher is None:
@@ -177,13 +217,23 @@ class ProjectDiscoverer:
                                       "aliases": [a for a in ref.aliases if a != key]})
 
     @component.output_types(refs=list[ProjectRef], programme_docs=list[ProgrammeDoc],
-                            suspect_countries=list[str], scope=dict[str, Any], deferred_ids=list[str])
+                            suspect_countries=list[str], scope=dict[str, Any], deferred_ids=list[str],
+                            report=dict[str, Any], excluded_thin_ids=list[str])
     def run(self, pages: list[RawPage]) -> dict[str, Any]:
         refs: list[ProjectRef] = []
         docs: list[ProgrammeDoc] = []
         suspect: list[str] = []
         scope: dict[str, Any] = {"countries": [], "srsp": False, "all_countries": False}
+        sitemap_urls: list[str] = []
+        sitemap_keys: set[str] = set()
         for page in pages:
+            if page.kind == "sitemap":
+                try:
+                    sitemap_urls += parse_sitemap(page.content)[1]
+                    sitemap_keys.add(page.key)
+                except ValueError as exc:
+                    runlog.event(NAME, "error", page.url, "parse_failed", kind=page.kind, error=repr(exc))
+                continue
             try:
                 found = self._parse(page, docs, scope)
             except Exception as exc:  # une page cassée ne doit pas arrêter le run
@@ -195,7 +245,8 @@ class ProjectDiscoverer:
                              message=f"Factsheet {page.key}: 0 project parsed (site structure changed?)")
             refs += found
         scope["all_countries"] = set(scope["countries"]) == set(COUNTRIES)
-        scope["fetched"] = sorted(page.url for page in pages)  # sources lues dans ce run (vue partielle ?)
+        # Sources lues dans ce run (vue partielle ?) ; un projet trouve par le sitemap a pour source l'index.
+        scope["fetched"] = sorted({page.url for page in pages} | sitemap_keys)
         deferred: list[str] = []
         resolved: list[ProjectRef] = []
         for r in refs:
@@ -207,10 +258,21 @@ class ProjectDiscoverer:
                 continue
             if result is not None:
                 resolved.append(result)
+        project_urls = sitemap_project_urls(sitemap_urls, self.sitemap_excluded_areas)
+        sitemap_report: dict[str, Any] = {"urls": len(project_urls), "new_urls": 0, "fetched": 0,
+                                          "not_project_pages": [], "failed": [], "deferred": []}
+        from_sitemap: list[ProjectRef] = []
+        if sitemap_keys:
+            from_sitemap = self._sitemap_refs(project_urls, {r.detail_url for r in resolved if r.detail_url},
+                                              sorted(sitemap_keys)[0], deferred, sitemap_report)
+        thin_ids = {r.project_id for r in resolved if not r.detail_url}
+        resolved += from_sitemap
         for r in resolved:
             if r.detail_url and not r.policy_area:
                 r.policy_area = policy_area_from_url(r.detail_url)
-        merged = merge_refs(resolved)
+        ambiguous = ambiguous_title_keys(resolved)
+        merged, fuzzy = self._fuzzy_with_hints(merge_refs(resolved), ambiguous)
+        report = self._report(merged, fuzzy, thin_ids, {r.detail_url for r in from_sitemap}, sitemap_report)
         kept_docs = []
         for doc in docs:
             if len(doc.text) < MIN_PROGRAMME_TEXT:
@@ -221,7 +283,120 @@ class ProjectDiscoverer:
         runlog.event(NAME, "discover", None, "ok", raw_refs=len(refs), projects=len(merged),
                      detail=sum(r.detail_page for r in merged), programme_docs=len(kept_docs))
         return {"refs": merged, "programme_docs": kept_docs, "suspect_countries": suspect, "scope": scope,
-                "deferred_ids": deferred}
+                "deferred_ids": deferred, "report": report, "excluded_thin_ids": sorted(ambiguous)}
+
+    # --- sitemap -----------------------------------------------------------------------------------------------
+    def _sitemap_ref(self, url: str, listing_url: str) -> tuple[str, Any]:
+        """Page detail du sitemap -> ProjectRef (titre, programme, annee et domaine lus sur la page et l'URL)."""
+        try:
+            result = self._get_fetcher().get(url)
+        except FetchError as exc:
+            permanent = exc.status is not None and 400 <= exc.status < 500 and exc.status not in (408, 429)
+            return ("failed" if permanent else "deferred", str(exc))
+        except OSError as exc:
+            return ("deferred", repr(exc))
+        final = result.final_url if is_final_detail(result.final_url) else url
+        parsed = parse_detail(result.content)
+        if parsed.programme is None and parsed.year is None:
+            return ("not_project", None)  # ni "Funding Programme" ni "Year" : page de rubrique, pas un projet
+        # Pays laisses vides : la page detail n'en donne pas, le LLM les lit dans le texte (comme pour les
+        # pages detail des domaines politiques).
+        return ("ref", ProjectRef(project_id=slug_from_url(final), title=parsed.title or slug_from_url(final),
+                                  programme=parsed.programme, year=parsed.year, detail_url=final,
+                                  policy_area=policy_area_from_url(final), listing_urls=[listing_url]))
+
+    def _sitemap_refs(self, urls: list[str], known: set[str], listing_url: str, deferred: list[str],
+                      report: dict[str, Any]) -> list[ProjectRef]:
+        """Projets des pages du sitemap qui ne sont la page detail d'aucun projet deja decouvert."""
+        new_urls = [u for u in urls if u not in known]
+        report["new_urls"] = len(new_urls)
+        out = []
+        for url in new_urls:
+            outcome = self._sitemap_cache.get(url)
+            if outcome is None:
+                try:
+                    outcome = self._sitemap_ref(url, listing_url)
+                except Exception as exc:  # une page cassee ne doit pas arreter le run
+                    outcome = ("deferred", repr(exc))
+                if outcome[0] != "deferred":  # echec temporaire : on reessaiera au lot suivant
+                    self._sitemap_cache[url] = outcome
+                extra = {"error": outcome[1]} if outcome[0] in ("failed", "deferred") else {}
+                runlog.event(NAME, "sitemap", url, outcome[0], **extra)
+            kind, value = outcome
+            if kind == "ref":
+                report["fetched"] += 1
+                if value.detail_url in known:
+                    continue  # redirigee vers une page deja connue
+                known.add(value.detail_url)
+                out.append(value.model_copy(deep=True))
+            elif kind == "not_project":
+                report["fetched"] += 1
+                report["not_project_pages"].append(url)
+            elif kind == "failed":
+                report["failed"].append(url)
+            else:
+                report["deferred"].append(url)
+                deferred.extend([slug_from_url(url), url])
+        return out
+
+    # --- fusion floue --------------------------------------------------------------------------------------------
+    def _hint(self, url: str) -> tuple[str | None, int | None, str | None]:
+        """Programme, annee et titre officiel d'une page detail deja en cache HTTP (aucune requete)."""
+        if url not in self._hint_cache:
+            hint: tuple[str | None, int | None, str | None] = (None, None, None)
+            try:
+                content = self._get_fetcher().cached(url)
+                if content is not None:
+                    title, programme, year = parse_detail_meta(content)
+                    hint = (programme, year, title or None)
+            except Exception as exc:  # indice seulement : une page illisible ne change rien
+                runlog.event(NAME, "discover", url, "hint_failed", error=repr(exc))
+            self._hint_cache[url] = hint
+        return self._hint_cache[url]
+
+    def _fuzzy_with_hints(self, refs: list[ProjectRef], ambiguous: set[str]
+                          ) -> tuple[list[ProjectRef], list[FuzzyMatch]]:
+        """Fusion floue ; les controles utilisent des vues, pas les refs (qui ne changent pas).
+
+        Vue d'une page detail en cache HTTP : son titre officiel (et non un titre de listing, parfois generique
+        ou propre a un pays d'un projet multi-pays), son programme et son annee ; pays deduits du titre a defaut.
+        """
+        views = []
+        for ref in refs:
+            update: dict[str, Any] = {}
+            if ref.detail_url:
+                programme, year, title = self._hint(ref.detail_url)
+                update.update({"programme": ref.programme or programme, "year": ref.year or year,
+                               "title": title or ref.title})
+                if not ref.countries:
+                    update["countries"] = countries_in_text(update["title"])
+            views.append(ref.model_copy(update=update) if update else ref)
+        return fuzzy_merge(refs, views, excluded_thin_ids=ambiguous)
+
+    @staticmethod
+    def _report(refs: list[ProjectRef], fuzzy: list[FuzzyMatch], thin_ids: set[str], sitemap_urls: set[str],
+                sitemap: dict[str, Any]) -> dict[str, Any]:
+        """Bilan de la decouverte pour la revue humaine (--dry-run)."""
+        fuzzy_by_detail = {m.detail_id: m for m in fuzzy}
+        merged_into_thin, new_projects, duplicates = [], [], []
+        for ref in refs:
+            fm = fuzzy_by_detail.get(ref.project_id)
+            if ref.detail_url in sitemap_urls:
+                exact = [a for a in ref.aliases if a in thin_ids and (fm is None or a != fm.thin_id)]
+                pairs = [(a, 1.0, "title_key") for a in exact] + ([(fm.thin_id, fm.score, "fuzzy")] if fm else [])
+                for thin_id, score, rule in pairs:
+                    merged_into_thin.append({"sitemap_slug": ref.project_id, "thin_id": thin_id,
+                                             "score": round(score, 3), "rule": rule, "title": ref.title,
+                                             "programme": ref.programme, "year": ref.year})
+                if not pairs:
+                    new_projects.append({"project_id": ref.project_id, "title": ref.title,
+                                         "programme": ref.programme, "year": ref.year, "url": ref.detail_url})
+            elif fm is not None:
+                duplicates.append({"detail_id": fm.detail_id, "thin_id": fm.thin_id, "score": round(fm.score, 3)})
+        merged_into_thin.sort(key=lambda m: (-m["score"], m["sitemap_slug"], m["thin_id"]))
+        return {"refs": len(refs), "detail": sum(r.detail_page for r in refs), "sitemap": sitemap,
+                "merged_into_thin": merged_into_thin, "new_projects": new_projects,
+                "duplicates_merged": duplicates}
 
     def _parse(self, page: RawPage, docs: list[ProgrammeDoc], scope: dict[str, Any]) -> list[ProjectRef]:
         if page.kind == "factsheet":
