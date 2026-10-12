@@ -97,7 +97,7 @@ def test_export_writes_one_file_per_document_with_meta_and_manifest(tmp_path):
         "corpus": CORPUS, "doc_type": "project", "doc_id": "alpha", "title": "Alpha", "countries": ["GR"],
         "programme": "TSI", "year": 2022, "policy_area": "green-transition", "results": "achieved",
         "projects": ["alpha"], "multi_country": False, "detail_page": True,
-        "source_url": "https://example.eu/alpha", "chunks": 2}
+        "source_url": "https://example.eu/alpha", "listing_titles": [], "chunks": 2}
     deliverable_meta = json.loads((out / "tsi-deliverable-alpha-report.md.meta.json").read_text(encoding="utf-8"))
     assert deliverable_meta["doc_type"] == "deliverable" and deliverable_meta["projects"] == ["alpha"]
     assert "source_url" not in deliverable_meta and "results" not in deliverable_meta

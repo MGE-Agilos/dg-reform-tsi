@@ -1,8 +1,10 @@
-# Pipeline "tsi-chat" (production) : chatbot RAG sur l'index tsi-corpus, OpenAI gpt-5.4.
-# Deux outils sur le meme index, separes par la metadonnee doc_type : search_projects (projets et fiches programme)
-# et search_deliverables (texte integral des livrables) ; numerotation [n] continue entre les deux (etat documents).
-# Historique de la conversation par l'entree `messages`. Memes blocs d'outils que pipeline-tsi-impact.yaml :
-# garder les outils identiques dans les deux fichiers.
+# Pipeline "tsi-chat" (production) : chatbot RAG sur l'index tsi-corpus, OpenAI gpt-5.4. GENERE par
+# deploy/prod/build_pipelines.py : ne pas modifier a la main.
+# search_projects (projets et fiches programme) et search_deliverables (texte integral des livrables) : recherche
+# hybride filtree par la metadonnee doc_type, numerotation [n] continue (etat documents).
+# list_projects : comptes et listes exacts sur tout le corpus (FilterRetriever + composants Code).
+# find_projects : candidats pour un sujet libre (400 morceaux projet + 300 morceaux livrable regroupes par projet,
+# plus mots-cles des titres), juges par l'agent. Historique de la conversation par l'entree `messages`.
 components:
   agent:
     type: haystack.components.agents.agent.Agent
@@ -20,7 +22,7 @@ components:
             max_completion_tokens: 4096
       exit_conditions:
       - text
-      max_agent_steps: 12
+      max_agent_steps: 15
       raise_on_tool_invocation_failure: false
       state_schema:
         documents:
@@ -38,30 +40,52 @@ components:
         - search_deliverables: full text of the projects' deliverables. Each passage starts with "publication title —
           document, p. N — programme year — countries" and ends with the deliverable id, the related project ids and
           the document URL.
+        - list_projects: exact counts and lists of projects over the whole corpus, with filters (countries, years,
+          programme, policy area, detail page, title words).
+        - find_projects: CANDIDATE projects on a free topic, over the whole corpus (best matches in project texts and
+          deliverables plus keywords in titles, no relevance threshold), for you to judge.
 
         Rules:
         1. Answer in the language of the user's question.
         2. Use only information returned by the tools in this conversation. If it is not there, say so plainly.
-        3. Cite every factual statement with the passage number, like [n]. End with a "Sources" list grouped by project or
-           publication: one line per project or publication with all its cited numbers, its title (and the document and
-           page for a deliverable) and its URL, e.g. "[2][5][9] Project title — URL". Never put two projects on one line.
+        3. Cite every factual statement from search_projects or search_deliverables with the passage number, like [n].
+           Projects returned by list_projects or find_projects are not numbered passages: cite them with a Markdown link
+           to their URL. End with a "Sources" list grouped by project or publication: one line per project or publication
+           with all its cited numbers, its title (and the document and page for a deliverable) and its URL, e.g.
+           "[2][5][9] Project title — URL". Never put two projects on one line.
         4. When a passage is marked as an AI-generated summary, say that the information comes from an AI-generated
            summary rather than from the official text.
-        5. Counts and lists of projects come from a search, not from a complete database: give the projects you found
-           with their citations and say that the list may not be exhaustive. Never estimate a total; when you announce a
-           number of projects, it must match the projects you list.
-        6. For a list or a comparison, run 2 to 3 searches with different phrasings of the topic (synonyms and related
-           terms, e.g. "e-government", "digital public services", "interoperability", "digitalisation of justice"), and
-           search each compared item separately (for example one search per country).
-        7. Projects without a detail page ("Detail page: no") are only known by their title, country and year: say so.
-        8. For follow-up questions, reuse the context of the conversation (countries, topics, projects cited).
-        9. You have a limited number of steps: after a few searches, answer with what you found.
-        10. Be concise: at most about 250 words unless the user asks for details or a full list; use a short table only
+        5. For any number, count or list of projects by country, policy area, programme or year, call list_projects and
+           report its figures; never estimate. For "which countries", "how many per country" or "which policy areas"
+           questions, read its "By country" / "By policy area" lines: they are exact over the whole corpus. Do not infer
+           countries or areas from the listed projects: that list is truncated to `limit` (raise `limit` when the user
+           wants the full list). When you announce a number of projects, it must match what you report.
+        6. For "which projects", "which countries" or "how many projects" questions about a free topic (not an official
+           policy area), call find_projects with an English topic and 3-8 keywords (synonyms, acronyms, English terms),
+           e.g. topic "anti-money laundering and counter-terrorist financing", keywords ["money laundering", "AML",
+           "CFT", "financial intelligence", "FIU"]. It returns candidates, not answers: go through EVERY candidate and keep
+           only those clearly about the topic (judge from the title and snippet; when unsure, check with search_projects).
+           Then compute the countries and counts yourself from the kept projects only, list the kept projects with their
+           links, and say that the list comes from a candidate search judged by you and may not be exhaustive.
+        7. For a comparison, search each compared item separately (for example one search per country). For descriptive
+           questions, run 2 to 3 searches with different phrasings of the topic (synonyms and related terms).
+        8. Projects without a detail page ("Detail page: no") are only known by their title, country and year: say so.
+        9. For follow-up questions, reuse the context of the conversation (countries, topics, projects cited).
+        10. You have a limited number of steps: after a few tool calls, answer with what you found.
+        11. Be concise: at most about 250 words unless the user asks for details or a full list; use a short table only
             for comparisons. Use headings sparingly (at most one level).
-        11. Use search_projects to identify projects; use search_deliverables for details from the reports (figures,
-            methods, recommendations, detailed results), and cite the document and page.
-        12. Always write search queries in English, naming the country, the institution and the topic, whatever the
-            language of the question.
+        12. Use search_projects, list_projects and find_projects to identify projects; use search_deliverables for details
+            from the reports (figures, methods, recommendations, detailed results), and cite the document and page.
+        13. Always write tool queries (search queries, find_projects topic and keywords) in English, naming the country,
+            the institution and the topic, whatever the language of the question.
+
+        Filter values: countries are ISO codes (AT Austria, BE Belgium, BG Bulgaria, HR Croatia, CY Cyprus, CZ Czechia,
+        DK Denmark, EE Estonia, FI Finland, FR France, DE Germany, GR Greece, HU Hungary, IE Ireland, IT Italy, LV Latvia,
+        LT Lithuania, LU Luxembourg, MT Malta, NL Netherlands, PL Poland, PT Portugal, RO Romania, SK Slovakia, SI Slovenia,
+        ES Spain, SE Sweden). Programmes: TSI, SRSP, SRSS. Policy areas: competitiveness, digital-transition,
+        financial-sector-and-access-finance, green-transition, health-and-long-term-care,
+        labour-market-and-social-protection, migration-management, public-administration-and-governance,
+        revenue-administration-and-public-financial-management, skills-education-and-training.
       tools:
       - type: haystack.tools.pipeline_tool.PipelineTool
         data:
@@ -225,6 +249,536 @@ components:
             connections:
             - sender: retriever.documents
               receiver: builder.docs
+            max_runs_per_component: 100
+            metadata: {}
+      - type: haystack.tools.pipeline_tool.PipelineTool
+        data:
+          name: list_projects
+          description: Count and list distinct projects matching filters, over the WHOLE corpus (exact, not a similarity search).
+            Gives the total and the counts by programme, year, country and policy area, then the project list truncated to `limit`,
+            each with its URL. Use it for any number or list of projects by country, policy area, programme or year.
+          parameters:
+            type: object
+            properties:
+              countries:
+                type: array
+                items:
+                  type: string
+                  enum:
+                  - AT
+                  - BE
+                  - BG
+                  - HR
+                  - CY
+                  - CZ
+                  - DK
+                  - EE
+                  - FI
+                  - FR
+                  - DE
+                  - GR
+                  - HU
+                  - IE
+                  - IT
+                  - LV
+                  - LT
+                  - LU
+                  - MT
+                  - NL
+                  - PL
+                  - PT
+                  - RO
+                  - SK
+                  - SI
+                  - ES
+                  - SE
+                description: ISO country codes (Greece is GR); a project matches if it involves any of them.
+              year_from:
+                type: integer
+                description: Keep projects from this year on.
+              year_to:
+                type: integer
+                description: Keep projects up to this year.
+              programme:
+                type: string
+                enum:
+                - TSI
+                - SRSP
+                - SRSS
+                description: TSI (2021 onwards), SRSP (2017-2020) or SRSS (pre-2017 assistance to Greece).
+              policy_area:
+                type: string
+                enum:
+                - competitiveness
+                - digital-transition
+                - financial-sector-and-access-finance
+                - green-transition
+                - health-and-long-term-care
+                - labour-market-and-social-protection
+                - migration-management
+                - public-administration-and-governance
+                - revenue-administration-and-public-financial-management
+                - skills-education-and-training
+                description: Official policy area.
+              detail_only:
+                type: boolean
+                description: Only projects with a detail page.
+              title_contains:
+                type: string
+                description: Word or phrase that must appear in the project title.
+              limit:
+                type: integer
+                description: Maximum number of projects to list (default 20); the totals always cover every matching project.
+          input_mapping:
+            countries:
+            - filters.countries
+            - summary.countries
+            year_from:
+            - filters.year_from
+            year_to:
+            - filters.year_to
+            programme:
+            - filters.programme
+            policy_area:
+            - filters.policy_area
+            - summary.policy_area
+            detail_only:
+            - filters.detail_only
+            title_contains:
+            - summary.title_contains
+            limit:
+            - summary.limit
+          output_mapping:
+            summary.result: result
+          outputs_to_string:
+            source: result
+          is_pipeline_async: false
+          pipeline:
+            components:
+              filters:
+                type: deepset_cloud_custom_nodes.code.code_component.Code
+                init_parameters:
+                  code: |
+                    from typing import Any, Optional
+
+                    from haystack import component
+
+
+                    @component
+                    class Code:
+                        """Filtres de metadonnees (index tsi-corpus) construits a partir des arguments des outils list/find_projects.
+
+                        catalog_filters : tous les morceaux projet correspondant aux filtres SANS les pays ; le filtrage par pays se
+                        fait ensuite dans le code (un projet multi-pays porte une liste de pays : le resultat ne depend pas de la
+                        facon dont le document store compare une liste). project_filters / deliverable_filters : memes filtres AVEC
+                        les pays, pour les recherches par similarite (le pool doit deja etre restreint aux pays demandes).
+                        """
+
+                        @component.output_types(catalog_filters=dict[str, Any], project_filters=dict[str, Any],
+                                                deliverable_filters=dict[str, Any])
+                        def run(self, countries: Optional[list[str]] = None, year_from: Optional[int] = None,
+                                year_to: Optional[int] = None, programme: Optional[str] = None, policy_area: Optional[str] = None,
+                                detail_only: bool = False) -> dict:
+                            common = []
+                            if year_from:
+                                common.append({"field": "meta.year", "operator": ">=", "value": int(year_from)})
+                            if year_to:
+                                common.append({"field": "meta.year", "operator": "<=", "value": int(year_to)})
+                            if programme:
+                                common.append({"field": "meta.programme", "operator": "==", "value": programme.strip().upper()})
+                            if policy_area:
+                                common.append({"field": "meta.policy_area", "operator": "==", "value": policy_area.strip()})
+                            isos = [c.strip().upper() for c in (countries or []) if c and c.strip()]
+                            by_country = [{"field": "meta.countries", "operator": "in", "value": isos}] if isos else []
+                            project = [{"field": "meta.doc_type", "operator": "==", "value": "project"}, *common]
+                            if detail_only:
+                                project.append({"field": "meta.detail_page", "operator": "==", "value": True})
+                            deliverable = [{"field": "meta.doc_type", "operator": "==", "value": "deliverable"}, *common, *by_country]
+                            return {"catalog_filters": {"operator": "AND", "conditions": project},
+                                    "project_filters": {"operator": "AND", "conditions": [*project, *by_country]},
+                                    "deliverable_filters": {"operator": "AND", "conditions": deliverable}}
+              retriever:
+                type: haystack.components.retrievers.filter_retriever.FilterRetriever
+                init_parameters:
+                  document_store:
+                    type: haystack_integrations.document_stores.opensearch.document_store.OpenSearchDocumentStore
+                    init_parameters:
+                      hosts:
+                      - ${OPENSEARCH_HOST}
+                      http_auth:
+                      - ${OPENSEARCH_USER}
+                      - ${OPENSEARCH_PASSWORD}
+                      use_ssl: true
+                      verify_certs: false
+                      index: tsi-corpus
+                      embedding_dim: 768
+                      similarity: cosine
+              summary:
+                type: deepset_cloud_custom_nodes.code.code_component.Code
+                init_parameters:
+                  code: |
+                    from collections import Counter
+                    from typing import Optional
+
+                    from haystack import Document, component
+
+                    MAX_RESULTS = 10_000  # plafond d'une requete filtree OpenSearch (filter_documents)
+
+
+                    def _breakdown(values) -> str:
+                        counts = Counter(v or "none" for v in values)
+                        none = counts.pop("none", 0)
+                        parts = [f"{k} {n}" for k, n in sorted(counts.items(), key=lambda kv: (-kv[1], str(kv[0])))]
+                        return ", ".join(parts + ([f"none {none}"] if none else []))
+
+
+                    @component
+                    class Code:
+                        """Compte et liste les projets distincts parmi les morceaux filtres (un projet = un doc_id), comme
+                        list_projects en local : total, repartition par programme, annee, pays et domaine, puis la liste tronquee."""
+
+                        @component.output_types(result=str)
+                        def run(self, documents: list[Document], countries: Optional[list[str]] = None,
+                                policy_area: Optional[str] = None, title_contains: Optional[str] = None, limit: int = 20) -> dict:
+                            wanted = {c.strip().upper() for c in (countries or []) if c and c.strip()}
+                            projects = {}
+                            for doc in documents:
+                                meta = doc.meta or {}
+                                doc_id = meta.get("doc_id")
+                                if not doc_id or doc_id in projects:
+                                    continue
+                                if wanted and not wanted & set(meta.get("countries") or []):
+                                    continue
+                                if title_contains and title_contains.lower() not in str(meta.get("title") or "").lower():
+                                    continue
+                                projects[doc_id] = meta
+                            ordered = sorted(projects.values(), key=lambda m: (-(m.get("year") or 0), str(m.get("title"))))
+                            by_programme = Counter(m.get("programme") or "?" for m in ordered)
+                            by_year = Counter(m.get("year") for m in ordered)
+                            lines = []
+                            if len(documents) >= MAX_RESULTS:
+                                lines.append(f"WARNING: the search hit the {MAX_RESULTS}-document limit, totals may be incomplete.")
+                            lines += [f"Total matching projects: {len(ordered)} ("
+                                      + ", ".join(f"{k}: {v}" for k, v in sorted(by_programme.items())) + ")",
+                                      "By year: " + ", ".join(f"{y}: {n}" for y, n in
+                                                               sorted(by_year.items(), key=lambda kv: -(kv[0] or 0))),
+                                      "By country: " + _breakdown(c for m in ordered for c in (m.get("countries") or [None]))]
+                            if not policy_area:
+                                lines.append("By policy area: " + _breakdown(m.get("policy_area") for m in ordered))
+                            limit = max(int(limit or 0), 0)
+                            lines.append(f"Showing {min(limit, len(ordered))} of {len(ordered)}:")
+                            for m in ordered[:limit]:
+                                lines.append(f"- {m.get('title')} ({m.get('doc_id')}) — {m.get('programme')} {m.get('year')} — "
+                                             f"{', '.join(m.get('countries') or [])} — detail page: "
+                                             f"{'yes' if m.get('detail_page') else 'no'} — {m.get('source_url')}")
+                            return {"result": "\n".join(lines)}
+            connections:
+            - sender: filters.catalog_filters
+              receiver: retriever.filters
+            - sender: retriever.documents
+              receiver: summary.documents
+            max_runs_per_component: 100
+            metadata: {}
+      - type: haystack.tools.pipeline_tool.PipelineTool
+        data:
+          name: find_projects
+          description: 'List CANDIDATE projects for a free topic, over the whole corpus, for you to judge: the projects whose texts
+            best match the topic, those whose deliverables best match it, and those whose title contains one of the keywords. No
+            relevance threshold: many candidates are off-topic. Keep only those whose title or snippet is really about the topic,
+            then count them yourself.'
+          parameters:
+            type: object
+            properties:
+              topic:
+                type: string
+                description: English description of the topic, e.g. 'anti-money laundering and counter-terrorist financing'.
+              keywords:
+                type: array
+                items:
+                  type: string
+                description: 3-8 English keywords, synonyms or acronyms searched in project titles, e.g. ['money laundering', 'AML',
+                  'CFT', 'financial intelligence', 'FIU'].
+              countries:
+                type: array
+                items:
+                  type: string
+                  enum:
+                  - AT
+                  - BE
+                  - BG
+                  - HR
+                  - CY
+                  - CZ
+                  - DK
+                  - EE
+                  - FI
+                  - FR
+                  - DE
+                  - GR
+                  - HU
+                  - IE
+                  - IT
+                  - LV
+                  - LT
+                  - LU
+                  - MT
+                  - NL
+                  - PL
+                  - PT
+                  - RO
+                  - SK
+                  - SI
+                  - ES
+                  - SE
+                description: ISO country codes (Greece is GR); a project matches if it involves any of them.
+              year_from:
+                type: integer
+                description: Keep projects from this year on.
+              year_to:
+                type: integer
+                description: Keep projects up to this year.
+              programme:
+                type: string
+                enum:
+                - TSI
+                - SRSP
+                - SRSS
+                description: TSI (2021 onwards), SRSP (2017-2020) or SRSS (pre-2017 assistance to Greece).
+              policy_area:
+                type: string
+                enum:
+                - competitiveness
+                - digital-transition
+                - financial-sector-and-access-finance
+                - green-transition
+                - health-and-long-term-care
+                - labour-market-and-social-protection
+                - migration-management
+                - public-administration-and-governance
+                - revenue-administration-and-public-financial-management
+                - skills-education-and-training
+                description: Official policy area.
+            required:
+            - topic
+          input_mapping:
+            topic:
+            - embedder.text
+            - aggregate.topic
+            keywords:
+            - aggregate.keywords
+            countries:
+            - filters.countries
+            - aggregate.countries
+            year_from:
+            - filters.year_from
+            year_to:
+            - filters.year_to
+            programme:
+            - filters.programme
+            policy_area:
+            - filters.policy_area
+          output_mapping:
+            aggregate.result: result
+          outputs_to_string:
+            source: result
+          is_pipeline_async: false
+          pipeline:
+            components:
+              filters:
+                type: deepset_cloud_custom_nodes.code.code_component.Code
+                init_parameters:
+                  code: |
+                    from typing import Any, Optional
+
+                    from haystack import component
+
+
+                    @component
+                    class Code:
+                        """Filtres de metadonnees (index tsi-corpus) construits a partir des arguments des outils list/find_projects.
+
+                        catalog_filters : tous les morceaux projet correspondant aux filtres SANS les pays ; le filtrage par pays se
+                        fait ensuite dans le code (un projet multi-pays porte une liste de pays : le resultat ne depend pas de la
+                        facon dont le document store compare une liste). project_filters / deliverable_filters : memes filtres AVEC
+                        les pays, pour les recherches par similarite (le pool doit deja etre restreint aux pays demandes).
+                        """
+
+                        @component.output_types(catalog_filters=dict[str, Any], project_filters=dict[str, Any],
+                                                deliverable_filters=dict[str, Any])
+                        def run(self, countries: Optional[list[str]] = None, year_from: Optional[int] = None,
+                                year_to: Optional[int] = None, programme: Optional[str] = None, policy_area: Optional[str] = None,
+                                detail_only: bool = False) -> dict:
+                            common = []
+                            if year_from:
+                                common.append({"field": "meta.year", "operator": ">=", "value": int(year_from)})
+                            if year_to:
+                                common.append({"field": "meta.year", "operator": "<=", "value": int(year_to)})
+                            if programme:
+                                common.append({"field": "meta.programme", "operator": "==", "value": programme.strip().upper()})
+                            if policy_area:
+                                common.append({"field": "meta.policy_area", "operator": "==", "value": policy_area.strip()})
+                            isos = [c.strip().upper() for c in (countries or []) if c and c.strip()]
+                            by_country = [{"field": "meta.countries", "operator": "in", "value": isos}] if isos else []
+                            project = [{"field": "meta.doc_type", "operator": "==", "value": "project"}, *common]
+                            if detail_only:
+                                project.append({"field": "meta.detail_page", "operator": "==", "value": True})
+                            deliverable = [{"field": "meta.doc_type", "operator": "==", "value": "deliverable"}, *common, *by_country]
+                            return {"catalog_filters": {"operator": "AND", "conditions": project},
+                                    "project_filters": {"operator": "AND", "conditions": [*project, *by_country]},
+                                    "deliverable_filters": {"operator": "AND", "conditions": deliverable}}
+              embedder:
+                type: deepset_cloud_custom_nodes.embedders.nvidia.text_embedder.DeepsetNvidiaTextEmbedder
+                init_parameters:
+                  model: intfloat/multilingual-e5-base
+                  prefix: 'query: '
+                  normalize_embeddings: true
+              catalog:
+                type: haystack.components.retrievers.filter_retriever.FilterRetriever
+                init_parameters:
+                  document_store: &id001
+                    type: haystack_integrations.document_stores.opensearch.document_store.OpenSearchDocumentStore
+                    init_parameters:
+                      hosts:
+                      - ${OPENSEARCH_HOST}
+                      http_auth:
+                      - ${OPENSEARCH_USER}
+                      - ${OPENSEARCH_PASSWORD}
+                      use_ssl: true
+                      verify_certs: false
+                      index: tsi-corpus
+                      embedding_dim: 768
+                      similarity: cosine
+              project_search:
+                type: haystack_integrations.components.retrievers.opensearch.embedding_retriever.OpenSearchEmbeddingRetriever
+                init_parameters:
+                  document_store: *id001
+                  top_k: 400
+                  filter_policy: replace
+              deliverable_search:
+                type: haystack_integrations.components.retrievers.opensearch.embedding_retriever.OpenSearchEmbeddingRetriever
+                init_parameters:
+                  document_store: *id001
+                  top_k: 300
+                  filter_policy: replace
+              aggregate:
+                type: deepset_cloud_custom_nodes.code.code_component.Code
+                init_parameters:
+                  code: |
+                    import re
+                    from typing import Optional
+
+                    from haystack import Document, component
+
+                    PROJECT_POOL = 60        # projets gardes depuis la recherche sur les textes projet
+                    DELIVERABLE_POOL = 30    # projets gardes depuis la recherche sur les livrables
+                    MAX_CANDIDATES = 150     # lignes de candidats listees au plus
+                    SNIPPET_CHARS = 140
+
+
+                    def _pattern(term: str):
+                        """Mot ou expression entiere, insensible a la casse, pluriel simple accepte ("reform" trouve "reforms")."""
+                        return re.compile(rf"(?<!\w){re.escape(term.strip())}(?:s|es)?(?!\w)", re.IGNORECASE)
+
+
+                    def _snippet(doc: Optional[Document]) -> str:
+                        """Debut du texte du morceau, sans sa premiere ligne (titre de contexte "# ...")."""
+                        if doc is None or not doc.content:
+                            return ""
+                        lines = doc.content.strip().splitlines()
+                        body = " ".join(lines[1:] if lines and lines[0].startswith("#") else lines)
+                        return " ".join(body.split())[:SNIPPET_CHARS]
+
+
+                    @component
+                    class Code:
+                        """Candidats de find_projects, comme en local : projets dont les textes correspondent le mieux au sujet, projets
+                        dont les livrables y correspondent, projets dont le titre contient un mot-cle. Pas de seuil de pertinence :
+                        l'agent juge chaque candidat."""
+
+                        @component.output_types(result=str)
+                        def run(self, topic: str, catalog: list[Document], project_hits: list[Document],
+                                deliverable_hits: list[Document], keywords: Optional[list[str]] = None,
+                                countries: Optional[list[str]] = None) -> dict:
+                            wanted = {c.strip().upper() for c in (countries or []) if c and c.strip()}
+                            projects, first = {}, {}
+                            for doc in catalog:
+                                meta = doc.meta or {}
+                                pid = meta.get("doc_id")
+                                if not pid or (wanted and not wanted & set(meta.get("countries") or [])):
+                                    continue
+                                projects.setdefault(pid, meta)
+                                if pid not in first or (meta.get("split_id") or 0) < (first[pid].meta.get("split_id") or 0):
+                                    first[pid] = doc
+
+                            def best_by_project(hits, deliverables):
+                                best = {}
+                                for doc in hits:
+                                    if doc.score is None:
+                                        continue
+                                    meta = doc.meta or {}
+                                    ids = (meta.get("projects") or []) if deliverables else [meta.get("doc_id")]
+                                    for pid in ids:
+                                        if pid in projects and (pid not in best or doc.score > best[pid][0]):
+                                            best[pid] = (doc.score, doc)
+                                return best
+
+                            def top(best, size):
+                                return sorted(best, key=lambda pid: (-best[pid][0], pid))[:size]
+
+                            by_project = best_by_project(project_hits, deliverables=False)
+                            by_deliverable = best_by_project(deliverable_hits, deliverables=True)
+                            from_projects = top(by_project, PROJECT_POOL)
+                            from_deliverables = top(by_deliverable, DELIVERABLE_POOL)
+
+                            terms = [k for k in (keywords or []) if k and k.strip()]
+                            if len(topic.split()) <= 4:
+                                terms.append(topic)
+                            patterns = [_pattern(t) for t in terms]
+                            titled = [pid for pid, meta in projects.items()
+                                      if any(p.search(str(title)) for p in patterns
+                                             for title in [meta.get("title") or ""] + list(meta.get("listing_titles") or []))]
+
+                            best = dict(by_project)
+                            for pid, hit in by_deliverable.items():
+                                if pid not in best or hit[0] > best[pid][0]:
+                                    best[pid] = hit
+                            via = {pid: [] for pid in [*titled, *from_projects, *from_deliverables]}
+                            for name, pids in (("title", titled), ("projects", from_projects), ("deliverables", from_deliverables)):
+                                for pid in pids:
+                                    via[pid].append(name)
+                            ordered = sorted(via, key=lambda pid: ("title" not in via[pid], -(best[pid][0] if pid in best else -9.0),
+                                                                   str(projects[pid].get("title")), pid))
+                            lines = [f"Candidate projects for '{topic}': {len(ordered)} ({len(titled)} title matches, "
+                                     f"{len(from_projects)} from project texts, {len(from_deliverables)} from deliverables). "
+                                     "These are candidates, not answers: keep only those whose title or snippet is really about the "
+                                     "topic."]
+                            if len(ordered) > MAX_CANDIDATES:
+                                lines.append(f"Showing the first {MAX_CANDIDATES} of {len(ordered)} candidates.")
+                            for pid in ordered[:MAX_CANDIDATES]:
+                                meta = projects[pid]
+                                programme_year = " ".join(str(v) for v in (meta.get("programme"), meta.get("year")) if v)
+                                parts = [f"- {meta.get('title') or pid} ({pid})", programme_year, ", ".join(meta.get("countries") or []),
+                                         "via: " + ", ".join(via[pid]), _snippet(best[pid][1] if pid in best else first.get(pid)),
+                                         meta.get("source_url") or ""]
+                                lines.append(" — ".join(p for p in parts if p))
+                            return {"result": "\n".join(lines)}
+            connections:
+            - sender: filters.catalog_filters
+              receiver: catalog.filters
+            - sender: filters.project_filters
+              receiver: project_search.filters
+            - sender: filters.deliverable_filters
+              receiver: deliverable_search.filters
+            - sender: embedder.embedding
+              receiver: project_search.query_embedding
+            - sender: embedder.embedding
+              receiver: deliverable_search.query_embedding
+            - sender: catalog.documents
+              receiver: aggregate.catalog
+            - sender: project_search.documents
+              receiver: aggregate.project_hits
+            - sender: deliverable_search.documents
+              receiver: aggregate.deliverable_hits
             max_runs_per_component: 100
             metadata: {}
 

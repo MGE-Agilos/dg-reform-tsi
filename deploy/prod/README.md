@@ -6,9 +6,10 @@ préalable sur le trial (`deploy/trial/`) : même découpage, mêmes prompts, m�
 | Fichier | Rôle |
 |---|---|
 | `index-tsi-corpus.yaml` | index `tsi-corpus` : découpage par section `#`, e5 multilingue hébergé, OpenSearch |
-| `pipeline-tsi-chat.yaml` | chatbot : Agent gpt-5.4 + `search_projects` + `search_deliverables` |
+| `pipeline-tsi-chat.yaml` | chatbot : Agent gpt-5.4 + `search_projects` + `search_deliverables` + `list_projects` + `find_projects` |
 | `pipeline-tsi-impact.yaml` | analyse d'impact : Agent gpt-5.4 + `search_projects` + `search_deliverables` + `web_search` (SearchApi) |
 | `pipeline-tsi-impact-openai-search.yaml` | variante non retenue : recherche web intégrée d'OpenAI (trop lente pour la limite de 2 minutes) |
+| `build_pipelines.py` | **génère** les trois `pipeline-*.yaml` (ne pas les modifier à la main) ; code des composants `Code` dans `src/tsi_agent/platform_code/` |
 | `upload.ps1` | téléversement par le SDK, avec contrôles ; clé lue dans l'environnement |
 | `build/` (non versionné) | `files/` à téléverser et `manifest.json` (chiffres attendus), générés par `prod-export` |
 
@@ -29,6 +30,28 @@ dans `build/manifest.json`.
   valeur inconnue est omise ; le type de chaque clé est le même dans tous les fichiers (contrôlé à l'export).
 - Les deux outils de recherche filtrent sur `doc_type` : `search_projects` (projets et programme),
   `search_deliverables` (livrables, cités avec le document et la page).
+
+## Questions d'agrégation (list_projects, find_projects)
+
+Une recherche ne renvoie que les 8 à 10 morceaux les plus proches de la question : pour « combien de projets »,
+« quels pays », la réponse est répartie sur des dizaines de projets que la recherche ne voit pas. Comme en local,
+le chatbot a deux outils qui ne sont pas une recherche par similarité :
+
+- **`list_projects`** (comptes exacts sur des critères officiels : pays, domaine, programme, année, page de
+  détail, mots du titre) : `Code` (filtres) → `FilterRetriever` (**tous** les morceaux projet correspondant aux
+  métadonnées, sans top-k) → `Code` (regroupement par projet, totaux par programme, année, pays, domaine, liste
+  tronquée). Le filtre par pays est fait dans le code : résultat exact quelle que soit la façon dont le document
+  store compare une liste de pays.
+- **`find_projects`** (sujet libre, ex. blanchiment) : `Code` (filtres) → embedder → 400 morceaux projet et 300
+  morceaux livrable les plus proches + catalogue des projets → `Code` (regroupement par projet : 60 depuis les
+  textes, 30 depuis les livrables, plus les projets dont le titre contient un mot-clé) → **candidats que l'agent
+  juge un par un** (règle 6 du prompt), puis comptes calculés par l'agent sur les projets retenus.
+
+Le code des composants `Code` est dans `src/tsi_agent/platform_code/` (testé : `tests/test_platform_code.py`),
+inséré tel quel dans le YAML par `build_pipelines.py`. Vérifié en local de bout en bout : le YAML de production
+chargé avec un stockage en mémoire à la place d'OpenSearch, les totaux de `list_projects` égaux à ceux du catalogue.
+Limite : une requête filtrée OpenSearch renvoie au plus 10 000 documents ; le corpus compte ~6 200 morceaux projet
+(l'outil signale un dépassement). Prérequis : composant `Code` et `FilterRetriever` disponibles dans le plan.
 
 ## Isolation dans l'organisation du client
 
@@ -109,6 +132,15 @@ Chatbot (`tsi-chat`) :
   2021, ouverture le 27 mai 2022.
 - « What did the deliverables of the Spanish primary care project recommend? » : passages de livrables cités
   avec le document et la page (outil `search_deliverables`).
+
+Agrégation (réponses exactes connues, banc du 8 octobre 2026 ; vérifier dans *Analytics* l'outil appelé) :
+- « Quels pays ont des projets TSI ou SRSP dans le domaine « gestion des migrations » ? » : 3 pays
+  (`list_projects`).
+- « Combien de projets dans le domaine « compétences, éducation et formation » pour le pays Grèce ? » : 3.
+- « How many projects does Latvia have in revenue administration and public financial management? » : 5.
+- « Quels pays ont des projets sur la lutte contre le blanchiment de capitaux ? » : 21 pays (`find_projects`,
+  28 projets pertinents ; local : 21/21).
+- « Which countries have projects on wildfires or forest fires? » : 8 pays.
 
 Analyse d'impact (`tsi-impact`), le titre du projet comme requête :
 - « Barnahus Slovenia: Supporting children victims of violence » : attendu 7-8/10 (trial 7, local Opus 8).
