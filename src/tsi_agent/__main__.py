@@ -79,6 +79,10 @@ def main(argv: list[str] | None = None) -> int:
                           help="un fichier par projet, programme et livrable + métadonnées (production Haystack Enterprise)")
     prod.add_argument("--out", default="deploy/prod/build/files",
                       help="dossier à téléverser (vidé des tsi-* d'abord) ; manifest.json écrit dans le dossier parent")
+    anom = sub.add_parser("anomalies",
+                          help="rapport d'anomalies de publication (CSV + Markdown), sans LLM ni réseau")
+    anom.add_argument("--out", help="dossier du rapport (défaut : <output_dir>/reports)")
+    anom.add_argument("--year", type=int, help="année de référence pour la gravité (défaut : année courante)")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
@@ -124,6 +128,12 @@ def main(argv: list[str] | None = None) -> int:
         manifest = export(Path(settings.output_dir), Path(args.out))
         print(json.dumps(manifest, indent=2, ensure_ascii=False))
         return 1 if manifest["meta_type_problems"] or manifest["files_over_10mb"] else 0
+    if args.command == "anomalies":
+        from tsi_agent.anomalies import run as run_anomalies
+        out = Path(args.out) if args.out else Path(settings.output_dir) / "reports"
+        print(json.dumps(run_anomalies(Path(settings.output_dir), out, args.year), indent=2, ensure_ascii=False))
+        print(f"Rapport : {out / 'anomalies.csv'} et {out / 'anomalies.md'}")
+        return 0
     if args.command == "impact-rescore":
         from tsi_agent.impact import scoring
         try:

@@ -214,3 +214,17 @@ def test_discover_only_is_the_dry_run_and_prints_the_discovery(monkeypatch, caps
     assert "Merged by the LLM judge: 1" in out and "adultdigitalup -> tsi-2021-improve (high: reworded)" in out
     assert "Rejected by the LLM judge: 2" in out
     assert str(report_file) in out
+
+
+def test_anomalies_command_writes_report(tmp_path):
+    out = tmp_path / "output"
+    (out / "projects").mkdir(parents=True)
+    (out / "projects" / "a.md").write_text(
+        "---\nproject_id: a\ntitle: A\nprogramme: TSI\nyear: 2020\ndetail_page: false\n---\n\n# A\n",
+        encoding="utf-8")
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(f"output_dir: {out.as_posix()}\n", encoding="utf-8")
+    reports = tmp_path / "reports"
+    code = cli.main(["--settings", str(settings), "anomalies", "--out", str(reports), "--year", "2026"])
+    assert code == 0
+    assert (reports / "anomalies.csv").exists() and (reports / "anomalies.md").exists()

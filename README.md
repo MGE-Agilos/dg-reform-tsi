@@ -433,6 +433,19 @@ sémantiques, jugés par Sonnet, enregistrée dans `output/eval/aggregation_trut
 vrai chatbot ; rappel, précision et F1 des pays cités (noms anglais/français, codes ISO) et des projets cités
 (sources, titres, identifiants). Sorties : `output/eval/aggregation-<date>.md` et `.csv`.
 
+## Rapport d'anomalies
+
+Contrôle de publication, sans LLM ni réseau, à partir de `output/` (spec :
+`docs/superpowers/specs/2026-10-12-csr-linking-anomalies-design.md`).
+
+```powershell
+.venv\Scripts\python -m tsi_agent anomalies [--out DIR] [--year N]
+```
+
+Écrit `output/reports/anomalies.csv` (UTF-8 avec BOM, pour Excel) et `anomalies.md`. Types d'anomalies :
+`tsi_not_published` (gravité selon l'âge, `--year` fixe l'année de référence), `srsp_title_only`,
+`published_no_deliverable`, `missing_results`, `orphan_deliverable`, `possible_duplicate`.
+
 ## Planification (Windows)
 
 À exécuter depuis le dossier du dépôt (les chemins sont résolus en absolu à partir du dossier courant) :
