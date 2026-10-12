@@ -54,3 +54,30 @@ def test_row_fields():
     assert row == Anomaly(project_id="a", title="A", programme="TSI", year=2022, countries="HR,SI",
                           type="tsi_not_published", severity="high", detail="no detail page (first seen 2026-09-30)",
                           url="https://example.eu/a")
+
+
+def test_orphan_deliverables_use_ids_and_aliases():
+    projects = [_project("a", aliases=["old-a"])]
+    pubs = [{"publication_id": "p1", "title": "P1", "url": "u1", "project_ids": ["a"]},
+            {"publication_id": "p2", "title": "P2", "url": "u2", "project_ids": ["old-a"]},
+            {"publication_id": "p3", "title": "P3", "url": "u3", "project_ids": ["ghost"]},
+            {"publication_id": "p4", "title": "P4", "url": "u4", "project_ids": []}]
+    rows = [r for r in detect(projects, pubs, 2026) if r.type == "orphan_deliverable"]
+    assert [r.detail for r in rows] == ["p3: references unknown ghost", "p4: references no project"]
+    assert all(r.project_id == "" and r.severity == "medium" for r in rows)
+
+
+def test_possible_duplicates_need_same_programme_and_country():
+    projects = [_project("x1", title="Support to the reform of the Greek tax administration"),
+                _project("x2", title="Support to the reform of the tax administration of Greece", year=2023),
+                _project("x3", title="Support to the reform of the tax administration", countries=["HR"]),
+                _project("x4", title="Support to the reform of the Greek tax administration", programme="SRSP")]
+    rows = [r for r in detect(projects, [], 2026) if r.type == "possible_duplicate"]
+    assert [(r.project_id, r.detail.split(" (")[0]) for r in rows] == [("x1", "similar to x2")]
+
+
+def test_detect_sorts_by_severity_then_type():
+    projects = [_project("z", results=None), _project("y", detail_page=False, year=2021),
+                _project("w", programme="SRSP", detail_page=False)]
+    assert [(r.severity, r.type) for r in detect(projects, [], 2026)] == [
+        ("high", "tsi_not_published"), ("low", "missing_results"), ("info", "srsp_title_only")]
