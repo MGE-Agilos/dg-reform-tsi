@@ -137,3 +137,40 @@ def test_run_writes_csv_and_markdown(tmp_path):
     assert "| tsi_not_published | high | 1 |" in md
     assert "## tsi_not_published (1)" in md
     assert "Alpha é" in md
+
+
+def test_load_projects_skips_invalid_and_non_dict_front_matter(tmp_path):
+    out = _output_dir(tmp_path)
+    (out / "projects" / "badyaml.md").write_text("---\ntitle: [unclosed\n---\n\nbody\n", encoding="utf-8")
+    (out / "projects" / "listfm.md").write_text("---\n- a\n- b\n---\n\nbody\n", encoding="utf-8")
+    assert [p["project_id"] for p in load_projects(out)] == ["alpha"]
+
+
+def test_load_projects_normalises_atypical_fields(tmp_path):
+    out = _output_dir(tmp_path)
+    (out / "projects" / "odd.md").write_text(
+        "---\nproject_id: odd\ntitle: Odd\nprogramme: TSI\nyear: '2021'\ncountries: GR\n---\n\nbody\n",
+        encoding="utf-8")
+    odd = next(p for p in load_projects(out) if p["project_id"] == "odd")
+    assert odd["year"] == 2021 and odd["countries"] == ["GR"]
+
+
+def test_duplicates_one_row_for_shared_countries_and_no_self_pair():
+    t = "Support to the reform of the Greek tax administration"
+    two = [_project("d1", title=t, countries=["GR", "HR"]), _project("d2", title=t, countries=["GR", "HR"])]
+    rows = [r for r in detect(two, [], 2026) if r.type == "possible_duplicate"]
+    assert len(rows) == 1
+    twice = [_project("d1", title=t, countries=["GR", "GR"])]
+    assert [r for r in detect(twice, [], 2026) if r.type == "possible_duplicate"] == []
+
+
+def test_csv_neutralises_formula_cells(tmp_path):
+    out = _output_dir(tmp_path)
+    (out / "projects" / "evil.md").write_text(
+        "---\nproject_id: evil\ntitle: '=HYPERLINK(\"x\")'\nprogramme: TSI\nyear: 2021\ncountries:\n- GR\n"
+        "detail_page: false\n---\n\nbody\n", encoding="utf-8")
+    reports = tmp_path / "reports"
+    run(out, reports, current_year=2026)
+    with (reports / "anomalies.csv").open(encoding="utf-8-sig", newline="") as fh:
+        titles = [r["title"] for r in csv.DictReader(fh)]
+    assert "'=HYPERLINK(\"x\")" in titles

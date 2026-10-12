@@ -9,6 +9,8 @@ from datetime import date
 from itertools import combinations
 from pathlib import Path
 
+import yaml
+
 from tsi_agent.fuzzy import THRESHOLD, title_similarity
 from tsi_agent.render import parse_front_matter
 
@@ -58,16 +60,39 @@ def project_anomalies(p: dict, current_year: int) -> list[Anomaly]:
     return out
 
 
+def _clean(front: dict) -> dict:
+    """Normalise les champs atypiques du front matter (annee, pays, titre, programme)."""
+    out = dict(front)
+    year = out.get("year")
+    if isinstance(year, bool):
+        year = None
+    elif isinstance(year, str) and year.strip().isdigit():
+        year = int(year.strip())
+    elif not isinstance(year, int):
+        year = None
+    out["year"] = year
+    countries = out.get("countries")
+    if countries is None:
+        countries = []
+    elif not isinstance(countries, list):
+        countries = [countries]
+    out["countries"] = [str(c) for c in countries]
+    for key in ("title", "programme"):
+        if out.get(key) is not None:
+            out[key] = str(out[key])
+    return out
+
+
 def load_projects(output_dir: Path) -> list[dict]:
     """Front matter de chaque projet (fichiers sans front matter ignores)."""
     projects = []
     for path in sorted((output_dir / "projects").glob("*.md")):
         try:
             front, _ = parse_front_matter(path.read_text(encoding="utf-8"))
-        except ValueError:
+        except (ValueError, yaml.YAMLError):
             continue
-        if front and front.get("project_id"):
-            projects.append(front)
+        if isinstance(front, dict) and front.get("project_id"):
+            projects.append(_clean(front))
     return projects
 
 
@@ -95,7 +120,9 @@ def possible_duplicates(projects: list[dict]) -> list[Anomaly]:
     """Paires de projets d'un meme programme et d'un pays commun aux titres presque identiques."""
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for p in projects:
-        for country in p.get("countries") or []:
+        if not p.get("programme"):
+            continue
+        for country in dict.fromkeys(p.get("countries") or []):
             groups[(p.get("programme"), country)].append(p)
     seen: set[tuple[str, str]] = set()
     out = []
@@ -103,11 +130,11 @@ def possible_duplicates(projects: list[dict]) -> list[Anomaly]:
         for a, b in combinations(members, 2):
             first, second = sorted((a, b), key=lambda p: p["project_id"])
             key = (first["project_id"], second["project_id"])
-            if key in seen:
+            if first["project_id"] == second["project_id"] or key in seen:
                 continue
+            seen.add(key)
             score = title_similarity(first.get("title") or "", second.get("title") or "")
             if score >= THRESHOLD:
-                seen.add(key)
                 out.append(_row(first, "possible_duplicate", "medium",
                                 f"similar to {second['project_id']} ({second.get('year')}, score {score:.2f})"))
     return out
@@ -146,12 +173,19 @@ def _markdown(rows: list[Anomaly], current_year: int) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _safe_cell(value):
+    """Neutralise l'injection de formule Excel : prefixe d'une apostrophe les chaines =, +, -, @."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
+        return "'" + value
+    return value
+
+
 def write_report(rows: list[Anomaly], out_dir: Path, current_year: int) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     with (out_dir / "anomalies.csv").open("w", encoding="utf-8-sig", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=[f.name for f in fields(Anomaly)])
         writer.writeheader()
-        writer.writerows(asdict(r) for r in rows)
+        writer.writerows({k: _safe_cell(v) for k, v in asdict(r).items()} for r in rows)
     (out_dir / "anomalies.md").write_text(_markdown(rows, current_year), encoding="utf-8")
     return {"total": len(rows), "by_type": dict(Counter(r.type for r in rows)),
             "by_severity": dict(Counter(r.severity for r in rows))}

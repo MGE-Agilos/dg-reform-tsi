@@ -17,6 +17,7 @@ candidat ; en cas d'egalite parfaite entre deux candidats, rien n'est fusionne (
 import difflib
 import re
 import unicodedata
+from functools import lru_cache
 from dataclasses import dataclass
 
 from tsi_agent.countries import COUNTRIES
@@ -83,6 +84,7 @@ class _Norm:
     markers: frozenset[str]
 
 
+@lru_cache(maxsize=None)
 def _norm(title: str) -> _Norm:
     words = normalize_title(title)
     return _Norm(" ".join(words), prefix_tokens(title),
