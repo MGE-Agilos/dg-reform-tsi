@@ -512,7 +512,7 @@ def test_anomalies_command_writes_report(tmp_path):
     assert (reports / "anomalies.csv").exists() and (reports / "anomalies.md").exists()
 ```
 
-`main` vient de `tsi_agent.__main__` et `--sources` garde sa valeur par défaut, `config/sources.yaml`, qui existe dans le dépôt.
+`cli` est déjà importé en tête du fichier (`from tsi_agent import __main__ as cli`) ; `--sources` garde sa valeur par défaut, `config/sources.yaml`, qui existe dans le dépôt.
 
 - [ ] **Step 2 : vérifier l'échec**
 
