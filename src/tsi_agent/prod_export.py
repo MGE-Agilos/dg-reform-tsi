@@ -19,6 +19,8 @@ from tsi_agent.chunking import chunk_file
 from tsi_agent.trial_bundle import section as project_section
 
 CORPUS = "dg-reform-tsi"
+# Sujet du corpus pour le routeur d'entree de l'index (MetadataRouter : seuls les fichiers Topic == TOPIC sont indexes).
+TOPIC = "TSI-BDG"
 PREFIX = "tsi-"
 FOLDERS = {"projects": "project", "programme": "programme", "deliverables": "deliverable"}
 WARN_BYTES = 10_000_000
@@ -26,8 +28,8 @@ WARN_BYTES = 10_000_000
 _HEADING = re.compile(r"^[ \t]{0,3}(?:#+(?:[ \t]+|$))+", re.MULTILINE)
 # Type attendu de chaque cle de metadonnees (meme type dans tous les fichiers).
 META_TYPES: dict[str, type] = {
-    "corpus": str, "doc_type": str, "doc_id": str, "title": str, "countries": list, "programme": str, "year": int,
-    "policy_area": str, "results": str, "projects": list, "multi_country": bool, "detail_page": bool,
+    "Topic": str, "corpus": str, "doc_type": str, "doc_id": str, "title": str, "countries": list, "programme": str,
+    "year": int, "policy_area": str, "results": str, "projects": list, "multi_country": bool, "detail_page": bool,
     "source_url": str, "listing_titles": list, "chunks": int,
 }
 
@@ -57,7 +59,8 @@ def file_meta(docs: list[Document]) -> dict:
     if doc_type == "deliverable":
         source_url = None  # une URL par document du livrable : dans le texte de chaque morceau
     candidates = {
-        "corpus": CORPUS, "doc_type": doc_type, "doc_id": first.get("doc_id"), "title": first.get("title"),
+        "Topic": TOPIC, "corpus": CORPUS, "doc_type": doc_type, "doc_id": first.get("doc_id"),
+        "title": first.get("title"),
         "countries": list(first.get("countries") or []), "programme": first.get("programme"),
         "year": first.get("year"), "policy_area": first.get("policy_area"), "results": first.get("results"),
         "projects": list(projects or []), "multi_country": first.get("multi_country"),

@@ -24,7 +24,7 @@ dans `build/manifest.json`.
   (projet — programme année — pays — section, ou publication — document, p. N — programme année — pays), texte,
   puis id, domaine, résultat, projets liés et URL source. L'index découpe au niveau `#` seulement et retrouve
   exactement ces morceaux (vérifié en local sur les 2 635 fichiers).
-- Chaque fichier a son `.meta.json`, recopié par la plateforme sur ses morceaux : `corpus` (`dg-reform-tsi`),
+- Chaque fichier a son `.meta.json`, recopié par la plateforme sur ses morceaux : `Topic` (`TSI-BDG`), `corpus` (`dg-reform-tsi`),
   `doc_type` (`project`, `programme`, `deliverable`), `doc_id`, `title`, `countries` (codes ISO), `programme`,
   `year`, `policy_area`, `results`, `projects`, `multi_country`, `detail_page`, `source_url`, `chunks`. Une
   valeur inconnue est omise ; le type de chaque clé est le même dans tous les fichiers (contrôlé à l'export).
@@ -59,9 +59,12 @@ Les fichiers d'un workspace ne sont pas rangés en dossiers et **un index traite
 son workspace**. Trois protections :
 
 1. **Workspace dédié `tsi-reform`** : fichiers, index, pipelines, secrets et clés API propres au projet.
-2. **Filtre de fichiers de l'index** (*Index > Settings*, à régler avant *Enable*) : préfixe `tsi-` **et**
+2. **Routeur d'entrée de l'index** (`input_topic_router`, `MetadataRouter`) : seuls les fichiers dont la
+   métadonnée `Topic` vaut **`TSI-BDG`** sont indexés ; les autres partent sur la sortie `unmatched`, non connectée
+   (même convention que les autres corpus du client, par exemple `RRP-CID`).
+3. **Filtre de fichiers de l'index** (*Index > Settings*, à régler avant *Enable*) : préfixe `tsi-` **et**
    métadonnée `corpus == dg-reform-tsi`. Un fichier étranger déposé dans le workspace n'est pas indexé.
-3. Si un autre index partage un jour ce workspace : lui donner le filtre inverse `corpus != dg-reform-tsi`
+4. Si un autre index partage un jour ce workspace : lui donner le filtre inverse `corpus != dg-reform-tsi`
    (possible seulement par l'API, `PATCH /api/v1/workspaces/{workspace}/indexes/{index}`).
 
 ## À fournir ou vérifier côté client

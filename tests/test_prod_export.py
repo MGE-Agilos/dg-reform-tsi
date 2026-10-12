@@ -94,7 +94,8 @@ def test_export_writes_one_file_per_document_with_meta_and_manifest(tmp_path):
 
     project_meta = json.loads((out / "tsi-project-alpha.md.meta.json").read_text(encoding="utf-8"))
     assert project_meta == {
-        "corpus": CORPUS, "doc_type": "project", "doc_id": "alpha", "title": "Alpha", "countries": ["GR"],
+        "Topic": "TSI-BDG", "corpus": CORPUS, "doc_type": "project", "doc_id": "alpha", "title": "Alpha",
+        "countries": ["GR"],
         "programme": "TSI", "year": 2022, "policy_area": "green-transition", "results": "achieved",
         "projects": ["alpha"], "multi_country": False, "detail_page": True,
         "source_url": "https://example.eu/alpha", "listing_titles": [], "chunks": 2}
