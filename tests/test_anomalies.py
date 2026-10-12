@@ -81,3 +81,59 @@ def test_detect_sorts_by_severity_then_type():
                 _project("w", programme="SRSP", detail_page=False)]
     assert [(r.severity, r.type) for r in detect(projects, [], 2026)] == [
         ("high", "tsi_not_published"), ("low", "missing_results"), ("info", "srsp_title_only")]
+
+
+PROJECT_MD = """---
+project_id: {pid}
+title: {title}
+programme: TSI
+year: 2021
+countries:
+- GR
+detail_page: false
+source_urls:
+- https://example.eu/{pid}
+first_seen: '2026-09-30'
+---
+
+# {title}
+"""
+
+
+def _output_dir(tmp_path):
+    out = tmp_path / "output"
+    (out / "projects").mkdir(parents=True)
+    (out / "state").mkdir()
+    (out / "projects" / "alpha.md").write_text(PROJECT_MD.format(pid="alpha", title="Alpha é"), encoding="utf-8")
+    (out / "projects" / "broken.md").write_text("no front matter", encoding="utf-8")
+    (out / "state" / "deliverables.json").write_text(json.dumps({"publications": {
+        "p1": {"publication_id": "p1", "title": "P1", "url": "u1", "project_ids": ["ghost"]}}}), encoding="utf-8")
+    return out
+
+
+def test_loaders(tmp_path):
+    out = _output_dir(tmp_path)
+    assert [p["project_id"] for p in load_projects(out)] == ["alpha"]
+    assert [p["publication_id"] for p in load_publications(out)] == ["p1"]
+    assert load_publications(tmp_path / "missing") == []
+
+
+def test_run_writes_csv_and_markdown(tmp_path):
+    out = _output_dir(tmp_path)
+    reports = tmp_path / "reports"
+    summary = run(out, reports, current_year=2026)
+    assert summary == {"total": 2, "by_type": {"tsi_not_published": 1, "orphan_deliverable": 1},
+                       "by_severity": {"high": 1, "medium": 1}}
+    raw = (reports / "anomalies.csv").read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")  # BOM : Excel lit l'UTF-8
+    with (reports / "anomalies.csv").open(encoding="utf-8-sig", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    assert list(rows[0]) == ["project_id", "title", "programme", "year", "countries", "type", "severity",
+                             "detail", "url"]
+    assert rows[0]["title"] == "Alpha é" and rows[0]["year"] == "2021"
+    assert rows[1]["year"] == ""
+    md = (reports / "anomalies.md").read_text(encoding="utf-8")
+    assert "# Publication anomalies" in md
+    assert "| tsi_not_published | high | 1 |" in md
+    assert "## tsi_not_published (1)" in md
+    assert "Alpha é" in md

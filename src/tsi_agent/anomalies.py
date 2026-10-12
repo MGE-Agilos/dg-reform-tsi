@@ -121,5 +121,43 @@ def detect(projects: list[dict], publications: list[dict], current_year: int) ->
     return sorted(rows, key=lambda a: (SEVERITY_ORDER[a.severity], a.type, a.programme, a.year or 0, a.project_id))
 
 
+def _markdown(rows: list[Anomaly], current_year: int) -> str:
+    lines = ["# Publication anomalies", "",
+             f"Generated {date.today().isoformat()} (reference year {current_year}). {len(rows)} anomalies.", "",
+             "## By type and severity", "", "| type | severity | count |", "|---|---|---|"]
+    by_type_sev = Counter((r.type, r.severity) for r in rows)
+    for (type_, sev), n in sorted(by_type_sev.items(), key=lambda kv: (SEVERITY_ORDER[kv[0][1]], kv[0][0])):
+        lines.append(f"| {type_} | {sev} | {n} |")
+    lines += ["", "## By programme and year", "", "| programme | year | count |", "|---|---|---|"]
+    for (prog, year), n in sorted(Counter((r.programme or "-", r.year) for r in rows).items(),
+                                  key=lambda kv: (kv[0][0], kv[0][1] or 0)):
+        lines.append(f"| {prog} | {year if year is not None else '-'} | {n} |")
+    by_type: dict[str, list[Anomaly]] = defaultdict(list)
+    for r in rows:
+        by_type[r.type].append(r)
+    for type_, items in by_type.items():
+        lines += ["", f"## {type_} ({len(items)})", ""]
+        for r in items[:MD_ROWS_PER_TYPE]:
+            label = f"{r.title} ({r.project_id})" if r.project_id else r.title
+            meta = " · ".join(str(v) for v in (r.programme, r.year, r.countries, r.severity, r.detail) if v)
+            lines.append(f"- [{label}]({r.url}) — {meta}" if r.url else f"- {label} — {meta}")
+        if len(items) > MD_ROWS_PER_TYPE:
+            lines.append(f"- … {len(items) - MD_ROWS_PER_TYPE} more in anomalies.csv")
+    return "\n".join(lines) + "\n"
+
+
+def write_report(rows: list[Anomaly], out_dir: Path, current_year: int) -> dict:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with (out_dir / "anomalies.csv").open("w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=[f.name for f in fields(Anomaly)])
+        writer.writeheader()
+        writer.writerows(asdict(r) for r in rows)
+    (out_dir / "anomalies.md").write_text(_markdown(rows, current_year), encoding="utf-8")
+    return {"total": len(rows), "by_type": dict(Counter(r.type for r in rows)),
+            "by_severity": dict(Counter(r.severity for r in rows))}
+
+
 def run(output_dir: Path, out_dir: Path, current_year: int | None = None) -> dict:
-    raise NotImplementedError  # remplace a la tache 5
+    year = current_year or date.today().year
+    rows = detect(load_projects(output_dir), load_publications(output_dir), year)
+    return write_report(rows, out_dir, year)
