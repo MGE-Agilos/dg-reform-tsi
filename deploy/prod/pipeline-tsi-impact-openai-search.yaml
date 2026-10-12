@@ -2,7 +2,8 @@
 # sous-pipeline qui appelle OpenAI (Responses API) avec son outil web_search et renvoie constats + URL (un Agent
 # Haystack ne peut pas melanger cet outil integre et ses propres outils). Chaque recherche prend plusieurs dizaines
 # de secondes : sur le trial, l'analyse a ete coupee apres 2 a 3 minutes (CancelledError), meme allegee (3
-# recherches, contexte reduit). A n'utiliser que si le plan du client permet une duree plus longue ou les Jobs.
+# recherches, contexte reduit). A n'utiliser que si le plan du client permet une duree plus longue ou les Jobs, et
+# avec un acces direct a OpenAI (OPENAI_API_KEY, API Responses) : la passerelle EC GPT n'est pas prevue pour cet outil.
 components:
   agent:
     type: haystack.components.agents.agent.Agent
@@ -10,12 +11,15 @@ components:
       chat_generator:
         type: haystack.components.generators.chat.openai.OpenAIChatGenerator
         init_parameters:
+          api_base_url: https://api.tech.ec.europa.eu/ecgpt/v1
           api_key:
             type: env_var
             env_vars:
-            - OPENAI_API_KEY
+            - GPT_EC
             strict: false
-          model: gpt-5.4
+          model: gpt-5.1
+          timeout: 180
+          max_retries: 2
           generation_kwargs:
             max_completion_tokens: 8000
       exit_conditions:

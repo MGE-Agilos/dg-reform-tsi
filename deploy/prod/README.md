@@ -1,13 +1,16 @@
 # Déploiement en production sur Haystack Enterprise Platform
 
-Corpus complet (projets, fiches programme, livrables), OpenAI gpt-5.4, publication par la Gateway. Validé au
+Corpus complet (projets, fiches programme, livrables), **gpt-5.1 via la passerelle EC GPT** de la Commission
+(`https://api.tech.ec.europa.eu/ecgpt/v1`, API compatible OpenAI, clé dans le secret `GPT_EC`), publication par
+la Gateway. Validé au
 préalable sur le trial (`deploy/trial/`) : même découpage, mêmes prompts, mêmes structures de pipelines.
 
 | Fichier | Rôle |
 |---|---|
 | `index-tsi-corpus.yaml` | index `tsi-corpus` : découpage par section `#`, e5 multilingue hébergé, OpenSearch |
-| `pipeline-tsi-chat.yaml` | chatbot : Agent gpt-5.4 + `search_projects` + `search_deliverables` + `list_projects` + `find_projects` |
-| `pipeline-tsi-impact.yaml` | analyse d'impact : Agent gpt-5.4 + `search_projects` + `search_deliverables` + `web_search` (SearchApi) |
+| `pipeline-tsi-chat.yaml` | chatbot : Agent gpt-5.1 + `search_projects` + `search_deliverables` + `list_projects` + `find_projects` (fichiers téléversés par le SDK, avec leurs métadonnées) |
+| `pipeline-tsi-chat-ui.yaml` | chatbot sans `list_projects` ni `find_projects` : à utiliser quand les fichiers sont téléversés par l'interface (métadonnées communes par lot seulement) |
+| `pipeline-tsi-impact.yaml` | analyse d'impact : Agent gpt-5.1 + `search_projects` + `search_deliverables` + `web_search` (SearchApi) |
 | `pipeline-tsi-impact-openai-search.yaml` | variante non retenue : recherche web intégrée d'OpenAI (trop lente pour la limite de 2 minutes) |
 | `build_pipelines.py` | **génère** les trois `pipeline-*.yaml` (ne pas les modifier à la main) ; code des composants `Code` dans `src/tsi_agent/platform_code/` |
 | `upload.ps1` | téléversement par le SDK, avec contrôles ; clé lue dans l'environnement |
@@ -73,17 +76,24 @@ son workspace**. Trois protections :
   durée maximale d'une recherche (2 minutes dans la doc : l'analyse d'impact est limitée à 4 recherches web
   pour cette raison) ; volume de documents de l'index (~84 000).
 - **URL de l'API** de la plateforme du client (région) et une **clé API du workspace** pour le téléversement.
-- **Intégrations** (*Settings > Integrations*) : **OpenAI** (clé du client) et **SearchApi** (compte du client,
+- **LLM** : secret **`GPT_EC`** (clé de la passerelle EC GPT) dans *Settings > Workspace > Secrets* du workspace,
+  nom identique à la variable lue par les pipelines ; modèle `gpt-5.1` proposé par la passerelle, avec appel
+  d'outils. Le connecteur OpenAI de la plateforme n'est pas utilisé : le modèle est déclaré par l'adresse de la
+  passerelle. Si l'interface affiche « Model (custom) is not connected », c'est que le pipeline collé déclare encore
+  le modèle OpenAI direct : coller la version générée actuelle.
+- **Intégration SearchApi** (*Settings > Integrations*, compte du client,
   offre payante : l'essai gratuit se limite à 100 recherches ; offres à partir de 40 $/mois pour 10 000
   recherches ; une analyse d'impact en fait 4 au plus). Si la recherche web signale une clé manquante, ajouter
   aussi un secret `SEARCHAPI_API_KEY` dans le workspace.
-- **Modèle** : `gpt-5.4` doit figurer dans la liste des modèles OpenAI de la plateforme.
+- **Validation** : la configuration a été validée sur le trial avec gpt-5.4 ; gpt-5.1 via EC GPT est à revalider
+  avec la recette (scores d'impact, citations, durée).
 
 ## Étapes
 
 ### 1. Workspace et intégrations
 
-Créer le workspace `tsi-reform` (*Settings > Organization > Workspaces*), connecter OpenAI et SearchApi, créer une clé API
+Créer le workspace `tsi-reform` (*Settings > Organization > Workspaces*), ajouter le secret `GPT_EC` (*Settings >
+Workspace > Secrets*), connecter SearchApi, créer une clé API
 pour ce workspace (*Settings > Workspace > API Keys*).
 
 ### 2. Générer et téléverser le corpus
@@ -155,7 +165,7 @@ Analyse d'impact (`tsi-impact`), le titre du projet comme requête :
 
 `web_search` interroge SearchApi (moteur Google, 5 résultats), lit les pages trouvées et renvoie leur URL et le
 début de leur texte : c'est la configuration validée sur le trial (~30 s par analyse, scores cohérents avec la
-version locale). L'analyse elle-même est faite par gpt-5.4.
+version locale). L'analyse elle-même est faite par le LLM du client (gpt-5.1 via EC GPT).
 
 Variante `pipeline-tsi-impact-openai-search.yaml` : recherche web intégrée d'OpenAI, par un sous-pipeline
 (gpt-5.4 + outil `web_search` de l'API Responses ; un Agent Haystack ne peut pas mélanger cet outil intégré et
@@ -189,6 +199,6 @@ sur la plateforme : le supprimer dans *Files* (son nom figure dans l'export pré
 |---|---|
 | `list_projects`, `find_projects` : comptes et listes exacts sur tout le corpus | recherche seulement : listes non exhaustives (le prompt le fait dire à l'agent) |
 | `get_project` : texte complet d'un projet | passages les plus pertinents seulement |
-| impact : Opus, 10 recherches (WebSearch du CLI), `fetch_page`, score par un second appel | gpt-5.4, 4 recherches web SearchApi, score dans le rapport |
+| impact : Opus, 10 recherches (WebSearch du CLI), `fetch_page`, score par un second appel | gpt-5.1 (EC GPT), 4 recherches web SearchApi, score dans le rapport |
 
 Ces outils peuvent revenir comme composants custom si le besoin est confirmé en production.

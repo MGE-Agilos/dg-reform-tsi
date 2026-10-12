@@ -152,15 +152,23 @@ def find_projects_tool() -> str:
             "max_runs_per_component": 100, "metadata": {}},
     }})
 
+# LLM du client : passerelle EC GPT de la Commission (API compatible OpenAI), cle dans le secret GPT_EC du workspace.
+# OpenAIChatGenerator (et non OpenAIGenerator) : seul le generateur de chat sait appeler des outils.
+LLM_BASE_URL = "https://api.tech.ec.europa.eu/ecgpt/v1"
+LLM_KEY_ENV = "GPT_EC"
+LLM_MODEL = "gpt-5.1"
 GENERATOR = """      chat_generator:
         type: haystack.components.generators.chat.openai.OpenAIChatGenerator
         init_parameters:
+          api_base_url: {base_url}
           api_key:
             type: env_var
             env_vars:
-            - OPENAI_API_KEY
+            - {key_env}
             strict: false
-          model: gpt-5.4
+          model: {model}
+          timeout: 180
+          max_retries: 2
           generation_kwargs:
             max_completion_tokens: {max_tokens}
 """
@@ -380,7 +388,7 @@ def agent(max_tokens, steps, prompt):
   agent:
     type: haystack.components.agents.agent.Agent
     init_parameters:
-{GENERATOR.format(max_tokens=max_tokens)}      exit_conditions:
+{GENERATOR.format(max_tokens=max_tokens, base_url=LLM_BASE_URL, key_env=LLM_KEY_ENV, model=LLM_MODEL)}      exit_conditions:
       - text
       max_agent_steps: {steps}
       raise_on_tool_invocation_failure: false
@@ -463,6 +471,43 @@ labour-market-and-social-protection, migration-management, public-administration
 revenue-administration-and-public-financial-management, skills-education-and-training."""
 
 
+CHAT_PROMPT_SEARCH_ONLY = """You answer questions about technical support projects of the European Commission (DG REFORM): the
+Technical Support Instrument (TSI, 2021 onwards) and its predecessor, the Structural Reform Support
+Programme (SRSP, 2017-2020). Some older projects (SRSS, 2012-2016) are pre-SRSP technical assistance to
+Greece. You only know what the tools return.
+
+Tools:
+- search_projects: project texts and factsheets. Each passage starts with "project title — programme year —
+  countries — section" and ends with the project id, policy area, results and source URL.
+- search_deliverables: full text of the projects' deliverables. Each passage starts with "publication title —
+  document, p. N — programme year — countries" and ends with the deliverable id, the related project ids and
+  the document URL.
+
+Rules:
+1. Answer in the language of the user's question.
+2. Use only information returned by the tools in this conversation. If it is not there, say so plainly.
+3. Cite every factual statement with the passage number, like [n]. End with a "Sources" list grouped by project or
+   publication: one line per project or publication with all its cited numbers, its title (and the document and
+   page for a deliverable) and its URL, e.g. "[2][5][9] Project title — URL". Never put two projects on one line.
+4. When a passage is marked as an AI-generated summary, say that the information comes from an AI-generated
+   summary rather than from the official text.
+5. Counts and lists of projects come from a search, not from a complete database: give the projects you found
+   with their citations and say that the list may not be exhaustive. Never estimate a total; when you announce a
+   number of projects, it must match the projects you list.
+6. For a list or a comparison, run 2 to 3 searches with different phrasings of the topic (synonyms and related
+   terms, e.g. "e-government", "digital public services", "interoperability", "digitalisation of justice"), and
+   search each compared item separately (for example one search per country).
+7. Projects without a detail page ("Detail page: no") are only known by their title, country and year: say so.
+8. For follow-up questions, reuse the context of the conversation (countries, topics, projects cited).
+9. You have a limited number of steps: after a few searches, answer with what you found.
+10. Be concise: at most about 250 words unless the user asks for details or a full list; use a short table only
+    for comparisons. Use headings sparingly (at most one level).
+11. Use search_projects to identify projects; use search_deliverables for details from the reports (figures,
+    methods, recommendations, detailed results), and cite the document and page.
+12. Always write search queries in English, naming the country, the institution and the topic, whatever the
+    language of the question."""
+
+
 def impact_prompt(web_tool: str, limit: str) -> str:
     return f"""You are an impact analyst for the European Commission's DG REFORM. You assess the impact of one Technical
 Support Instrument (TSI) or SRSP project on its country, on Europe and on the world, against the project's own
@@ -503,7 +548,7 @@ An objective whose intended reform did not happen, or went the other way, is "no
 evidence"."""
 
 
-CHAT_HEADER = """# Pipeline "tsi-chat" (production) : chatbot RAG sur l'index tsi-corpus, OpenAI gpt-5.4. GENERE par
+CHAT_HEADER = """# Pipeline "tsi-chat" (production) : chatbot RAG sur l'index tsi-corpus, gpt-5.1 via EC GPT. GENERE par
 # deploy/prod/build_pipelines.py : ne pas modifier a la main.
 # search_projects (projets et fiches programme) et search_deliverables (texte integral des livrables) : recherche
 # hybride filtree par la metadonnee doc_type, numerotation [n] continue (etat documents).
@@ -511,7 +556,7 @@ CHAT_HEADER = """# Pipeline "tsi-chat" (production) : chatbot RAG sur l'index ts
 # find_projects : candidats pour un sujet libre (400 morceaux projet + 300 morceaux livrable regroupes par projet,
 # plus mots-cles des titres), juges par l'agent. Historique de la conversation par l'entree `messages`.
 """
-IMPACT_HEADER = """# Pipeline "tsi-impact" (production) : analyse d'impact d'un projet, OpenAI gpt-5.4.
+IMPACT_HEADER = """# Pipeline "tsi-impact" (production) : analyse d'impact d'un projet, gpt-5.1 via EC GPT (secret GPT_EC).
 # Outils : search_projects, search_deliverables (index tsi-corpus) et web_search (SearchApi : 5 resultats, pages lues
 # par l'outil ; 4 recherches au plus). Valide sur le trial : ~30 s par analyse, sous la limite de 2 minutes d'une
 # recherche (Search). Variante avec la recherche web integree d'OpenAI : pipeline-tsi-impact-openai-search.yaml.
@@ -521,7 +566,13 @@ IMPACT_OPENAI_HEADER = """# Pipeline "tsi-impact", VARIANTE recherche web OpenAI
 # sous-pipeline qui appelle OpenAI (Responses API) avec son outil web_search et renvoie constats + URL (un Agent
 # Haystack ne peut pas melanger cet outil integre et ses propres outils). Chaque recherche prend plusieurs dizaines
 # de secondes : sur le trial, l'analyse a ete coupee apres 2 a 3 minutes (CancelledError), meme allegee (3
-# recherches, contexte reduit). A n'utiliser que si le plan du client permet une duree plus longue ou les Jobs.
+# recherches, contexte reduit). A n'utiliser que si le plan du client permet une duree plus longue ou les Jobs, et
+# avec un acces direct a OpenAI (OPENAI_API_KEY, API Responses) : la passerelle EC GPT n'est pas prevue pour cet outil.
+"""
+CHAT_UI_HEADER = """# Pipeline "tsi-chat", version SANS list_projects ni find_projects (gpt-5.1 via EC GPT). GENERE par
+# deploy/prod/build_pipelines.py. A utiliser quand les fichiers sont televerses par l'interface : un lot ne porte que
+# des metadonnees communes (Topic, corpus, doc_type), pas les pays, annees ou id de chaque projet dont ces deux outils
+# ont besoin. search_projects / search_deliverables filtrent sur doc_type : ils fonctionnent.
 """
 
 out = Path("deploy/prod")
@@ -531,6 +582,10 @@ tools_impact = (search_tool("search_projects", PROJECTS, 8, ["project", "program
     CHAT_HEADER + agent(4096, 15, CHAT_PROMPT) + search_tool("search_projects", PROJECTS, 10, ["project", "programme"])
     + search_tool("search_deliverables", DELIVERABLES, 8, "deliverable") + list_projects_tool() + find_projects_tool()
     + TAIL, encoding="utf-8", newline="\n")
+(out / "pipeline-tsi-chat-ui.yaml").write_text(
+    CHAT_UI_HEADER + agent(4096, 12, CHAT_PROMPT_SEARCH_ONLY)
+    + search_tool("search_projects", PROJECTS, 10, ["project", "programme"])
+    + search_tool("search_deliverables", DELIVERABLES, 8, "deliverable") + TAIL, encoding="utf-8", newline="\n")
 (out / "pipeline-tsi-impact.yaml").write_text(
     IMPACT_HEADER + agent(8000, 12, impact_prompt("it returns, for each result, its URL and the page text",
                                                   "At most 4 web searches: you have a strict time limit."))

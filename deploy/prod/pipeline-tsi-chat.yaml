@@ -1,4 +1,4 @@
-# Pipeline "tsi-chat" (production) : chatbot RAG sur l'index tsi-corpus, OpenAI gpt-5.4. GENERE par
+# Pipeline "tsi-chat" (production) : chatbot RAG sur l'index tsi-corpus, gpt-5.1 via EC GPT. GENERE par
 # deploy/prod/build_pipelines.py : ne pas modifier a la main.
 # search_projects (projets et fiches programme) et search_deliverables (texte integral des livrables) : recherche
 # hybride filtree par la metadonnee doc_type, numerotation [n] continue (etat documents).
@@ -12,12 +12,15 @@ components:
       chat_generator:
         type: haystack.components.generators.chat.openai.OpenAIChatGenerator
         init_parameters:
+          api_base_url: https://api.tech.ec.europa.eu/ecgpt/v1
           api_key:
             type: env_var
             env_vars:
-            - OPENAI_API_KEY
+            - GPT_EC
             strict: false
-          model: gpt-5.4
+          model: gpt-5.1
+          timeout: 180
+          max_retries: 2
           generation_kwargs:
             max_completion_tokens: 4096
       exit_conditions:

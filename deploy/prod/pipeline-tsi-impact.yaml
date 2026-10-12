@@ -1,4 +1,4 @@
-# Pipeline "tsi-impact" (production) : analyse d'impact d'un projet, OpenAI gpt-5.4.
+# Pipeline "tsi-impact" (production) : analyse d'impact d'un projet, gpt-5.1 via EC GPT (secret GPT_EC).
 # Outils : search_projects, search_deliverables (index tsi-corpus) et web_search (SearchApi : 5 resultats, pages lues
 # par l'outil ; 4 recherches au plus). Valide sur le trial : ~30 s par analyse, sous la limite de 2 minutes d'une
 # recherche (Search). Variante avec la recherche web integree d'OpenAI : pipeline-tsi-impact-openai-search.yaml.
@@ -10,12 +10,15 @@ components:
       chat_generator:
         type: haystack.components.generators.chat.openai.OpenAIChatGenerator
         init_parameters:
+          api_base_url: https://api.tech.ec.europa.eu/ecgpt/v1
           api_key:
             type: env_var
             env_vars:
-            - OPENAI_API_KEY
+            - GPT_EC
             strict: false
-          model: gpt-5.4
+          model: gpt-5.1
+          timeout: 180
+          max_retries: 2
           generation_kwargs:
             max_completion_tokens: 8000
       exit_conditions:
