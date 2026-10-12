@@ -28,7 +28,10 @@ EMBEDDER = {"type": "deepset_cloud_custom_nodes.embedders.nvidia.text_embedder.D
 
 
 class _Dumper(yaml.SafeDumper):
-    pass
+    """Pas d'ancres ni d'alias YAML (&id001 / *id001) : la plateforme ne les resout pas (« Missing 'type' »)."""
+
+    def ignore_aliases(self, data):
+        return True
 
 
 def _str(dumper, value):

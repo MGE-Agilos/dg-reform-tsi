@@ -23,6 +23,24 @@ def _snippet(doc: Optional[Document]) -> str:
     return " ".join(body.split())[:SNIPPET_CHARS]
 
 
+def _best_by_project(hits: list, projects: dict, deliverables: bool) -> dict:
+    """Meilleur morceau par projet retenu : doc_id d'un morceau projet, meta.projects d'un morceau livrable."""
+    found = {}
+    for doc in hits:
+        if doc.score is None:
+            continue
+        meta = doc.meta or {}
+        ids = (meta.get("projects") or []) if deliverables else [meta.get("doc_id")]
+        for pid in ids:
+            if pid in projects and (pid not in found or doc.score > found[pid][0]):
+                found[pid] = (doc.score, doc)
+    return found
+
+
+def _top(found: dict, limit: int) -> list:
+    return sorted(found, key=lambda pid: (-found[pid][0], pid))[:limit]
+
+
 @component
 class Code:
     """Candidats de find_projects, comme en local : projets dont les textes correspondent le mieux au sujet, projets
@@ -44,25 +62,10 @@ class Code:
             if pid not in first or (meta.get("split_id") or 0) < (first[pid].meta.get("split_id") or 0):
                 first[pid] = doc
 
-        def best_by_project(hits, deliverables):
-            best = {}
-            for doc in hits:
-                if doc.score is None:
-                    continue
-                meta = doc.meta or {}
-                ids = (meta.get("projects") or []) if deliverables else [meta.get("doc_id")]
-                for pid in ids:
-                    if pid in projects and (pid not in best or doc.score > best[pid][0]):
-                        best[pid] = (doc.score, doc)
-            return best
-
-        def top(best, size):
-            return sorted(best, key=lambda pid: (-best[pid][0], pid))[:size]
-
-        by_project = best_by_project(project_hits, deliverables=False)
-        by_deliverable = best_by_project(deliverable_hits, deliverables=True)
-        from_projects = top(by_project, PROJECT_POOL)
-        from_deliverables = top(by_deliverable, DELIVERABLE_POOL)
+        by_project = _best_by_project(project_hits, projects, deliverables=False)
+        by_deliverable = _best_by_project(deliverable_hits, projects, deliverables=True)
+        from_projects = _top(by_project, PROJECT_POOL)
+        from_deliverables = _top(by_deliverable, DELIVERABLE_POOL)
 
         terms = [k for k in (keywords or []) if k and k.strip()]
         if len(topic.split()) <= 4:

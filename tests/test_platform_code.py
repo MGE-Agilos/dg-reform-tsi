@@ -27,6 +27,11 @@ def test_each_module_is_a_single_code_component_with_only_allowed_imports():
         modules = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
         modules |= {n.module.split(".")[0] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         assert modules <= {"haystack", "typing", "collections", "re"}, (path.name, modules)
+        # Le validateur du composant Code de la plateforme signale les noms des fonctions definies dans une
+        # methode (« Undefined name(s) ») : fonctions utilitaires au niveau du module seulement.
+        nested = [n.name for m in classes[0].body if isinstance(m, ast.FunctionDef)
+                  for n in ast.walk(m) if isinstance(n, ast.FunctionDef) and n is not m]
+        assert nested == [], (path.name, nested)
 
 
 def test_filters_keep_countries_out_of_the_catalog():
