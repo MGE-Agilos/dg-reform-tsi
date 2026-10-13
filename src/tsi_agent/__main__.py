@@ -90,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     link = sub.add_parser("csr-link", help="lier les projets aux CSR (LLM, CLI Claude ; cache, reprise sur quota)")
     link.add_argument("--limit", type=int, help="nombre maximal de projets envoyés au LLM")
     link.add_argument("--project", action="append", dest="projects", help="id de projet (répétable)")
+    link.add_argument("--detail-only", action="store_true",
+                      help="n'envoyer au LLM que les projets avec page détail (les autres plus tard)")
     link.add_argument("--sample", type=int, help="écrire un échantillon de N projets liés (relecture métier)")
     link.add_argument("--model", help="modèle du CLI Claude (défaut : réglage model)")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
@@ -183,7 +185,8 @@ def main(argv: list[str] | None = None) -> int:
         generator = LoggedChatGenerator(chat_generator=ClaudeCliChatGenerator(
             model=args.model or settings.model, json_schema=LINK_SCHEMA, timeout_s=settings.llm_timeout_s))
         with runlog.open_run(settings.logs_dir) as run:
-            summary = run_linking(settings, csrs, generator, limit=args.limit, project_ids=args.projects)
+            summary = run_linking(settings, csrs, generator, limit=args.limit, project_ids=args.projects,
+                                  detail_only=args.detail_only)
             run.extra.update({"mode": "csr_link", **{k: v for k, v in summary.items() if k != "failed"},
                               "failed": summary["failed"][:50]})
         print(json.dumps({**summary, "run": run.final_summary.get("run_id") if run.final_summary else None,

@@ -340,3 +340,17 @@ def test_input_hash_covers_candidate_text_but_not_assessment():
     reworded = Candidate("csr-HR-2022-1.1", "csr-HR-2022-1", "HR", 2022, "Other text.", ["A"], "Some Progress")
     assert input_hash("full_text", "t", [base]) == input_hash("full_text", "t", [reassessed])
     assert input_hash("full_text", "t", [base]) != input_hash("full_text", "t", [reworded])
+
+
+def test_detail_only_defers_title_only_projects(tmp_path):
+    out, settings = setup_output(tmp_path, pids=("a", "b"))
+    path = out / "projects" / "b.md"
+    path.write_text(path.read_text(encoding="utf-8").replace("detail_page: true", "detail_page: false"),
+                    encoding="utf-8")
+    csrs = build_csrs(ROWS, year_from=2016, year_to=2025)
+    gen = FakeGenerator([answer()])
+    s = run_linking(settings, csrs, gen, concurrency=1, detail_only=True)
+    assert s["linked"] == 1 and s["deferred"] == 1 and len(gen.prompts) == 1
+    assert not (out / "csr_links" / "b.json").exists()
+    s2 = run_linking(settings, csrs, FakeGenerator([answer()]), concurrency=1)
+    assert s2["linked"] == 1 and s2["deferred"] == 0

@@ -265,8 +265,12 @@ def _apply(path: Path, record: dict[str, Any]) -> bool:
 
 
 def run_linking(settings: Settings, csrs: list[Csr], generator: Any, *, concurrency: int | None = None,
-                limit: int | None = None, project_ids: list[str] | None = None) -> dict[str, Any]:
+                limit: int | None = None, project_ids: list[str] | None = None,
+                detail_only: bool = False) -> dict[str, Any]:
     """Lie les projets (nouveaux ou modifies) a leurs CSR, puis ecrit les liens de tous les projets deja lies.
+
+    `detail_only` : seuls les projets avec page detail vont au LLM ; les autres (titre seul) sont comptes dans
+    `deferred` et traites par un run ulterieur sans cette option.
 
     S'arrete proprement sur quota (relancer reprend). Un projet dont la reponse est illisible (2 essais) est
     saute et liste dans `failed`, sans enregistrement : il sera redemande au prochain run.
@@ -275,7 +279,7 @@ def run_linking(settings: Settings, csrs: list[Csr], generator: Any, *, concurre
     links_dir = root / LINKS_DIR
     idx = index_parts(csrs)
     summary: dict[str, Any] = {"projects": 0, "linked": 0, "cached": 0, "no_candidates": 0, "failed": [],
-                               "files_updated": 0, "quota_exceeded": False}
+                               "files_updated": 0, "quota_exceeded": False, "deferred": 0}
     todo: list[tuple[Path, dict, str, list[Candidate]]] = []
     for path in sorted((root / "projects").glob("*.md")):
         try:
@@ -300,6 +304,9 @@ def run_linking(settings: Settings, csrs: list[Csr], generator: Any, *, concurre
             continue
         if stored and stored.get("status") == "ok" and stored.get("input_hash") == input_hash(basis, text, cands):
             summary["cached"] += 1
+            continue
+        if detail_only and not fm.get("detail_page"):
+            summary["deferred"] += 1
             continue
         todo.append((path, fm, body, cands))
     if limit is not None:
