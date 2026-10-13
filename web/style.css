@@ -201,6 +201,52 @@ td.nowrap { white-space: nowrap; }
 .part:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
 .part h3 { margin-top: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 
+/* Chat and impact (AI answers rendered from sanitised Markdown) */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.chat-log { display: flex; flex-direction: column; gap: 12px; }
+.bubble { border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; max-width: 92%; min-width: 0; overflow-wrap: anywhere; }
+.bubble p { margin: 0; }
+.bubble-user { align-self: flex-end; background: var(--accent-soft); border-color: transparent; }
+.bubble-assistant { align-self: flex-start; background: var(--card); width: 100%; max-width: 100%; }
+.examples { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.examples p { margin: 0; }
+.example {
+  text-align: left; background: var(--card); color: var(--accent); border: 1px solid var(--border);
+  border-radius: 999px; padding: 6px 14px; cursor: pointer; max-width: 100%;
+}
+.example:hover { background: var(--accent-soft); }
+.chat-status { min-height: 1.5em; margin: 10px 0; color: var(--muted); font-style: italic; }
+.chat-status:empty { margin: 4px 0; }
+.chat-form { border-top: 1px solid var(--border); padding-top: 12px; background: var(--card); }
+.chat-form label { display: block; font-weight: 600; margin-bottom: 6px; }
+.chat-row { display: flex; gap: 8px; align-items: flex-end; }
+.chat-row textarea {
+  flex: 1 1 auto; min-width: 0; resize: vertical; min-height: 64px; font: inherit; color: var(--fg);
+  background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+}
+.chat-actions { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
+.pick-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+.pick-list li { overflow-wrap: anywhere; }
+
+.md { overflow-wrap: anywhere; min-width: 0; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md h1, .md h2, .md h3, .md h4 { font-size: 1.05rem; margin: 16px 0 6px; }
+.md h1 { font-size: 1.2rem; }
+.md p, .md ul, .md ol, .md blockquote { margin: 8px 0; }
+.md ul, .md ol { padding-left: 22px; }
+.md li { margin: 3px 0; }
+.md blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--muted); }
+.md table { display: block; max-width: 100%; overflow-x: auto; width: max-content; border: 1px solid var(--border); border-radius: 6px; margin: 10px 0; }
+.md th, .md td { white-space: normal; min-width: 80px; }
+.md code { background: var(--row-alt); border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.md pre { background: var(--row-alt); border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow-x: auto; }
+.md pre code { border: 0; padding: 0; background: none; }
+.md hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
+
 .site-footer { border-top: 1px solid var(--border); margin-top: 32px; color: var(--muted); font-size: 0.85rem; }
 .site-footer p { margin: 14px 0; }
 
@@ -213,4 +259,6 @@ td.nowrap { white-space: nowrap; }
   .field, .field select, .field input { width: 100%; }
   input[type="number"] { width: 100%; }
   .field-half { flex: 1 1 calc(50% - 8px); }
+  .bubble { max-width: 100%; }
+  .chat-form { position: sticky; bottom: 0; z-index: 1; padding-bottom: 8px; }
 }
