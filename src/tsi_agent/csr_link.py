@@ -40,7 +40,7 @@ from tsi_agent.store import _retry_on_lock
 WINDOW = 3
 MAX_PER_COUNTRY = 15
 MAX_CANDIDATES = 60
-PROMPT_VERSION = 2
+PROMPT_VERSION = 3
 MANY_COUNTRIES = 2
 MAX_LINKS = 5
 PROJECT_CHARS = 6000
@@ -139,6 +139,9 @@ country or countries in the years before the request. Say which CSR sub-parts th
 - "partial": the project contributes to one aspect of the CSR sub-part, or to a precondition for it.
 - Do not link a CSR sub-part that only shares a broad theme (e.g. "public finances") without a concrete \
 connection to what the project does. Most projects support 0 to 3 sub-parts; return at most {MAX_LINKS}.
+- Judge from the CSR sub-part's own text: its policy-area tag alone is not enough.
+- Generic sub-parts (implement the recovery and resilience plan, absorb EU funds, the overall fiscal stance) \
+qualify only when that is the project's own objective, not merely its context.
 
 For each link give csr_id (a candidate id exactly as written), level, and a one-sentence rationale that names \
 what the project does. Return an empty list when no candidate is supported."""
