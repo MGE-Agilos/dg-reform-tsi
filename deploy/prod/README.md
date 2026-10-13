@@ -36,6 +36,10 @@ dans `build/manifest.json`.
 - CSR (recommandations par pays du Semestre européen, 2016-2025, EU27) : `tsi-csr-<ISO>-<année>-<n>.md`
   (903 fichiers, ~2 700 morceaux), `doc_type` `csr`, sans `programme` ni `policy_area` (taxonomie ECFIN
   différente, dans le texte). Préparer avant l'export : `python -m tsi_agent csr-fetch` puis `csr-build`.
+- Liens projet → CSR (évalués par IA, `python -m tsi_agent csr-link`) : section « Supported CSRs (AI-assessed) »
+  du projet et métadonnée `csrs` (ids de sous-parties, ex. `csr-HR-2022-3.4` ; clé absente sans lien).
+  `list_projects` accepte `csr` (id ou préfixe, ex. `csr-HR-2022`). Ordre avant l'export : `run` →
+  `deliverables` → `csr-link` (jamais en même temps) → `prod-export`.
 
 ## Questions d'agrégation (list_projects, find_projects)
 
@@ -151,6 +155,8 @@ Chatbot (`tsi-chat`) :
 - « What CSRs did Croatia receive on public administration since 2022, and how were they assessed? » :
   `search_csrs`, cite `csr-HR-2025-3` (Some Progress) et `csr-HR-2024-2` avec leur évaluation (local, 13
   octobre 2026).
+- « Which projects support Croatia's 2022 country-specific recommendations? » : `list_projects` avec
+  `csr=csr-HR-2022`, liens présentés comme évalués par IA (local : 2 projets, CSR 3.4 énergie).
 
 Agrégation (réponses exactes connues, banc du 8 octobre 2026 ; vérifier dans *Analytics* l'outil appelé) :
 - « Quels pays ont des projets TSI ou SRSP dans le domaine « gestion des migrations » ? » : 3 pays
