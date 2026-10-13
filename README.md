@@ -446,6 +446,52 @@ Contrôle de publication, sans LLM ni réseau, à partir de `output/` (spec :
 `tsi_not_published` (gravité selon l'âge, `--year` fixe l'année de référence), `srsp_title_only`,
 `published_no_deliverable`, `missing_results`, `orphan_deliverable`, `possible_duplicate`.
 
+## Explorateur web (Supabase + GitHub Pages)
+
+Page statique, réservée aux testeurs connectés, pour parcourir les projets, les CSR (avec leurs sous-parties et les
+projets qui les soutiennent), les liens projet → CSR évalués par IA et les anomalies de publication (spec :
+`docs/superpowers/specs/2026-10-13-web-explorer-design.md`).
+
+- **URL :** <https://mge-agilos.github.io/dg-reform-tsi/>
+- **Code :** `web/` (HTML, CSS et JavaScript sans build ; `supabase-js` v2 figé, chargé depuis jsDelivr). La lecture
+  passe par la clé `anon`, publique par nature, dans `web/config.js` ; les règles RLS ne laissent lire que les testeurs.
+
+Mise en place (une fois) :
+
+1. **Schéma :** coller `supabase/migrations/001_explorer.sql` dans *Supabase > SQL Editor* et l'exécuter (rejouable).
+2. **Testeurs :** e-mails en minuscules, dans le *SQL Editor* :
+   ```sql
+   insert into public.testers (email) values ('prenom.nom@example.org') on conflict do nothing;
+   ```
+3. **Auth :** *Authentication > URL Configuration* : *Site URL* et *Redirect URLs* = l'URL de la page ci-dessus.
+4. **Clé `anon` :** la reporter dans `web/config.js` (*Project Settings > API*). Sans elle, la page affiche
+   « Configuration required ».
+5. **Pages :** *Settings > Pages* du dépôt GitHub, source « GitHub Actions ». Le workflow
+   `.github/workflows/pages.yml` publie `web/` à chaque push sur `main` qui touche `web/` (ou à la main, via
+   *Run workflow*).
+
+Mise à jour des données, après chaque mise à jour du corpus (`run`, `deliverables`, `csr-build`, `csr-link`…) :
+
+```powershell
+.venv\Scripts\python -m tsi_agent supabase-sync
+```
+
+La commande remplace le contenu des tables (sauf `testers`) et sauvegarde d'abord les lignes envoyées dans
+`output/state/supabase_rows.json`. Elle lit `SUPABASE_URL` et `SUPABASE_SERVICE_KEY` (clé `service_role`) dans
+l'environnement ou dans `.env`. **Cette clé ne doit jamais être commitée** (`.env` est dans `.gitignore`) ni copiée
+dans `web/`.
+
+Liste de contrôle après déploiement :
+
+- un testeur reçoit le lien magique, se connecte et voit les onglets *Projects*, *CSRs* et *Anomalies* ;
+- un e-mail non autorisé voit « Access not authorised for this e-mail » ;
+- un appel REST anonyme renvoie `[]` :
+  ```powershell
+  curl.exe "https://vxwmhsgxoomcbiukeinp.supabase.co/rest/v1/projects?select=project_id&limit=1" -H "apikey: <cle anon>"
+  ```
+
+Les résumés et les liens projet → CSR sont générés par IA : la page le signale et ils sont à vérifier avant usage.
+
 ## Planification (Windows)
 
 À exécuter depuis le dossier du dépôt (les chemins sont résolus en absolu à partir du dossier courant) :
