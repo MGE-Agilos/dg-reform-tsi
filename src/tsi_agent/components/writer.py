@@ -114,6 +114,8 @@ class MarkdownProjectWriter:
                               results=old.get("results"))  # vient de la page détail, pas du listing
             fm["title"], fm["programme"], fm["year"] = old["title"], old["programme"], old["year"]
             fm = with_deliverables_count(fm, int(old.get("deliverables") or 0))
+            if old.get("csrs"):  # liens CSR (csr-link) : le corps garde leur section
+                fm["csrs"] = old["csrs"]
             entry.listing_hash, entry.countries, entry.source_urls = ref.listing_hash(), countries, source_urls(ref)
             entry.aliases = aliases
             body = replace_listing_tail(body, ref)

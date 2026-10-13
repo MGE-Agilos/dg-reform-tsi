@@ -205,7 +205,7 @@ def test_changed_project_is_relinked_and_limit(tmp_path):
     csrs = build_csrs(ROWS, year_from=2016, year_to=2025)
     run_linking(settings, csrs, FakeGenerator([answer(), answer()]), concurrency=1)
     path = out / "projects" / "a.md"
-    path.write_text(path.read_text(encoding="utf-8").replace("sha256:a", "sha256:a2"), encoding="utf-8")
+    path.write_text(path.read_text(encoding="utf-8").replace("Intro a.", "Intro a, changed."), encoding="utf-8")
     gen = FakeGenerator([answer("csr-HR-2022-1.2")])
     s = run_linking(settings, csrs, gen, concurrency=1, limit=1)
     assert s["linked"] == 1 and "csr-HR-2022-1.2" in path.read_text(encoding="utf-8")
@@ -230,3 +230,103 @@ def test_write_sample(tmp_path):
     assert list(rows[0]) == ["project_id", "title", "programme", "year", "countries", "basis", "csr_id", "level",
                              "rationale", "csr_text", "csr_assessment", "verdict"]
     assert rows[0]["csr_text"] == "Reform the public administration." and rows[0]["verdict"] == ""
+
+
+def test_worker_events_reach_the_run_log(tmp_path):
+    from tsi_agent import runlog
+
+    out, settings = setup_output(tmp_path)
+    csrs = build_csrs(ROWS, year_from=2016, year_to=2025)
+    with runlog.open_run(tmp_path / "logs") as run:
+        run_linking(settings, csrs, FakeGenerator([answer(), answer(), answer()]), concurrency=2)
+    assert run.counts["link:ok"] == 3
+
+
+def test_generator_error_fails_that_project_only(tmp_path):
+    out, settings = setup_output(tmp_path, pids=("a", "b"))
+    csrs = build_csrs(ROWS, year_from=2016, year_to=2025)
+    s = run_linking(settings, csrs, FakeGenerator([RuntimeError("boom"), answer()]), concurrency=1)
+    assert s["failed"] == ["a"] and s["linked"] == 1
+
+
+def test_base_exception_stops_the_batch_and_propagates(tmp_path):
+    import pytest
+
+    class Stop(BaseException):
+        pass
+
+    out, settings = setup_output(tmp_path, pids=("a", "b", "c"))
+    csrs = build_csrs(ROWS, year_from=2016, year_to=2025)
+    gen = FakeGenerator([answer()] * 3)
+    gen.run = lambda messages: (gen.prompts.append(1), (_ for _ in ()).throw(Stop()))
+    with pytest.raises(Stop):
+        run_linking(settings, csrs, gen, concurrency=1)
+    assert len(gen.prompts) == 1
+
+
+def test_record_write_failure_is_not_fatal(tmp_path, monkeypatch):
+    import tsi_agent.csr_link as mod
+
+    out, settings = setup_output(tmp_path, pids=("a",))
+    csrs = build_csrs(ROWS, year_from=2016, year_to=2025)
+
+    def broken(path, data):
+        if path.name == "a.json":
+            raise OSError("disk")
+
+    monkeypatch.setattr(mod, "_write_json", broken)
+    s = run_linking(settings, csrs, FakeGenerator([answer()]), concurrency=1)
+    assert s["failed"] == ["a"] and s["linked"] == 0
+
+
+def test_section_is_replaced_in_place_and_stable_with_deliverables():
+    from tsi_agent.render import parse_front_matter, render, replace_deliverables_section
+
+    rec = {"basis": "full_text", "links": [{"csr_id": "csr-HR-2022-1.1", "level": "direct", "rationale": "R."}]}
+    deliv = "## Deliverables (AI-generated summary)\n\n### D\n\nText."
+    text = ("---\nproject_id: p\ntitle: P\n---\n\n# P\n\nIntro.\n\n" + deliv + "\n\n" + SECTION_HEADING +
+            "\n\n- old\n\n## Sources\n\n- u\n")
+    once = apply_links(text, rec)
+    assert once.index("## Deliverables") < once.index(SECTION_HEADING) < once.index("## Sources")
+
+    def cycle(t):
+        fm, body = parse_front_matter(t)
+        return apply_links(render(fm, replace_deliverables_section(body, deliv)), rec)
+
+    first = cycle(once)
+    assert cycle(first) == first
+
+
+def test_changed_listing_titles_relink_a_title_only_project(tmp_path):
+    out, settings = setup_output(tmp_path, pids=("a",))
+    csrs = build_csrs(ROWS, year_from=2016, year_to=2025)
+    path = out / "projects" / "a.md"
+    path.write_text(path.read_text(encoding="utf-8").replace("detail_page: true", "detail_page: false"),
+                    encoding="utf-8")
+    run_linking(settings, csrs, FakeGenerator([answer()]), concurrency=1)
+    assert run_linking(settings, csrs, FakeGenerator([]), concurrency=1)["cached"] == 1
+    path.write_text(path.read_text(encoding="utf-8").replace("detail_page: false",
+                                                             "detail_page: false\nlisting_titles:\n- Other title"),
+                    encoding="utf-8")
+    gen = FakeGenerator([answer()])
+    assert run_linking(settings, csrs, gen, concurrency=1)["linked"] == 1 and len(gen.prompts) == 1
+
+
+def test_global_cap_keeps_closest_then_recent_in_original_order(monkeypatch):
+    import tsi_agent.csr_link as mod
+
+    monkeypatch.setattr(mod, "MAX_CANDIDATES", 2)
+    rows = [row(year="2021", nbr="1.1", text="Alpha beta."), row(year="2022", nbr="1.1", text="Gamma delta."),
+            row(year="2023", nbr="1.1", text="Gamma delta.")]
+    idx = index_parts(build_csrs(rows, year_from=2016, year_to=2025))
+    fm = {"project_id": "p", "title": "x", "year": 2024, "countries": ["HR"]}
+    ids = [c.part_id for c in select_candidates(fm, "alpha beta", idx)]
+    assert ids == ["csr-HR-2021-1.1", "csr-HR-2023-1.1"]
+
+
+def test_apply_failure_is_logged_and_skipped(tmp_path):
+    out, settings = setup_output(tmp_path, pids=("a", "b"))
+    csrs = build_csrs(ROWS, year_from=2016, year_to=2025)
+    (out / "projects" / "a.md").write_text("no front matter", encoding="utf-8")
+    s = run_linking(settings, csrs, FakeGenerator([answer()]), concurrency=1)
+    assert s["linked"] == 1 and s["files_updated"] >= 1

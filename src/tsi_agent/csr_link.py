@@ -5,8 +5,10 @@ de l'annee y est deposee a l'automne de y-1, sur les CSR des annees precedentes)
 MAX_PER_COUNTRY plus proches par pays (Jaccard des mots, deterministe) pour borner le prompt ; le LLM juge.
 Decisions dans output/csr_links/<stem>.json (rejouees sans LLM tant que le projet et ses candidates ne changent
 pas) ; liens ecrits dans le fichier projet : front matter `csrs` et section SECTION_HEADING.
+Ne pas lancer run/deliverables en meme temps que csr-link (memes fichiers projet).
 """
 
+import contextvars
 import csv
 import hashlib
 import json
@@ -35,6 +37,8 @@ from tsi_agent.store import _retry_on_lock
 
 WINDOW = 3
 MAX_PER_COUNTRY = 15
+MAX_CANDIDATES = 60
+PROMPT_VERSION = 1
 MANY_COUNTRIES = 2
 MAX_LINKS = 5
 PROJECT_CHARS = 6000
@@ -81,15 +85,25 @@ def select_candidates(fm: dict, text: str, idx: dict[tuple[str, int], list[Candi
     for country in countries:
         found = [c for y in range(year - WINDOW, year) for c in idx.get((country, y), [])]
         if len(countries) > MANY_COUNTRIES and len(found) > MAX_PER_COUNTRY:
-            ranked = sorted(found, key=lambda c: -_jaccard(tokens, prefix_tokens(c.text)))
+            ranked = sorted(found, key=lambda c: (-_jaccard(tokens, prefix_tokens(c.text)), -c.year))
             keep = {c.part_id for c in ranked[:MAX_PER_COUNTRY]}
             found = [c for c in found if c.part_id in keep]
         out.extend(found)
+    if len(out) > MAX_CANDIDATES:  # plafond global : les plus proches, puis les plus recentes ; ordre d'origine garde
+        ranked = sorted(out, key=lambda c: (-_jaccard(tokens, prefix_tokens(c.text)), -c.year))
+        keep = {c.part_id for c in ranked[:MAX_CANDIDATES]}
+        out = [c for c in out if c.part_id in keep]
     return out
 
 
 def candidates_hash(cands: list[Candidate]) -> str:
     return "sha1:" + hashlib.sha1("|".join(sorted(c.part_id for c in cands)).encode("utf-8")).hexdigest()
+
+
+def input_hash(basis: str, text: str, cands: list[Candidate]) -> str:
+    """Cle de cache : entree du LLM (base, texte, candidates) et version du prompt."""
+    key = f"{PROMPT_VERSION}|{basis}|{text}|{sorted(c.part_id for c in cands)}"
+    return "sha1:" + hashlib.sha1(key.encode("utf-8")).hexdigest()
 
 
 def project_input(fm: dict, body: str) -> tuple[str, str]:
@@ -168,7 +182,7 @@ def link_project(generator: Any, fm: dict, body: str, cands: list[Candidate]) ->
                                     ChatMessage.from_user(build_prompt(fm, text, basis, cands))])["replies"][0]
     return {"project_id": fm.get("project_id"), "status": "ok", "basis": basis,
             "content_hash": fm.get("content_hash"), "candidates_hash": candidates_hash(cands),
-            "candidates": [c.part_id for c in cands], "links": parse_links(reply.text or "", cands),
+            "input_hash": input_hash(basis, text, cands), "candidates": [c.part_id for c in cands], "links": parse_links(reply.text or "", cands),
             "model": (reply.meta or {}).get("model"), "date": date.today().isoformat()}
 
 
@@ -185,12 +199,13 @@ def links_section(record: dict[str, Any]) -> str | None:
 
 
 def _replace_section(body: str, section: str | None) -> str:
-    """Retire la section des liens existante et insere `section` avant la partie listing (ou a la fin)."""
+    """Remplace la section des liens en place ; absente, l'insere avant la partie listing (ou a la fin)."""
     lines = body.split("\n")
-    if SECTION_HEADING in lines:
+    if SECTION_HEADING in lines:  # en place : l'ordre des sections ne bouge pas
         start = lines.index(SECTION_HEADING)
         end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
-        lines = lines[:start] + lines[end:]
+        head, tail = "\n".join(lines[:start]).strip("\n"), "\n".join(lines[end:]).strip("\n")
+        return "\n\n".join(p for p in (head, section, tail) if p)
     cut = next((i for i, line in enumerate(lines) if line in _TAIL_HEADINGS), len(lines))
     head, tail = "\n".join(lines[:cut]).strip("\n"), "\n".join(lines[cut:]).strip("\n")
     return "\n\n".join(p for p in (head, section, tail) if p)
@@ -213,16 +228,19 @@ def _is_quota(exc: BaseException) -> bool:
     return isinstance(exc, LLMQuotaExceeded) or "RateLimit" in type(exc).__name__
 
 
-def _write_json(path: Path, data: dict[str, Any]) -> None:
+def _write_text(path: Path, payload: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    payload = json.dumps(data, indent=1, ensure_ascii=False)
 
     def write() -> None:
         tmp.write_text(payload, encoding="utf-8")
         os.replace(tmp, path)
 
     _retry_on_lock(write)
+
+
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    _write_text(path, json.dumps(data, indent=1, ensure_ascii=False))
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -237,7 +255,7 @@ def _apply(path: Path, record: dict[str, Any]) -> bool:
     new = apply_links(text, record)
     if new == text.replace("\r\n", "\n"):
         return False
-    _retry_on_lock(lambda: path.write_text(new, encoding="utf-8"))
+    _write_text(path, new)
     return True
 
 
@@ -264,7 +282,7 @@ def run_linking(settings: Settings, csrs: list[Csr], generator: Any, *, concurre
         if project_ids and fm["project_id"] not in project_ids:
             continue
         summary["projects"] += 1
-        text, _ = project_input(fm, body)
+        text, basis = project_input(fm, body)
         cands = select_candidates(fm, text, idx)
         record_path = links_dir / f"{path.stem}.json"
         stored = _read_json(record_path)
@@ -275,8 +293,7 @@ def run_linking(settings: Settings, csrs: list[Csr], generator: Any, *, concurre
                                           "date": date.today().isoformat()})
             summary["no_candidates"] += 1
             continue
-        if stored and stored.get("status") == "ok" and stored.get("content_hash") == fm.get("content_hash") \
-                and stored.get("candidates_hash") == candidates_hash(cands):
+        if stored and stored.get("status") == "ok" and stored.get("input_hash") == input_hash(basis, text, cands):
             summary["cached"] += 1
             continue
         todo.append((path, fm, body, cands))
@@ -308,19 +325,39 @@ def run_linking(settings: Settings, csrs: list[Csr], generator: Any, *, concurre
                     with lock:
                         summary["failed"].append(fm["project_id"])
                 return
-        _write_json(links_dir / f"{path.stem}.json", record)
+        try:
+            _write_json(links_dir / f"{path.stem}.json", record)
+        except OSError as exc:
+            runlog.event(NAME, "error", fm["project_id"], "record_not_saved", error=repr(exc)[:300])
+            with lock:
+                summary["failed"].append(fm["project_id"])
+            return
         runlog.event(NAME, "link", fm["project_id"], "ok", links=len(record["links"]), basis=record["basis"])
         with lock:
             summary["linked"] += 1
 
-    with ThreadPoolExecutor(max_workers=max(1, concurrency or settings.max_concurrency)) as pool:
-        list(pool.map(work, todo))
+    pool = ThreadPoolExecutor(max_workers=max(1, concurrency or settings.max_concurrency))
+    try:
+        # contexte copie : le journal du run (ContextVar) n'est pas herite par les threads du pool
+        futures = [pool.submit(contextvars.copy_context().run, work, item) for item in todo]
+        for future in futures:
+            future.result()
+    except BaseException:  # Ctrl-C ou erreur inattendue : on arrete le lot, puis on propage
+        stop.set()
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
     summary["quota_exceeded"] = stop.is_set()
     summary["failed"] = sorted(summary["failed"])
     for path in sorted((root / "projects").glob("*.md")):
         record = _read_json(links_dir / f"{path.stem}.json")
-        if record and record.get("status") in ("ok", "no_candidates") and _apply(path, record):
-            summary["files_updated"] += 1
+        if not record or record.get("status") not in ("ok", "no_candidates"):
+            continue
+        try:
+            if _apply(path, record):
+                summary["files_updated"] += 1
+        except (ValueError, OSError) as exc:
+            runlog.event(NAME, "error", path.stem, "apply_failed", error=repr(exc)[:300])
     return summary
 
 
@@ -329,7 +366,7 @@ SAMPLE_COLUMNS = ["project_id", "title", "programme", "year", "countries", "basi
 
 
 def write_sample(settings: Settings, csrs: list[Csr], n: int, out: Path, seed: int = 42) -> Path:
-    """Echantillon de n projets lies (au moins un lien), stratifie par programme et annee, graine fixe : une ligne
+    """Echantillon de n projets lies (au moins un lien), stratifie par base, programme et annee, graine fixe : une ligne
     par lien, colonne `verdict` vide pour la relecture metier."""
     root = Path(settings.output_dir)
     parts = {c.part_id: c for cands in index_parts(csrs).values() for c in cands}
@@ -339,10 +376,13 @@ def write_sample(settings: Settings, csrs: list[Csr], n: int, out: Path, seed: i
         project = root / "projects" / f"{path.stem}.md"
         if not record or not record.get("links") or not project.exists():
             continue
-        fm, _ = parse_front_matter(project.read_text(encoding="utf-8").replace("\r\n", "\n"))
-        linked[(fm.get("programme"), fm.get("year"))].append((fm, record))
+        try:
+            fm, _ = parse_front_matter(project.read_text(encoding="utf-8").replace("\r\n", "\n"))
+        except (ValueError, OSError):
+            continue
+        linked[(record.get("basis"), fm.get("programme"), fm.get("year"))].append((fm, record))
     rng = random.Random(seed)
-    strata = sorted(linked, key=lambda k: (str(k[0]), k[1] or 0))
+    strata = sorted(linked, key=lambda k: (str(k[0]), str(k[1]), k[2] or 0))
     for key in strata:
         rng.shuffle(linked[key])
     chosen: list[tuple[dict, dict]] = []
