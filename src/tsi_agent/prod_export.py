@@ -1,6 +1,6 @@
 """Corpus complet pour la production sur Haystack Enterprise Platform : un fichier par document.
 
-Chaque fichier projet, programme ou livrable de output/ devient `tsi-<type>-<nom>.md` : ses morceaux de la couche
+Chaque fichier projet, programme, livrable ou CSR de output/ devient `tsi-<type>-<nom>.md` : ses morceaux de la couche
 vectorisee locale (chunking.chunk_file, memes regles) en sections `# ...` (MarkdownHeaderSplitter niveau 1 sur la
 plateforme), et `tsi-<type>-<nom>.md.meta.json` : metadonnees du document, recopiees par la plateforme sur chacun
 de ses morceaux (filtres par type, pays, programme, annee, projet). `corpus` et le prefixe `tsi-` servent au filtre
@@ -22,7 +22,7 @@ CORPUS = "dg-reform-tsi"
 # Sujet du corpus pour le routeur d'entree de l'index (MetadataRouter : seuls les fichiers Topic == TOPIC sont indexes).
 TOPIC = "TSI-BDG"
 PREFIX = "tsi-"
-FOLDERS = {"projects": "project", "programme": "programme", "deliverables": "deliverable"}
+FOLDERS = {"projects": "project", "programme": "programme", "deliverables": "deliverable", "csr": "csr"}
 WARN_BYTES = 10_000_000
 # Marqueurs de titre en debut de ligne, repetes ("# # x") ou seuls ("#") : sinon faux titre de section.
 _HEADING = re.compile(r"^[ \t]{0,3}(?:#+(?:[ \t]+|$))+", re.MULTILINE)
@@ -116,7 +116,7 @@ def export(output_dir: Path, out_dir: Path) -> dict:
             if not docs:
                 skipped.append(rel)
                 continue
-            name = f"{PREFIX}{doc_type}-{path.name}"
+            name = f"{PREFIX}{doc_type}-{path.name.removeprefix(f'{doc_type}-')}"  # tsi-csr-FR-2023-1.md
             target = out_dir / name
             target.write_text("\n".join(section(d) for d in docs), encoding="utf-8", newline="\n")
             meta = file_meta(docs)

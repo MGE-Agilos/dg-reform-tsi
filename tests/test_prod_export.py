@@ -124,3 +124,42 @@ def test_check_meta_types():
     problems = check_meta_types([{"doc_id": "a", "year": "2022"}, {"doc_id": "b", "year": True},
                                  {"doc_id": "c", "foo": 1}])
     assert problems == ["a: year='2022' n'est pas int", "b: year=True n'est pas int", "c: cle inattendue foo"]
+
+
+CSR_MD = """---
+csr_id: csr-FR-2023-1
+title: France 2023 CSR 1
+countries: [FR]
+year: 2023
+number: '1'
+policy_areas: [Healthcare]
+assessment: Some Progress
+subparts: [csr-FR-2023-1.1]
+source_url: https://ec.europa.eu/economy_finance/country-specific-recommendations-database/
+---
+
+# France 2023 CSR 1
+
+Improve the sustainability of the pension system.
+
+## Sub-parts
+
+- csr-FR-2023-1.1: Improve the sustainability of the pension system (Assessment: Some Progress)
+"""
+
+
+def test_export_includes_csr_files(tmp_path):
+    output = tmp_path / "output"
+    (output / "csr").mkdir(parents=True)
+    (output / "csr" / "csr-FR-2023-1.md").write_text(CSR_MD, encoding="utf-8")
+    out = tmp_path / "build" / "files"
+    manifest = export(output, out)
+    assert manifest["files_by_type"] == {"csr": 1} and manifest["meta_type_problems"] == []
+    meta = json.loads((out / "tsi-csr-FR-2023-1.md.meta.json").read_text(encoding="utf-8"))
+    assert meta == {"Topic": "TSI-BDG", "corpus": CORPUS, "doc_type": "csr", "doc_id": "csr-FR-2023-1",
+                    "title": "France 2023 CSR 1", "countries": ["FR"], "year": 2023, "projects": [],
+                    "source_url": "https://ec.europa.eu/economy_finance/country-specific-recommendations-database/",
+                    "chunks": 2}
+    text = (out / "tsi-csr-FR-2023-1.md").read_text(encoding="utf-8")
+    assert text.startswith("# France 2023 CSR 1 — 2023 — France — Introduction\n")
+    assert "Document id: csr-FR-2023-1" in text and "Detail page" not in text
