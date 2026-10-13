@@ -31,8 +31,11 @@ dans `build/manifest.json`.
   `doc_type` (`project`, `programme`, `deliverable`), `doc_id`, `title`, `countries` (codes ISO), `programme`,
   `year`, `policy_area`, `results`, `projects`, `multi_country`, `detail_page`, `source_url`, `chunks`. Une
   valeur inconnue est omise ; le type de chaque clé est le même dans tous les fichiers (contrôlé à l'export).
-- Les deux outils de recherche filtrent sur `doc_type` : `search_projects` (projets et programme),
-  `search_deliverables` (livrables, cités avec le document et la page).
+- Les outils de recherche filtrent sur `doc_type` : `search_projects` (projets et programme),
+  `search_deliverables` (livrables, cités avec le document et la page), `search_csrs` (recommandations par pays).
+- CSR (recommandations par pays du Semestre européen, 2016-2025, EU27) : `tsi-csr-<ISO>-<année>-<n>.md`
+  (903 fichiers, ~2 700 morceaux), `doc_type` `csr`, sans `programme` ni `policy_area` (taxonomie ECFIN
+  différente, dans le texte). Préparer avant l'export : `python -m tsi_agent csr-fetch` puis `csr-build`.
 
 ## Questions d'agrégation (list_projects, find_projects)
 
@@ -145,6 +148,9 @@ Chatbot (`tsi-chat`) :
   2021, ouverture le 27 mai 2022.
 - « What did the deliverables of the Spanish primary care project recommend? » : passages de livrables cités
   avec le document et la page (outil `search_deliverables`).
+- « What CSRs did Croatia receive on public administration since 2022, and how were they assessed? » :
+  `search_csrs`, cite `csr-HR-2025-3` (Some Progress) et `csr-HR-2024-2` avec leur évaluation (local, 13
+  octobre 2026).
 
 Agrégation (réponses exactes connues, banc du 8 octobre 2026 ; vérifier dans *Analytics* l'outil appelé) :
 - « Quels pays ont des projets TSI ou SRSP dans le domaine « gestion des migrations » ? » : 3 pays
