@@ -13,6 +13,16 @@ policy_areas:
   - public-administration-and-governance
   - revenue-administration-and-public-financial-management
   - skills-education-and-training
+# Sitemap du site : pages projet absentes des listings ci-dessus (projets connus seulement en thin, ou nouveaux).
+# Rubriques exclues : pages de navigation et appels "flagship" (pas des pages projet).
+sitemap_url: "https://reforms-investments.ec.europa.eu/sitemap.xml"
+sitemap_excluded_areas:
+  - our-projects
+  - our-projects-0
+  - what-we-do
+  - other-eu-support-opportunities
+  - our-partners
+  - flagship-technical-support-projects
 srsp_pdf_url: "https://commission.europa.eu/system/files/2020-03/rss-technical-support-per-country_en.pdf"
 programme_docs:
   - id: tsi-performance

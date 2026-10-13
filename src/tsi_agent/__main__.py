@@ -12,7 +12,8 @@ from tsi_agent.countries import COUNTRIES
 from tsi_agent.deliverables_pipeline import build_deliverables_pipeline
 from tsi_agent.index_pipeline import build_index_pipeline
 from tsi_agent.pipeline import build_pipeline
-from tsi_agent.runner import refresh_deliverables_metadata, run_deliverables, run_extraction, run_index
+from tsi_agent.runner import (format_discovery, refresh_deliverables_metadata, run_deliverables, run_extraction,
+                              run_index)
 
 
 def _countries(value: str) -> list[str]:
@@ -34,7 +35,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--limit", type=int,
                      help="nombre maximal de projets envoyés au LLM (projets détaillés)")
     run.add_argument("--chunk-size", type=int)
-    run.add_argument("--dry-run", action="store_true", help="découverte seule, sans LLM ni écriture")
+    run.add_argument("--dry-run", "--discover-only", dest="dry_run", action="store_true",
+                     help="découverte seule (sitemap compris), sans LLM ni écriture de projets ; bilan des fusions "
+                          "dans logs/runs/<run_id>.discovery.json")
     run.add_argument("--model")
     index = sub.add_parser("index", help="vectoriser les fichiers extraits nouveaux ou modifiés (couche RAG)")
     index.add_argument("--full", action="store_true", help="revectoriser tous les fichiers")
@@ -69,6 +72,28 @@ def main(argv: list[str] | None = None) -> int:
     only.add_argument("--topics-only", action="store_true", help="questions sur les thèmes libres seulement")
     only.add_argument("--metadata-only", action="store_true", help="questions sur les métadonnées seulement")
     agg.add_argument("--out-dir", default="output/eval")
+    bundle = sub.add_parser("trial-bundle",
+                            help="regrouper projets et programme en fichiers par pays (trial Haystack Enterprise)")
+    bundle.add_argument("--out", default="deploy/trial/build", help="dossier de sortie (vidé des tsi-* d'abord)")
+    prod = sub.add_parser("prod-export",
+                          help="un fichier par projet, programme et livrable + métadonnées (production Haystack Enterprise)")
+    prod.add_argument("--out", default="deploy/prod/build/files",
+                      help="dossier à téléverser (vidé des tsi-* d'abord) ; manifest.json écrit dans le dossier parent")
+    anom = sub.add_parser("anomalies",
+                          help="rapport d'anomalies de publication (CSV + Markdown), sans LLM ni réseau")
+    anom.add_argument("--out", help="dossier du rapport (défaut : <output_dir>/reports)")
+    anom.add_argument("--year", type=int, help="année de référence pour la gravité (défaut : année courante)")
+    sub.add_parser("csr-fetch", help="télécharger la base CSR d'ECFIN (export Qlik complet, xlsx)")
+    csrb = sub.add_parser("csr-build", help="fiches Markdown des CSR (output/csr) depuis l'export ECFIN")
+    csrb.add_argument("--year-from", type=int, default=2016)
+    csrb.add_argument("--year-to", type=int, default=2025)
+    link = sub.add_parser("csr-link", help="lier les projets aux CSR (LLM, CLI Claude ; cache, reprise sur quota)")
+    link.add_argument("--limit", type=int, help="nombre maximal de projets envoyés au LLM")
+    link.add_argument("--project", action="append", dest="projects", help="id de projet (répétable)")
+    link.add_argument("--detail-only", action="store_true",
+                      help="n'envoyer au LLM que les projets avec page détail (les autres plus tard)")
+    link.add_argument("--sample", type=int, help="écrire un échantillon de N projets liés (relecture métier)")
+    link.add_argument("--model", help="modèle du CLI Claude (défaut : réglage model)")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
@@ -105,6 +130,68 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(f"Pipeline exporté vers {args.path}")
         return 0
+    if args.command == "trial-bundle":
+        from tsi_agent.trial_bundle import build
+        print(json.dumps(build(Path(settings.output_dir), Path(args.out)), indent=2, ensure_ascii=False))
+        return 0
+    if args.command == "prod-export":
+        from tsi_agent.prod_export import export
+        manifest = export(Path(settings.output_dir), Path(args.out))
+        print(json.dumps(manifest, indent=2, ensure_ascii=False))
+        return 1 if manifest["meta_type_problems"] or manifest["files_over_10mb"] else 0
+    if args.command == "anomalies":
+        from tsi_agent.anomalies import run as run_anomalies
+        out = Path(args.out) if args.out else Path(settings.output_dir) / "reports"
+        print(json.dumps(run_anomalies(Path(settings.output_dir), out, args.year), indent=2, ensure_ascii=False))
+        print(f"Rapport : {out / 'anomalies.csv'} et {out / 'anomalies.md'}")
+        return 0
+    if args.command == "csr-fetch":
+        import httpx
+        import websockets.exceptions
+        from tsi_agent.csr_fetch import fetch
+        try:
+            result = fetch(Path(settings.output_dir) / "csr" / "csr_full.xlsx")
+        except (httpx.HTTPError, websockets.exceptions.WebSocketException, OSError, TimeoutError, RuntimeError,
+                KeyError) as exc:
+            print(f"ERREUR : csr-fetch a échoué : {exc!r}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, indent=2))
+        return 0
+    if args.command == "csr-build":
+        from tsi_agent.csr import build_csrs, read_rows, write_csrs
+        source = Path(settings.output_dir) / "csr" / "csr_full.xlsx"
+        if not source.exists():
+            print(f"ERREUR : {source} introuvable — lancer d'abord `python -m tsi_agent csr-fetch`", file=sys.stderr)
+            return 1
+        rows = read_rows(source)
+        written = write_csrs(build_csrs(rows, args.year_from, args.year_to), source.parent)
+        print(json.dumps({"rows": len(rows), "csr_files": written, "dir": str(source.parent)}, indent=2))
+        return 0
+    if args.command == "csr-link":
+        from tsi_agent import runlog
+        from tsi_agent.chat.generator import LoggedChatGenerator
+        from tsi_agent.components.claude_cli import ClaudeCliChatGenerator
+        from tsi_agent.csr import build_csrs, read_rows
+        from tsi_agent.csr_link import LINK_SCHEMA, run_linking, write_sample
+        source = Path(settings.output_dir) / "csr" / "csr_full.xlsx"
+        if not source.exists():
+            print(f"ERREUR : {source} introuvable — lancer d'abord `python -m tsi_agent csr-fetch`", file=sys.stderr)
+            return 1
+        csrs = build_csrs(read_rows(source))
+        if args.sample:
+            out = Path(settings.output_dir) / "reports" / "csr_links_sample.csv"
+            print(f"Échantillon : {write_sample(settings, csrs, args.sample, out)}")
+            return 0
+        generator = LoggedChatGenerator(chat_generator=ClaudeCliChatGenerator(
+            model=args.model or settings.model, json_schema=LINK_SCHEMA, timeout_s=settings.llm_timeout_s))
+        with runlog.open_run(settings.logs_dir) as run:
+            summary = run_linking(settings, csrs, generator, limit=args.limit, project_ids=args.projects,
+                                  detail_only=args.detail_only)
+            run.extra.update({"mode": "csr_link", **{k: v for k, v in summary.items() if k != "failed"},
+                              "failed": summary["failed"][:50]})
+        print(json.dumps({**summary, "run": run.final_summary.get("run_id") if run.final_summary else None,
+                          "cost_usd": (run.final_summary or {}).get("cost_usd")}, indent=2, ensure_ascii=False))
+        return 1 if summary["quota_exceeded"] else 0
     if args.command == "impact-rescore":
         from tsi_agent.impact import scoring
         try:
@@ -201,6 +288,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         return 2
+    discovery = (summary.get("dry_run") or {}).get("discovery")
+    if discovery and Path(discovery["file"]).exists():
+        report = json.loads(Path(discovery["file"]).read_text(encoding="utf-8"))
+        print(format_discovery(report, discovery["file"]))
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     return 1 if summary.get("quota_exceeded") else 0
 

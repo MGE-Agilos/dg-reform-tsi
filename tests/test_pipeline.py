@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -105,9 +106,64 @@ def test_yaml_roundtrip_for_deepset(settings):
     assert isinstance(extractor.chat_generator, ClaudeCliChatGenerator)
     assert extractor.chat_generator.json_schema["required"] == ["summary"]
     assert set(extractor.chat_generator.json_schema["properties"]) == {"summary", "countries"}
-    assert set(reloaded.graph.nodes) == {"listing", "discoverer", "detector", "detail_fetcher", "extractor", "writer"}
+    assert set(reloaded.graph.nodes) == {"listing", "discoverer", "judge", "detector", "detail_fetcher", "extractor",
+                                         "writer"}
+    judge = reloaded.get_component("judge").chat_generator
+    assert judge.chat_generator.json_schema["required"] == ["decisions"] and judge.chat_generator.model == "sonnet"
 
 
 def test_llm_schema_is_ascii_for_the_windows_command_line():
     from tsi_agent.models import ProjectContent
     json.dumps(ProjectContent.model_json_schema()).encode("ascii")
+
+
+def test_dry_run_saves_the_discovery_report(settings):
+    summary = run_extraction(settings, SOURCES, countries=["HR"], dry_run=True, run_id="d2",
+                             pipeline_factory=factory(FakeChatGenerator(), FakeFetcher(default=fake_site)))
+    discovery = summary["dry_run"]["discovery"]
+    path = discovery.pop("file")
+    assert path.endswith("d2.discovery.json")
+    report = json.loads(open(path, encoding="utf-8").read())
+    assert report["refs"] == discovery["refs"] > 60
+    assert discovery == {"refs": report["refs"], "detail": report["detail"], "sitemap_urls": 0,
+                         "sitemap_new_urls": 0, "merged_into_thin": 0, "new_projects": 0,
+                         "duplicates_merged": len(report["duplicates_merged"]), "not_project_pages": 0,
+                         "sitemap_failed": 0, "sitemap_deferred": 0, "judged": 0, "merged_by_judge": 0,
+                         "judge_rejected": 0, "judge_llm_calls": 0}
+    assert LocalProjectStore(settings.output_dir).all() == {}
+
+
+def test_dry_run_with_sitemap_calls_the_merge_judge(settings):
+    import tsi_agent.components.merge_judge as mj
+    from test_merge_judge import ScriptedJudge, decision
+
+    base = "https://reforms-investments.ec.europa.eu/technical-support-instrument-0"
+    page_url = f"{base}/skills-education-and-training/adultdigitalup-improvement-digital-skills-adults-cyprus_en"
+    cy = SOURCES["factsheet_url"].format(slug="cyprus")
+    sitemap = ('<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+               f"<url><loc>{page_url}</loc></url></urlset>").encode()
+    factsheet = ('<details class="ecl-accordion__item"><summary>2021</summary><div class="ecl-accordion__content">'
+                 "<ul><li>Improve the digital skills of adults in Cyprus</li></ul></div></details>").encode()
+    detail = (b"<html><body><h1>ADULTDIGITALUP - Improvement of the Digital Skills of Adults in Cyprus</h1><main>"
+              b"<dl class='ecl-description-list'><dt>Funding Programme</dt><dd>Technical Support Instrument (TSI)</dd>"
+              b"<dt>Year</dt><dd>2021</dd></dl><h2>T</h2><p>Support to Cyprus for adult digital skills.</p></main>"
+              b"</body></html>")
+    fetcher = FakeFetcher(pages={SOURCES["sitemap_url"]: sitemap, cy: factsheet, page_url: detail},
+                          cached_pages={page_url: detail})
+    gen = ScriptedJudge([[decision("adultdigitalup-improvement-digital-skills-adults-cyprus",
+                                   "tsi-2021-improve-the-digital-skills-of-adults-in-cyprus", "high", "reworded")]])
+
+    def make(settings, sources, dry_run=False, model=None):
+        pipe = build_pipeline(settings, sources, dry_run=dry_run, judge_generator=gen)
+        for name in ("listing", "discoverer", "judge"):
+            pipe.get_component(name)._fetcher = fetcher
+        return pipe
+
+    summary = run_extraction(settings, SOURCES, dry_run=True, run_id="j1", pipeline_factory=make)
+    discovery = summary["dry_run"]["discovery"]
+    assert (discovery["judged"], discovery["merged_by_judge"], discovery["new_projects"]) == (1, 1, 0)
+    assert len(gen.prompts) == 1
+    report = json.loads(open(discovery["file"], encoding="utf-8").read())
+    assert report["judge"]["merged_by_judge"][0]["thin_id"] == "tsi-2021-improve-the-digital-skills-of-adults-in-cyprus"
+    assert (Path(settings.output_dir) / mj.DECISIONS_FILE).exists()
+    assert LocalProjectStore(settings.output_dir).all() == {}

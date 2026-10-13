@@ -7,7 +7,7 @@ from haystack.components.embedders import MockDocumentEmbedder, MockTextEmbedder
 from conftest import make_vector_store
 from tsi_agent import runlog
 from tsi_agent.chat.pipeline import build_chat_pipeline, open_vector_store
-from tsi_agent.chat.tools import DeliverableSearch, ProjectLister, ProjectReader, ProjectSearch, build_filters
+from tsi_agent.chat.tools import CsrSearch, DeliverableSearch, ProjectLister, ProjectReader, ProjectSearch, build_filters
 from tsi_agent.config import Settings
 from tsi_agent.qdrant_local import LocalQdrantEmbeddingRetriever, open_store
 from tsi_agent.vector_state import VectorLayerError
@@ -239,7 +239,8 @@ def test_pipeline_has_five_tools_and_deliverable_tool_runs(tmp_path):
     pipe = build_chat_pipeline(s, [], chat_generator=_gen(),
                                text_embedder=MockTextEmbedder(model="mock", dimension=8))
     tools = {t.name: t for t in pipe.get_component("agent").tools}
-    assert list(tools) == ["search_projects", "find_projects", "search_deliverables", "list_projects", "get_project"]
+    assert list(tools) == ["search_projects", "find_projects", "search_deliverables", "search_csrs", "list_projects",
+                           "get_project"]
     out = tools["search_deliverables"].invoke(query="survey", publication_id="pub-tax")
     assert out["sources"][0]["doc_id"] == "pub-tax"
 
@@ -328,3 +329,85 @@ def test_project_reader_max_chars(tmp_path):
     short = ProjectReader(document_store=store, max_chars=300).run(doc_id="energy-regulation-academy")
     assert len(short["result"]) == 300
     assert ProjectReader(document_store=store).to_dict()["init_parameters"]["max_chars"] == 8000
+
+
+def test_build_filters_accepts_the_srss_programme():
+    filters = build_filters(programme="srss")
+    assert {"field": "meta.programme", "operator": "==", "value": "SRSS"} in filters["conditions"]
+
+
+CSRS = [
+    ("csr-FR-2023-1", ["FR"], 2023, "Improve the sustainability of the pension system."),
+    ("csr-HR-2019-2", ["HR"], 2019, "Reduce the administrative burden on businesses."),
+    ("csr-HR-2024-1", ["HR"], 2024, "Strengthen the anti-money laundering framework."),
+]
+
+
+def csr_store(tmp_path):
+    store = open_store(str(tmp_path), 8)
+    docs = [Document(id=f"csr/{cid}#0", content=text, meta={
+        "doc_id": cid, "doc_type": "csr", "title": cid, "countries": countries, "year": year, "section": "Introduction",
+        "source_url": "https://ec.europa.eu/csr", "context_header": f"{cid} — {year}", "ai_generated": False,
+        "programme": None, "policy_area": None}) for cid, countries, year, text in CSRS]
+    docs.append(Document(id="projects/p#0", content="A project.", meta={
+        "doc_id": "p", "doc_type": "project", "countries": ["HR"], "year": 2024, "section": "Introduction"}))
+    store.write_documents(MockDocumentEmbedder(model="mock", dimension=8).run(documents=docs)["documents"])
+    return store
+
+
+def test_csr_search_filters_type_country_and_year(tmp_path):
+    tool = CsrSearch(text_embedder=MockTextEmbedder(model="mock", dimension=8),
+                     retriever=LocalQdrantEmbeddingRetriever(document_store=csr_store(tmp_path)), top_k=10)
+    out = tool.run(query="x", countries=["HR"], year_from=2020, known_sources=[{"ref": 1}])
+    assert [s["doc_id"] for s in out["sources"]] == ["csr-HR-2024-1"]
+    assert out["sources"][0]["ref"] == 2
+    assert out["result"].startswith("[2] csr-HR-2024-1 — 2024 — section: Introduction\nCSR id: csr-HR-2024-1\n")
+    all_ids = {s["doc_id"] for s in tool.run(query="x")["sources"]}
+    assert all_ids == {"csr-FR-2023-1", "csr-HR-2019-2", "csr-HR-2024-1"}
+
+
+def test_csr_search_empty(tmp_path):
+    tool = CsrSearch(text_embedder=MockTextEmbedder(model="mock", dimension=8),
+                     retriever=LocalQdrantEmbeddingRetriever(document_store=csr_store(tmp_path)))
+    assert tool.run(query="x", countries=["SE"])["result"] == "No matching CSR passages found."
+
+
+def test_csr_search_keeps_best_passage_per_csr(tmp_path):
+    store = csr_store(tmp_path)
+    extra = Document(id="csr/csr-HR-2024-1#1", content="Sub-parts of AML.", meta={
+        "doc_id": "csr-HR-2024-1", "doc_type": "csr", "title": "csr-HR-2024-1", "countries": ["HR"], "year": 2024,
+        "section": "Sub-parts", "source_url": "https://ec.europa.eu/csr", "context_header": "csr-HR-2024-1 — 2024",
+        "ai_generated": False, "programme": None, "policy_area": None})
+    store.write_documents(MockDocumentEmbedder(model="mock", dimension=8).run(documents=[extra])["documents"])
+    tool = CsrSearch(text_embedder=MockTextEmbedder(model="mock", dimension=8),
+                     retriever=LocalQdrantEmbeddingRetriever(document_store=store), top_k=10)
+    ids = [s["doc_id"] for s in tool.run(query="x", countries=["HR"])["sources"]]
+    assert sorted(ids) == ["csr-HR-2019-2", "csr-HR-2024-1"]
+
+
+def test_lister_csr_filter(tmp_path):
+    store = open_store(str(tmp_path), 8)
+    docs = [Document(id=f"projects/{pid}#0", content="x", meta={
+        "doc_id": pid, "doc_type": "project", "title": pid, "countries": ["HR"], "year": 2024, "programme": "TSI",
+        "csrs": csrs}) for pid, csrs in (("a", ["csr-HR-2022-1.1"]), ("b", ["csr-HR-2022-10.1"]), ("c", None))]
+    store.write_documents(MockDocumentEmbedder(model="mock", dimension=8).run(documents=docs)["documents"])
+    lister = ProjectLister(document_store=store)
+    assert lister.run(csr="csr-HR-2022-1")["result"].startswith("Total matching projects: 1 ")
+    assert lister.run(csr="csr-HR-2022")["result"].startswith("Total matching projects: 2 ")
+    assert lister.run(csr="csr-HR-2022-1.1")["result"].startswith("Total matching projects: 1 ")
+
+
+def test_lister_csr_filter_is_normalised_and_lists_matching_ids(tmp_path):
+    store = open_store(str(tmp_path), 8)
+    docs = [Document(id=f"projects/{pid}#0", content="x", meta={
+        "doc_id": pid, "doc_type": "project", "title": pid, "countries": ["HR"], "year": 2024, "programme": "TSI",
+        "csrs": csrs}) for pid, csrs in (("a", ["csr-HR-2022-1.1", "csr-HR-2021-3.1"]), ("b", "csr-HR-2022-1.1"),
+                                         ("c", None))]
+    store.write_documents(MockDocumentEmbedder(model="mock", dimension=8).run(documents=docs)["documents"])
+    lister = ProjectLister(document_store=store)
+    for wanted in ("CSR-hr-2022-1", " hr-2022-1 ", "HR-2022"):
+        text = lister.run(csr=wanted)["result"]
+        assert text.startswith("Total matching projects: 1 "), wanted
+        assert " — CSRs (AI-assessed): csr-HR-2022-1.1" in text, wanted
+    text = lister.run(csr="  ")["result"]
+    assert text.startswith("Total matching projects: 3 ") and "CSRs (AI-assessed)" not in text

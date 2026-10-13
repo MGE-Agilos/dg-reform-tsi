@@ -178,6 +178,10 @@ def _country_names(ref: ProjectRef) -> str:
 
 
 def thin_sentence(ref: ProjectRef) -> str:
+    if ref.programme == "SRSS":
+        return (f"Pre-SRSP technical assistance project ({_country_names(ref)}, {ref.year}), listed in the annex of "
+                f"the SRSP list of approved technical support requests (projects financed by a transfer of funds from "
+                f"the European Structural and Investment Funds). No detail page is published.")
     if ref.programme == "SRSP":
         return (f"Project listed in the SRSP list of approved technical support requests "
                 f"({_country_names(ref)}, {ref.year}). No detail page is published.")

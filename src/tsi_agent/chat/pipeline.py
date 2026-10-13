@@ -8,7 +8,7 @@ from haystack.tools import ComponentTool
 
 from tsi_agent.chat.generator import LoggedChatGenerator
 from tsi_agent.chat.prompt import system_prompt
-from tsi_agent.chat.tools import DeliverableSearch, ProjectFinder, ProjectLister, ProjectReader, ProjectSearch
+from tsi_agent.chat.tools import CsrSearch, DeliverableSearch, ProjectFinder, ProjectLister, ProjectReader, ProjectSearch
 from tsi_agent.components.claude_cli import ClaudeCliChatGenerator
 from tsi_agent.config import Settings
 from tsi_agent.qdrant_local import LocalQdrantEmbeddingRetriever, collection_exists, open_store
@@ -72,6 +72,11 @@ def build_chat_pipeline(settings: Settings, policy_areas: list[str], *, chat_gen
                       description="Search the full text of the projects' deliverables (final reports, "
                                   "presentations): methods, figures, recommendations, detailed results. Returns "
                                   "numbered passages [n] with document and page.",
+                      outputs_to_string={"source": "result"}, **_SOURCES_IO),
+        ComponentTool(CsrSearch(text_embedder=embedder, retriever=retriever), name="search_csrs",
+                      description="Search the EU country-specific recommendations (CSRs, European Semester "
+                                  "2016-2025) and the Commission's latest assessment of their implementation; "
+                                  "returns numbered passages [n] with the CSR id.",
                       outputs_to_string={"source": "result"}, **_SOURCES_IO),
         ComponentTool(ProjectLister(document_store=store), name="list_projects",
                       description="Exact count and list of distinct projects matching filters (whole corpus).",

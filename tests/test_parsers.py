@@ -133,13 +133,30 @@ def test_srsp_pdf():
     refs = parse_srsp_pdf(fixture_bytes("srsp_list.pdf"), "https://x/srsp.pdf")
     assert len(refs) == 871
     assert Counter(r.countries[0] for r in refs)["AT"] == 17
-    assert all(r.programme == "SRSP" and r.detail_url is None for r in refs)
+    assert all(r.programme in ("SRSP", "SRSS") and r.detail_url is None for r in refs)
     titles = {r.title for r in refs}
     assert ("Development of the Austrian Open Source Intelligence (OSINT) capabilities to fight and prevent "
             "cybercrime, fraud and economic crime") in titles
     first = refs[0]
     assert (first.countries, first.year, first.title) == (["AT"], 2020, "National strategy for financial literacy")
     assert first.project_id == "srsp-2020-national-strategy-for-financial-literacy"
+
+
+def test_srsp_pdf_annex_of_pre_srsp_greek_projects_is_labelled_srss():
+    # Annexe du PDF (p. 36-39) : assistance technique a la Grece 2012-2016, financee par transfert de fonds ESI,
+    # anterieure au SRSP : programme "SRSS", ids inchanges (cle titre "srsp-...").
+    refs = parse_srsp_pdf(fixture_bytes("srsp_list.pdf"), "https://x/srsp.pdf")
+    srss = [r for r in refs if r.programme == "SRSS"]
+    assert len(srss) == 82  # 82 lignes (3 en 2012, 24 en 2014, 55 en 2016), autant que de fichiers srsp-2012..2016
+    assert {r.countries[0] for r in srss} == {"GR"}
+    assert {r.year for r in srss} == {2012, 2014, 2016}
+    assert all(r.programme == "SRSP" for r in refs if r.year >= 2017)
+    first = srss[0]
+    assert first.title == "Administrative Burden Measurement of Laws and Regulations in certain sectors of the economy"
+    assert first.project_id == "srsp-2012-administrative-burden-measurement-of-laws-and-regulations-in-certain-sectors-of"
+    assert srss[-1].title == "Technical support for the security study of the out-of-court workout electronic platform"
+    # Les projets SRSP de la Grece (2017-2020), avant l'annexe, restent SRSP.
+    assert any(r.programme == "SRSP" and r.countries == ["GR"] and r.year == 2018 for r in refs)
 
 
 def test_factsheet_nested_list_is_not_a_separate_project():
@@ -192,3 +209,11 @@ def test_srsp_heading_kind():
     assert heading_kind("Funding") is None
     assert heading_kind("Title of the request") is None
     assert heading_kind("1") is None
+
+
+def test_parse_detail_meta_matches_parse_detail():
+    from tsi_agent.parsers.detail import parse_detail_meta
+    html = fixture_bytes("detail_licensing_romania.html")
+    full = parse_detail(html)
+    assert parse_detail_meta(html) == (full.title, full.programme, full.year) == (
+        "Comprehensive redesign of the licensing system in Romania", "SRSP", 2019)

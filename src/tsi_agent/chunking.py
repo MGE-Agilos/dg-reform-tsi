@@ -9,6 +9,9 @@ from tsi_agent.countries import COUNTRIES, name_from_iso
 from tsi_agent.render import parse_front_matter
 
 # A incrementer a chaque changement des regles ci-dessous : force une revectorisation complete.
+# Le type csr a ete ajoute sans incrementer CHUNKER_VERSION (morceaux existants inchanges).
+# csrs et la section des liens CSR ajoutes sans changer CHUNKER_VERSION : presents dans les fichiers revectorises
+# (csr-link reecrit les fichiers lies).
 CHUNKER_VERSION = 3  # 2 : section Deliverables (resume IA) ; 3 : texte integral des livrables, un morceau par page
 SPLIT_THRESHOLD_WORDS = 300
 WINDOW_WORDS = 250
@@ -18,13 +21,14 @@ SENTENCE_LOOKBACK_WORDS = 50
 INTRO = "Introduction"
 SUMMARY = "Summary (AI-generated)"
 DELIVERABLES = "Deliverables (AI-generated summary)"
-AI_SECTIONS = {SUMMARY, DELIVERABLES}
+CSR_LINKS = "Supported CSRs (AI-assessed)"
+AI_SECTIONS = {SUMMARY, DELIVERABLES, CSR_LINKS}
 # Listes d'URL et titres de listing : deja en metadonnees, sans valeur pour la recherche.
 SKIPPED_SECTIONS = {"Sources", "Listed in country factsheets as"}
 # listing_titles : titres des listings (recherche par mots du titre de find_projects). Ajoute sans changer
 # CHUNKER_VERSION : present dans les fichiers revectorises ; `index --full` pour toute la couche.
 PROJECT_FIELDS = ("title", "programme", "year", "countries", "multi_country", "policy_area", "detail_page",
-                  "results", "spotlight", "highlighted", "listed", "listing_titles")
+                  "results", "spotlight", "highlighted", "listed", "listing_titles", "csrs")
 
 _TITLE = re.compile(r"\A# [^\n]*(?:\n|\Z)")
 _HEADING = re.compile(r"^## (.+?)[ \t]*$", re.MULTILINE)
@@ -113,9 +117,27 @@ def chunk_deliverable(rel_path: str, fm: dict[str, Any], body: str, **split: int
     return docs
 
 
+def chunk_csr(rel_path: str, fm: dict[str, Any], body: str, **split: int) -> list[Document]:
+    """Fiche CSR : texte complet (introduction), evaluation, sous-parties. Pas de domaine de projet (taxonomies
+    differentes) ni de programme."""
+    base: dict[str, Any] = {
+        "doc_id": fm["csr_id"], "doc_type": "csr", "source_file": rel_path, "source_url": fm.get("source_url"),
+        "context_header": context_header(fm), "title": fm.get("title"), "year": fm.get("year"),
+        "countries": fm.get("countries"), "programme": None, "policy_area": None, "detail_page": None,
+    }
+    stem = rel_path.removesuffix(".md")
+    docs: list[Document] = []
+    for section, section_text in split_sections(body):
+        for piece in split_words(section_text, **split):
+            index = len(docs)
+            docs.append(Document(id=f"{stem}#{index}", content=piece,
+                                 meta={**base, "section": section, "chunk_index": index, "ai_generated": False}))
+    return docs
+
+
 def chunk_file(rel_path: str, text: str, *, threshold: int = SPLIT_THRESHOLD_WORDS, window: int = WINDOW_WORDS,
                overlap: int = OVERLAP_WORDS) -> list[Document]:
-    """Morceaux d'un fichier projet, programme ou livrable. ValueError si le front matter est absent ou invalide.
+    """Morceaux d'un fichier projet, programme, livrable ou CSR. ValueError si le front matter est absent ou invalide.
 
     threshold/window/overlap : taille des morceaux ; seul le banc de recherche les change (CHUNKER_VERSION
     ne concerne que les valeurs par defaut, celles de la couche vectorisee).
@@ -126,6 +148,8 @@ def chunk_file(rel_path: str, text: str, *, threshold: int = SPLIT_THRESHOLD_WOR
         raise ValueError("front matter is not a mapping")
     if fm.get("publication_id"):
         return chunk_deliverable(rel_path, fm, body, **split)
+    if fm.get("csr_id"):
+        return chunk_csr(rel_path, fm, body, **split)
     doc_id = fm.get("project_id") or fm.get("doc_id")
     if not doc_id:
         raise ValueError("front matter has no project_id or doc_id")

@@ -6,6 +6,7 @@ from tsi_agent import runlog
 from tsi_agent.countries import COUNTRIES, slug_from_iso
 from tsi_agent.http import DEFAULT_USER_AGENT, FetchError, PoliteFetcher, shared_fetcher
 from tsi_agent.models import RawPage
+from tsi_agent.parsers.sitemap import parse_sitemap
 
 NAME = "SourceListingFetcher"
 
@@ -38,6 +39,26 @@ class SourceListingFetcher:
         targets += [("programme_doc", d["id"], d["url"], d.get("title")) for d in s.get("programme_docs", [])]
         return targets
 
+    def _sitemap_pages(self, index_url: str) -> list[RawPage]:
+        """Pages du sitemap (une RawPage par sitemap enfant, key = URL de l'index) ; [] si l'une manque.
+
+        Tout ou rien : un sitemap partiel ferait passer des projets pour absents du site.
+        """
+        try:
+            index = self._get_fetcher().get(index_url)
+            children, urls = parse_sitemap(index.content)
+            if not children:  # sitemap simple, sans index
+                return [RawPage(kind="sitemap", key=index_url, url=index_url, content=index.content)]
+            pages = []
+            for child in children:
+                result = self._get_fetcher().get(child)
+                parse_sitemap(result.content)
+                pages.append(RawPage(kind="sitemap", key=index_url, url=child, content=result.content))
+            return pages
+        except (FetchError, OSError, ValueError) as exc:
+            runlog.event(NAME, "error", index_url, "sitemap_incomplete", error=repr(exc))
+            return []
+
     @component.output_types(pages=list[RawPage])
     def run(self, countries: list[str] | None = None) -> dict[str, list[RawPage]]:
         pages = []
@@ -51,5 +72,7 @@ class SourceListingFetcher:
                 runlog.event(NAME, "error", url, "fetch_failed", kind=kind, key=key, error=repr(exc))
                 continue
             pages.append(RawPage(kind=kind, key=key, url=url, content=result.content, title=title))
+        if not countries and self.sources.get("sitemap_url"):  # tous pays : exclu des runs pilotes, comme le PDF
+            pages += self._sitemap_pages(self.sources["sitemap_url"])
         runlog.event(NAME, "discover", None, "ok", pages=len(pages))
         return {"pages": pages}

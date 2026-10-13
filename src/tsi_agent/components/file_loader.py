@@ -16,7 +16,7 @@ from tsi_agent.chunking import CHUNKER_VERSION
 from tsi_agent.qdrant_local import collection_exists
 from tsi_agent.vector_state import VectorState, load_state
 
-FOLDERS = ("projects", "programme", "deliverables")
+FOLDERS = ("projects", "programme", "deliverables", "csr")
 
 
 @component

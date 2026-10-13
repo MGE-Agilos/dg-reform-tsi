@@ -285,3 +285,35 @@ def test_rewriting_a_record_merges_stored_aliases(tmp_path):
     assert store.get("hems").aliases == ["tsi-2022-hems", "tsi-2021-hems"]
     fm, _ = parse_front_matter(store.read_project_file("hems"))
     assert fm["aliases"] == ["tsi-2022-hems", "tsi-2021-hems"]
+
+
+def test_refresh_keeps_csrs_metadata(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    w = writer(store)
+    w.run(run_id="r1", records=[record()])
+    text = store.read_project_file("hems")
+    fm, body = parse_front_matter(text)
+    from tsi_agent.render import render
+    store.write_project_file("hems", render({**fm, "csrs": ["csr-HR-2022-1.1"]}, body))
+    w.run(run_id="r2", unchanged=[ref(listing_titles=["HEMS for Croatia"])])
+    fm, _ = parse_front_matter(store.read_project_file("hems"))
+    assert fm["csrs"] == ["csr-HR-2022-1.1"]
+
+
+def test_full_rewrite_reapplies_stored_csr_links(tmp_path):
+    import json
+
+    store = LocalProjectStore(tmp_path)
+    w = writer(store)
+    links = tmp_path / "csr_links"
+    links.mkdir()
+    (links / "hems.json").write_text(json.dumps({"status": "ok", "basis": "full_text", "links": [
+        {"csr_id": "csr-HR-2022-1.1", "level": "direct", "rationale": "R."}]}), encoding="utf-8")
+    (links / "broken.json").write_text("{", encoding="utf-8")
+    w.run(run_id="r1", records=[record()])
+    fm, body = parse_front_matter(store.read_project_file("hems"))
+    assert fm["csrs"] == ["csr-HR-2022-1.1"] and "## Supported CSRs (AI-assessed)" in body
+    assert body.index("## Supported CSRs") < body.index("## Sources")
+    w.run(run_id="r2", thin=[ProjectRef(project_id="broken", title="B", programme="TSI", year=2022,
+                                        listing_urls=["https://x/b"])])
+    assert "csrs" not in parse_front_matter(store.read_project_file("broken"))[0]

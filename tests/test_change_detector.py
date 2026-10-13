@@ -70,6 +70,15 @@ def test_srsp_and_countryless_entries_scope(tmp_path):
     assert sorted(d.run(refs=[], run_id="r2", scope=full)["delisted"]) == ["eu-wide", "srsp-2019-x"]
 
 
+def test_srss_entries_follow_the_srsp_pdf_scope(tmp_path):
+    d = detector(tmp_path)
+    known(d._store, ProjectRef(project_id="srsp-2014-x", title="x", programme="SRSS", year=2014, countries=["GR"]))
+    assert d.run(refs=[], run_id="r", scope={"countries": ["GR"], "srsp": False, "all_countries": False})[
+        "delisted"] == []
+    assert d.run(refs=[], run_id="r2", scope={"countries": [], "srsp": True, "all_countries": False})[
+        "delisted"] == ["srsp-2014-x"]
+
+
 def test_thin_comes_back_when_its_detail_page_vanished(tmp_path):
     d = detector(tmp_path)
     known(d._store, detail("academy"), aliases=["tsi-2025-academy"])

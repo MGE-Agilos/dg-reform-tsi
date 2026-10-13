@@ -1,4 +1,4 @@
-"""Outils de l'agent chatbot : recherche semantique (projets, texte integral des livrables), recherche des
+"""Outils de l'agent chatbot : recherche semantique (projets, texte integral des livrables, CSR), recherche des
 projets d'un theme libre (find_projects), liste/comptage de projets, lecture d'un projet.
 
 Composants Haystack exposes via ComponentTool. Les filtres annee/programme/domaine/detail passent par les
@@ -128,7 +128,7 @@ class ProjectSearch:
         :param countries: ISO country codes to keep (e.g. ["HR", "SI"]; Greece is "GR").
         :param year_from: Keep projects from this year on (e.g. 2022).
         :param year_to: Keep projects up to this year.
-        :param programme: "TSI" (2021 onwards) or "SRSP" (2017-2020).
+        :param programme: "TSI" (2021 onwards), "SRSP" (2017-2020) or "SRSS" (pre-2017 technical assistance to Greece).
         :param policy_area: Policy area slug (e.g. "green-transition").
         :param detail_only: Keep only projects that have a detail page (richer descriptions).
         :param include_programme: Also search country factsheets and policy area pages (programme figures).
@@ -176,7 +176,7 @@ class DeliverableSearch(ProjectSearch):
         :param countries: ISO country codes of the related projects (e.g. ["HR", "SI"]; Greece is "GR").
         :param year_from: Keep deliverables of projects from this year on.
         :param year_to: Keep deliverables of projects up to this year.
-        :param programme: "TSI" (2021 onwards) or "SRSP" (2017-2020).
+        :param programme: "TSI" (2021 onwards), "SRSP" (2017-2020) or "SRSS" (pre-2017 technical assistance to Greece).
         :param policy_area: Policy area slug (e.g. "green-transition").
         :param publication_id: Keep only this publication (id as returned in earlier results).
         :param project_id: Keep only deliverables linked to this project id.
@@ -208,6 +208,48 @@ class DeliverableSearch(ProjectSearch):
         runlog.event("DeliverableSearch", "tool_call", "search_deliverables", query=query, countries=countries,
                      publication_id=publication_id, project_id=project_id, filters=filters, results=len(docs),
                      duration_ms=round((time.monotonic() - t0) * 1000))
+        return {"result": result, "sources": sources}
+
+
+@component
+class CsrSearch(ProjectSearch):
+    @component.output_types(result=str, sources=list[dict])
+    def run(self, query: str, countries: list[str] | None = None, year_from: int | None = None,
+            year_to: int | None = None, known_sources: list[dict] | None = None) -> dict[str, Any]:
+        """Semantic search in the country-specific recommendations (CSRs) addressed to EU Member States in the
+        European Semester (2016-2025), with their sub-parts and the Commission's latest assessment of their
+        implementation. Returns numbered passages [n] with the CSR id (e.g. csr-FR-2023-1), to cite.
+
+        :param query: What to look for, in English (e.g. "sustainability of the pension system").
+        :param countries: ISO country codes (e.g. ["HR", "SI"]; Greece is "GR").
+        :param year_from: Keep CSRs adopted from this year on.
+        :param year_to: Keep CSRs adopted up to this year.
+        """
+        t0 = time.monotonic()
+        embedding = self.text_embedder.run(text=query)["embedding"]
+        filters = build_filters(year_from, year_to, doc_type="csr", countries=countries)
+        docs = self.retriever.run(query_embedding=embedding, filters=filters, top_k=self.top_k * 5)["documents"]
+        best: list[Document] = []
+        seen: set[str | None] = set()
+        for d in docs:  # un passage par CSR (le mieux classe) : introduction et sous-parties ont les memes mots
+            if _in_countries(d, countries) and d.meta.get("doc_id") not in seen:
+                seen.add(d.meta.get("doc_id"))
+                best.append(d)
+        docs = best[: self.top_k]
+        start = len(known_sources or [])
+        sources: list[dict[str, Any]] = []
+        blocks: list[str] = []
+        for i, doc in enumerate(docs, start=start + 1):
+            meta = doc.meta
+            source = _source(i, doc, meta.get("section"))
+            source["score"] = round(doc.score, 3) if doc.score is not None else None
+            sources.append(source)
+            blocks.append(f"[{i}] {meta.get('context_header') or meta.get('title')} — section: {meta.get('section')}\n"
+                          f"CSR id: {meta.get('doc_id')}\nURL: {meta.get('source_url')}\n"
+                          f"{(doc.content or '')[:SNIPPET_CHARS]}")
+        result = "\n\n".join(blocks) if blocks else "No matching CSR passages found."
+        runlog.event("CsrSearch", "tool_call", "search_csrs", query=query, countries=countries, filters=filters,
+                     results=len(docs), duration_ms=round((time.monotonic() - t0) * 1000))
         return {"result": result, "sources": sources}
 
 
@@ -294,7 +336,7 @@ class ProjectFinder:
             any of them.
         :param year_from: Keep projects from this year on.
         :param year_to: Keep projects up to this year.
-        :param programme: "TSI" (2021 onwards) or "SRSP" (2017-2020).
+        :param programme: "TSI" (2021 onwards), "SRSP" (2017-2020) or "SRSS" (pre-2017 technical assistance to Greece).
         :param policy_area: Policy area slug (e.g. "green-transition").
         """
         t0 = time.monotonic()
@@ -367,6 +409,24 @@ class ProjectFinder:
         return {"result": "\n".join(lines), "sources": sources}
 
 
+def normalize_csr(value: Any) -> str | None:
+    """Valeur du filtre csr : sans espaces, prefixe "csr-" ajoute si absent, minuscules ; vide -> pas de filtre."""
+    wanted = str(value or "").strip().lower()
+    if not wanted:
+        return None
+    return wanted if wanted.startswith("csr-") else "csr-" + wanted
+
+
+def csr_matches(csrs: Any, wanted: str) -> list[str]:
+    """Ids de `csrs` qui correspondent a `wanted` (id de CSR ou de sous-partie, ou prefixe pays-annee
+    "csr-HR-2022" ; insensible a la casse) ; pas de faux prefixe (csr-HR-2022-1 ne trouve pas csr-HR-2022-10.1)."""
+    wanted = normalize_csr(wanted)
+    if not wanted or not isinstance(csrs, list):
+        return []
+    return [c for c in csrs if isinstance(c, str) and (c.lower() == wanted or c.lower().startswith(wanted + ".")
+                                                          or c.lower().startswith(wanted + "-"))]
+
+
 @component
 class ProjectLister:
     def __init__(self, document_store: Any):
@@ -383,7 +443,8 @@ class ProjectLister:
     @component.output_types(result=str)
     def run(self, countries: list[str] | None = None, year_from: int | None = None, year_to: int | None = None,
             programme: str | None = None, policy_area: str | None = None, detail_only: bool = False,
-            title_contains: str | None = None, limit: int = LISTER_DEFAULT_LIMIT) -> dict[str, Any]:
+            title_contains: str | None = None, csr: str | None = None,
+            limit: int = LISTER_DEFAULT_LIMIT) -> dict[str, Any]:
         """Count and list distinct projects matching filters, over the whole corpus. Use it for any number or list.
 
         The result gives the total, counts by programme, by year, by country and (without a policy_area filter) by
@@ -392,13 +453,15 @@ class ProjectLister:
         :param countries: ISO country codes (e.g. ["GR"]); a project matches if it involves any of them.
         :param year_from: From this year on.
         :param year_to: Up to this year.
-        :param programme: "TSI" or "SRSP".
+        :param programme: "TSI", "SRSP" or "SRSS" (pre-2017 technical assistance to Greece).
         :param policy_area: Policy area slug (e.g. "health-and-long-term-care").
         :param detail_only: Only projects with a detail page.
         :param title_contains: Case-insensitive word or phrase that must appear in the project title.
+        :param csr: CSR id or prefix (e.g. "csr-HR-2022-1", "csr-HR-2022-1.2" or "csr-HR-2022" for all 2022 CSRs of Croatia): only projects linked to it (AI-assessed links).
         :param limit: Maximum number of projects to list (the total is always given).
         """
         t0 = time.monotonic()
+        csr = normalize_csr(csr)
         filters = build_filters(year_from, year_to, programme, policy_area, detail_only, countries=countries)
         projects: dict[str, dict[str, Any]] = {}
         for doc in self.document_store.filter_documents(filters=filters):
@@ -406,6 +469,8 @@ class ProjectLister:
             if doc_id in projects or not _in_countries(doc, countries):
                 continue
             if title_contains and title_contains.lower() not in str(doc.meta.get("title") or "").lower():
+                continue
+            if csr and not csr_matches(doc.meta.get("csrs"), csr):
                 continue
             projects[doc_id] = doc.meta
         ordered = sorted(projects.values(), key=lambda m: (-(m.get("year") or 0), str(m.get("title"))))
@@ -419,11 +484,14 @@ class ProjectLister:
             lines.append("By policy area: " + _breakdown(m.get("policy_area") for m in ordered))
         lines.append(f"Showing {min(limit, len(ordered))} of {len(ordered)}:")
         for m in ordered[:limit]:
-            lines.append(f"- {m.get('title')} ({m.get('doc_id')}) — {m.get('programme')} {m.get('year')} — "
-                         f"{', '.join(m.get('countries') or [])} — detail page: "
-                         f"{'yes' if m.get('detail_page') else 'no'} — {m.get('source_url')}")
+            line = (f"- {m.get('title')} ({m.get('doc_id')}) — {m.get('programme')} {m.get('year')} — "
+                    f"{', '.join(m.get('countries') or [])} — detail page: "
+                    f"{'yes' if m.get('detail_page') else 'no'} — {m.get('source_url')}")
+            if csr:
+                line += f" — CSRs (AI-assessed): {', '.join(csr_matches(m.get('csrs'), csr))}"
+            lines.append(line)
         runlog.event("ProjectLister", "tool_call", "list_projects", countries=countries, filters=filters,
-                     title_contains=title_contains, results=len(ordered),
+                     title_contains=title_contains, csr=csr, results=len(ordered),
                      duration_ms=round((time.monotonic() - t0) * 1000))
         return {"result": "\n".join(lines)}
 

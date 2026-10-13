@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from tsi_agent import __main__ as cli
@@ -174,3 +176,99 @@ def test_impact_rescore_selected_and_errors(tmp_path, monkeypatch, capsys):
     assert cli.main(["--settings", str(settings), "impact-rescore", "aaa"]) == 2
     assert "timeout" in capsys.readouterr().err
     assert "impact_score" not in (impact / "aaa.md").read_text(encoding="utf-8")
+
+
+def test_discover_only_is_the_dry_run_and_prints_the_discovery(monkeypatch, capsys, tmp_path):
+    seen = {}
+    report_file = tmp_path / "r.discovery.json"
+    report = {"refs": 2140, "detail": 860, "sitemap": {"urls": 670, "new_urls": 190, "fetched": 188,
+                                                       "not_project_pages": ["u"], "failed": [], "deferred": []},
+              "merged_into_thin": [{"sitemap_slug": f"slug-{i}", "thin_id": f"srsp-2019-thin-{i}", "score": 0.9,
+                                    "rule": "fuzzy", "title": "T", "programme": "SRSP", "year": 2019}
+                                   for i in range(35)],
+              "new_projects": [{"project_id": "new-one", "title": "New", "programme": "TSI", "year": 2024,
+                                "url": "https://x/new-one_en"}],
+              "duplicates_merged": [{"detail_id": "d", "thin_id": "t", "score": 1.0}],
+              "judge": {"judged": 60, "llm_calls": 6, "errors": 0,
+                        "merged_by_judge": [{"sitemap_slug": "adultdigitalup", "thin_id": "tsi-2021-improve",
+                                             "confidence": "high", "reason": "reworded", "cached": False}],
+                        "rejected": [{"sitemap_slug": "x"}, {"sitemap_slug": "y"}]}}
+    report_file.write_text(json.dumps(report), encoding="utf-8")
+
+    def fake(settings, sources, **kw):
+        seen.update(kw)
+        return {"quota_exceeded": False, "dry_run": {"discovery": {"file": str(report_file)}}}
+
+    monkeypatch.setattr(cli, "run_extraction", fake)
+    assert cli.main(["run", "--discover-only"]) == 0
+    assert seen["dry_run"] is True
+    out = capsys.readouterr().out
+    assert "Projects after merge: 2140" in out
+    assert "Sitemap project URLs: 670 (190 not in the listings)" in out
+    assert "Merged into thin projects: 35" in out
+    assert "slug-0 -> srsp-2019-thin-0 (0.900, fuzzy)" in out
+    assert "slug-29 -> " in out and "slug-30 -> " not in out and "... 5 more" in out
+    assert "New projects: 1" in out and "new-one" in out
+    assert "Duplicates merged (thin + detail page): 1" in out
+    assert "Judged by LLM (no rule merge, candidates found): 60 (6 LLM calls, 0 errors)" in out
+    assert "Merged by the LLM judge: 1" in out and "adultdigitalup -> tsi-2021-improve (high: reworded)" in out
+    assert "Rejected by the LLM judge: 2" in out
+    assert str(report_file) in out
+
+
+def test_anomalies_command_writes_report(tmp_path):
+    out = tmp_path / "output"
+    (out / "projects").mkdir(parents=True)
+    (out / "projects" / "a.md").write_text(
+        "---\nproject_id: a\ntitle: A\nprogramme: TSI\nyear: 2020\ndetail_page: false\n---\n\n# A\n",
+        encoding="utf-8")
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(f"output_dir: {out.as_posix()}\n", encoding="utf-8")
+    reports = tmp_path / "reports"
+    code = cli.main(["--settings", str(settings), "anomalies", "--out", str(reports), "--year", "2026"])
+    assert code == 0
+    assert (reports / "anomalies.csv").exists() and (reports / "anomalies.md").exists()
+
+
+def test_csr_build_command(tmp_path):
+    import openpyxl
+    from tsi_agent.csr import COLUMNS
+
+    out = tmp_path / "output"
+    (out / "csr").mkdir(parents=True)
+    wb = openpyxl.Workbook()
+    wb.active.append(list(COLUMNS))
+    wb.active.append(["France", "2023", "1", "2024 - Semester Cycle (June)", "Do X.", "Healthcare", "-", "No",
+                      "Annual", "Some Progress"])
+    wb.save(out / "csr" / "csr_full.xlsx")
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(f"output_dir: {out.as_posix()}\n", encoding="utf-8")
+    assert cli.main(["--settings", str(settings), "csr-build"]) == 0
+    assert (out / "csr" / "csr-FR-2023-1.md").exists()
+
+
+def test_csr_build_without_export_is_a_clean_error(tmp_path, capsys):
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(f"output_dir: {(tmp_path / 'output').as_posix()}\n", encoding="utf-8")
+    assert cli.main(["--settings", str(settings), "csr-build"]) == 1
+    assert "csr-fetch" in capsys.readouterr().err
+
+
+def test_csr_fetch_failure_is_a_clean_error(tmp_path, capsys, monkeypatch):
+    from tsi_agent import csr_fetch
+
+    def boom(out):
+        raise RuntimeError("Qlik: no qlik-csrf-token header")
+
+    monkeypatch.setattr(csr_fetch, "fetch", boom)
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(f"output_dir: {(tmp_path / 'output').as_posix()}\n", encoding="utf-8")
+    assert cli.main(["--settings", str(settings), "csr-fetch"]) == 1
+    assert "csr-fetch a échoué" in capsys.readouterr().err
+
+
+def test_csr_link_without_export_is_a_clean_error(tmp_path, capsys):
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(f"output_dir: {(tmp_path / 'output').as_posix()}\n", encoding="utf-8")
+    assert cli.main(["--settings", str(settings), "csr-link"]) == 1
+    assert "csr-fetch" in capsys.readouterr().err
