@@ -8,13 +8,20 @@ pas) ; liens ecrits dans le fichier projet : front matter `csrs` et section SECT
 """
 
 import hashlib
+import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date
+from typing import Any
+
+from haystack.dataclasses import ChatMessage
 
 from tsi_agent.chunking import split_sections
+from tsi_agent.countries import name_from_iso
 from tsi_agent.csr import Csr
 from tsi_agent.fuzzy import prefix_tokens
+from tsi_agent.render import _TAIL_HEADINGS, parse_front_matter, render
 
 WINDOW = 3
 MAX_PER_COUNTRY = 15
@@ -83,3 +90,107 @@ def project_input(fm: dict, body: str) -> tuple[str, str]:
         return "\n".join(lines), "title_only"
     parts = [f"{name}: {text}" for name, text in split_sections(body) if name not in _SKIP]
     return re.sub(r"[ \t]+", " ", "\n\n".join(parts))[:PROJECT_CHARS], "full_text"
+
+
+LINK_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"links": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"csr_id": {"type": "string"}, "level": {"type": "string", "enum": ["direct", "partial"]},
+                       "rationale": {"type": "string"}},
+        "required": ["csr_id", "level", "rationale"]}}},
+    "required": ["links"],
+}
+
+SYSTEM_PROMPT = ("You link European Commission technical support projects (DG REFORM: TSI, SRSP) to the "
+                 "country-specific recommendations (CSRs) of the European Semester. You answer only from the "
+                 "texts given.")
+
+INSTRUCTIONS = f"""Below are a technical support project and CANDIDATE CSR sub-parts addressed to its \
+country or countries in the years before the request. Say which CSR sub-parts the project supports.
+
+- "direct": the project's objective is to design or implement what the CSR sub-part recommends.
+- "partial": the project contributes to one aspect of the CSR sub-part, or to a precondition for it.
+- Do not link a CSR sub-part that only shares a broad theme (e.g. "public finances") without a concrete \
+connection to what the project does. Most projects support 0 to 3 sub-parts; return at most {MAX_LINKS}.
+
+For each link give csr_id (a candidate id exactly as written), level, and a one-sentence rationale that names \
+what the project does. Return an empty list when no candidate is supported."""
+
+
+def build_prompt(fm: dict, text: str, basis: str, cands: list[Candidate]) -> str:
+    countries = ", ".join(name_from_iso(c) for c in fm.get("countries") or [])
+    head = [f"Title: {fm.get('title')}",
+            f"Programme and year: {' '.join(str(v) for v in (fm.get('programme'), fm.get('year')) if v)}",
+            f"Countries: {countries}"]
+    if basis == "title_only":
+        head.append("Note: only the title of this project is published; link only when the title makes the "
+                    "connection clear.")
+    lines = [f"- {c.part_id} ({name_from_iso(c.country)} {c.year}; {'; '.join(c.policy_areas) or 'no area'}; "
+             f"latest assessment: {c.assessment or 'none'}): {c.text}" for c in cands]
+    return "\n\n".join([INSTRUCTIONS, "## Project", "\n".join(head), text, "## Candidate CSR sub-parts",
+                        "\n".join(lines)])
+
+
+def parse_links(text: str, cands: list[Candidate]) -> list[dict[str, str]]:
+    """Liens valides : id parmi les candidates, niveau connu, sans doublon, au plus MAX_LINKS, ordre du LLM."""
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError("no JSON object in reply")
+    raw = json.loads(text[start:end + 1]).get("links")
+    if not isinstance(raw, list):
+        raise ValueError("no links list")
+    known = {c.part_id for c in cands}
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        cid, level = item.get("csr_id"), item.get("level")
+        if cid in known and level in ("direct", "partial") and cid not in {o["csr_id"] for o in out}:
+            out.append({"csr_id": cid, "level": level, "rationale": " ".join(str(item.get("rationale") or "").split())})
+    return out[:MAX_LINKS]
+
+
+def link_project(generator: Any, fm: dict, body: str, cands: list[Candidate]) -> dict[str, Any]:
+    """Enregistrement de liaison d'un projet (un appel LLM). Exceptions du generateur propagees (quota...)."""
+    text, basis = project_input(fm, body)
+    reply = generator.run(messages=[ChatMessage.from_system(SYSTEM_PROMPT),
+                                    ChatMessage.from_user(build_prompt(fm, text, basis, cands))])["replies"][0]
+    return {"project_id": fm.get("project_id"), "status": "ok", "basis": basis,
+            "content_hash": fm.get("content_hash"), "candidates_hash": candidates_hash(cands),
+            "candidates": [c.part_id for c in cands], "links": parse_links(reply.text or "", cands),
+            "model": (reply.meta or {}).get("model"), "date": date.today().isoformat()}
+
+
+def links_section(record: dict[str, Any]) -> str | None:
+    links = record.get("links") or []
+    if not links:
+        return None
+    lines = [SECTION_HEADING, "",
+             "Country-specific recommendations (European Semester) that this project supports, as assessed by an "
+             "AI model from the project text" + (" (based on the project title only)" if record.get("basis") ==
+                                                 "title_only" else "") + ":", ""]
+    lines += [f"- {link['csr_id']} ({link['level']}): {link['rationale']}" for link in links]
+    return "\n".join(lines)
+
+
+def _replace_section(body: str, section: str | None) -> str:
+    """Retire la section des liens existante et insere `section` avant la partie listing (ou a la fin)."""
+    lines = body.split("\n")
+    if SECTION_HEADING in lines:
+        start = lines.index(SECTION_HEADING)
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+        lines = lines[:start] + lines[end:]
+    cut = next((i for i, line in enumerate(lines) if line in _TAIL_HEADINGS), len(lines))
+    head, tail = "\n".join(lines[:cut]).strip("\n"), "\n".join(lines[cut:]).strip("\n")
+    return "\n\n".join(p for p in (head, section, tail) if p)
+
+
+def apply_links(text: str, record: dict[str, Any]) -> str:
+    """Texte du fichier projet avec `csrs` (front matter) et la section des liens a jour ; idempotent."""
+    fm, body = parse_front_matter(text.replace("\r\n", "\n"))
+    ids = [link["csr_id"] for link in record.get("links") or []]
+    fm = {k: v for k, v in fm.items() if k != "csrs"}
+    if ids:
+        fm["csrs"] = ids
+    return render(fm, _replace_section(body, links_section(record)))
