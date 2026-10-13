@@ -409,11 +409,22 @@ class ProjectFinder:
         return {"result": "\n".join(lines), "sources": sources}
 
 
-def csr_matches(csrs: Any, wanted: str) -> bool:
-    """`wanted` : id de CSR ou de sous-partie, ou prefixe pays-annee ("csr-HR-2022") ; pas de faux prefixe
-    (csr-HR-2022-1 ne trouve pas csr-HR-2022-10.1)."""
-    wanted = wanted.strip()
-    return any(c == wanted or c.startswith(wanted + ".") or c.startswith(wanted + "-") for c in csrs or [])
+def normalize_csr(value: Any) -> str | None:
+    """Valeur du filtre csr : sans espaces, prefixe "csr-" ajoute si absent, minuscules ; vide -> pas de filtre."""
+    wanted = str(value or "").strip().lower()
+    if not wanted:
+        return None
+    return wanted if wanted.startswith("csr-") else "csr-" + wanted
+
+
+def csr_matches(csrs: Any, wanted: str) -> list[str]:
+    """Ids de `csrs` qui correspondent a `wanted` (id de CSR ou de sous-partie, ou prefixe pays-annee
+    "csr-HR-2022" ; insensible a la casse) ; pas de faux prefixe (csr-HR-2022-1 ne trouve pas csr-HR-2022-10.1)."""
+    wanted = normalize_csr(wanted)
+    if not wanted or not isinstance(csrs, list):
+        return []
+    return [c for c in csrs if isinstance(c, str) and (c.lower() == wanted or c.lower().startswith(wanted + ".")
+                                                          or c.lower().startswith(wanted + "-"))]
 
 
 @component
@@ -450,6 +461,7 @@ class ProjectLister:
         :param limit: Maximum number of projects to list (the total is always given).
         """
         t0 = time.monotonic()
+        csr = normalize_csr(csr)
         filters = build_filters(year_from, year_to, programme, policy_area, detail_only, countries=countries)
         projects: dict[str, dict[str, Any]] = {}
         for doc in self.document_store.filter_documents(filters=filters):
@@ -472,9 +484,12 @@ class ProjectLister:
             lines.append("By policy area: " + _breakdown(m.get("policy_area") for m in ordered))
         lines.append(f"Showing {min(limit, len(ordered))} of {len(ordered)}:")
         for m in ordered[:limit]:
-            lines.append(f"- {m.get('title')} ({m.get('doc_id')}) — {m.get('programme')} {m.get('year')} — "
-                         f"{', '.join(m.get('countries') or [])} — detail page: "
-                         f"{'yes' if m.get('detail_page') else 'no'} — {m.get('source_url')}")
+            line = (f"- {m.get('title')} ({m.get('doc_id')}) — {m.get('programme')} {m.get('year')} — "
+                    f"{', '.join(m.get('countries') or [])} — detail page: "
+                    f"{'yes' if m.get('detail_page') else 'no'} — {m.get('source_url')}")
+            if csr:
+                line += f" — CSRs (AI-assessed): {', '.join(csr_matches(m.get('csrs'), csr))}"
+            lines.append(line)
         runlog.event("ProjectLister", "tool_call", "list_projects", countries=countries, filters=filters,
                      title_contains=title_contains, csr=csr, results=len(ordered),
                      duration_ms=round((time.monotonic() - t0) * 1000))

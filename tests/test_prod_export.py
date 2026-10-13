@@ -187,3 +187,14 @@ def test_project_csrs_in_meta_only_when_present(tmp_path):
     alpha = json.loads((out / "tsi-project-alpha.md.meta.json").read_text(encoding="utf-8"))
     beta = json.loads((out / "tsi-project-beta.md.meta.json").read_text(encoding="utf-8"))
     assert alpha["csrs"] == ["csr-HR-2022-1.1"] and "csrs" not in beta
+
+
+def test_non_list_csrs_and_listing_titles_are_ignored():
+    from haystack import Document
+
+    from tsi_agent.prod_export import file_meta
+
+    doc = Document(content="x", meta={"doc_type": "project", "doc_id": "p", "title": "P", "csrs": "csr-HR-2022-1.1",
+                                      "listing_titles": "P"})
+    meta = file_meta([doc])
+    assert "csrs" not in meta and meta["listing_titles"] == []

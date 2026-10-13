@@ -3,8 +3,10 @@
 Candidates d'un projet d'annee y : sous-parties des CSR de ses pays adoptees de y-WINDOW a y-1 (une demande TSI
 de l'annee y est deposee a l'automne de y-1, sur les CSR des annees precedentes). Au-dela de 2 pays : les
 MAX_PER_COUNTRY plus proches par pays (Jaccard des mots, deterministe) pour borner le prompt ; le LLM juge.
-Decisions dans output/csr_links/<stem>.json (rejouees sans LLM tant que le projet et ses candidates ne changent
-pas) ; liens ecrits dans le fichier projet : front matter `csrs` et section SECTION_HEADING.
+Decisions dans output/csr_links/<stem>.json, rejouees sans LLM tant que `input_hash` ne change pas : version du
+prompt, base, texte transmis au LLM, ids ET texte des candidates. L'evaluation (Some Progress...) en est exclue
+expres : elle change a chaque cycle annuel et n'altere pas le lien projet-CSR (pas de refacturation).
+Liens ecrits dans le fichier projet : front matter `csrs` et section SECTION_HEADING.
 Ne pas lancer run/deliverables en meme temps que csr-link (memes fichiers projet).
 """
 
@@ -17,7 +19,7 @@ import random
 import re
 import threading
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -38,7 +40,7 @@ from tsi_agent.store import _retry_on_lock
 WINDOW = 3
 MAX_PER_COUNTRY = 15
 MAX_CANDIDATES = 60
-PROMPT_VERSION = 1
+PROMPT_VERSION = 2
 MANY_COUNTRIES = 2
 MAX_LINKS = 5
 PROJECT_CHARS = 6000
@@ -101,8 +103,8 @@ def candidates_hash(cands: list[Candidate]) -> str:
 
 
 def input_hash(basis: str, text: str, cands: list[Candidate]) -> str:
-    """Cle de cache : entree du LLM (base, texte, candidates) et version du prompt."""
-    key = f"{PROMPT_VERSION}|{basis}|{text}|{sorted(c.part_id for c in cands)}"
+    """Cle de cache : version du prompt, base, texte du projet, ids et texte des candidates (pas l'evaluation)."""
+    key = f"{PROMPT_VERSION}|{basis}|{text}|{sorted((c.part_id, c.text) for c in cands)}"
     return "sha1:" + hashlib.sha1(key.encode("utf-8")).hexdigest()
 
 
@@ -302,7 +304,7 @@ def run_linking(settings: Settings, csrs: list[Csr], generator: Any, *, concurre
     stop = threading.Event()
     lock = threading.Lock()
 
-    def work(item: tuple[Path, dict, str, list[Candidate]]) -> None:
+    def process(item: tuple[Path, dict, str, list[Candidate]]) -> None:
         path, fm, body, cands = item
         if stop.is_set():
             return
@@ -336,12 +338,22 @@ def run_linking(settings: Settings, csrs: list[Csr], generator: Any, *, concurre
         with lock:
             summary["linked"] += 1
 
+    def work(item: tuple[Path, dict, str, list[Candidate]]) -> None:
+        try:
+            process(item)
+        except BaseException:  # le lot s'arrete : les elements restants sortent sans appel
+            stop.set()
+            raise
+
     pool = ThreadPoolExecutor(max_workers=max(1, concurrency or settings.max_concurrency))
     try:
         # contexte copie : le journal du run (ContextVar) n'est pas herite par les threads du pool
         futures = [pool.submit(contextvars.copy_context().run, work, item) for item in todo]
-        for future in futures:
-            future.result()
+        pending = set(futures)
+        while pending:  # attente par tranches de 0,5 s : Ctrl-C interrompt, une exception arrete le lot
+            done, pending = wait(pending, timeout=0.5, return_when=FIRST_EXCEPTION)
+            for future in done:
+                future.result()
     except BaseException:  # Ctrl-C ou erreur inattendue : on arrete le lot, puis on propage
         stop.set()
         pool.shutdown(wait=True, cancel_futures=True)

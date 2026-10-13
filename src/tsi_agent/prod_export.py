@@ -65,8 +65,10 @@ def file_meta(docs: list[Document]) -> dict:
         "year": first.get("year"), "policy_area": first.get("policy_area"), "results": first.get("results"),
         "projects": list(projects or []), "multi_country": first.get("multi_country"),
         "detail_page": first.get("detail_page"), "source_url": source_url,
-        "listing_titles": list(first.get("listing_titles") or []) if doc_type == "project" else None,
-        "csrs": (list(first.get("csrs") or []) or None) if doc_type == "project" else None,
+        "listing_titles": (list(first["listing_titles"]) if isinstance(first.get("listing_titles"), list) else [])
+                          if doc_type == "project" else None,
+        "csrs": (list(first["csrs"]) or None) if doc_type == "project" and isinstance(first.get("csrs"), list)
+                 else None,
         "chunks": len(docs),
     }
     meta = {}

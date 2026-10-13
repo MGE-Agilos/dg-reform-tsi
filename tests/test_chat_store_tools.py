@@ -395,3 +395,19 @@ def test_lister_csr_filter(tmp_path):
     assert lister.run(csr="csr-HR-2022-1")["result"].startswith("Total matching projects: 1 ")
     assert lister.run(csr="csr-HR-2022")["result"].startswith("Total matching projects: 2 ")
     assert lister.run(csr="csr-HR-2022-1.1")["result"].startswith("Total matching projects: 1 ")
+
+
+def test_lister_csr_filter_is_normalised_and_lists_matching_ids(tmp_path):
+    store = open_store(str(tmp_path), 8)
+    docs = [Document(id=f"projects/{pid}#0", content="x", meta={
+        "doc_id": pid, "doc_type": "project", "title": pid, "countries": ["HR"], "year": 2024, "programme": "TSI",
+        "csrs": csrs}) for pid, csrs in (("a", ["csr-HR-2022-1.1", "csr-HR-2021-3.1"]), ("b", "csr-HR-2022-1.1"),
+                                         ("c", None))]
+    store.write_documents(MockDocumentEmbedder(model="mock", dimension=8).run(documents=docs)["documents"])
+    lister = ProjectLister(document_store=store)
+    for wanted in ("CSR-hr-2022-1", " hr-2022-1 ", "HR-2022"):
+        text = lister.run(csr=wanted)["result"]
+        assert text.startswith("Total matching projects: 1 "), wanted
+        assert " — CSRs (AI-assessed): csr-HR-2022-1.1" in text, wanted
+    text = lister.run(csr="  ")["result"]
+    assert text.startswith("Total matching projects: 3 ") and "CSRs (AI-assessed)" not in text

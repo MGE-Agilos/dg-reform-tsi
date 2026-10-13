@@ -9,7 +9,7 @@ from tsi_agent.models import ProgrammeDoc, ProjectRecord, ProjectRef
 from tsi_agent.render import (deliverables_section, detail_body, front_matter, parse_front_matter,
                               programme_doc_text, render, replace_deliverables_section, replace_listing_tail,
                               source_urls, thin_body, with_deliverables_count)
-from tsi_agent.store import ProjectStore, shared_store, StoreEntry
+from tsi_agent.store import ProjectStore, file_stem, shared_store, StoreEntry
 
 NAME = "MarkdownProjectWriter"
 THIN_FLUSH_EVERY = 100  # l'index est réécrit en entier : on groupe les projets thin
@@ -64,6 +64,19 @@ class MarkdownProjectWriter:
                 runlog.event(NAME, "alert", alias, "warning",
                              message=f"Alias {alias} of {ref.project_id} is a detail project; not deleted")
 
+    def _with_csr_links(self, project_id: str, text: str) -> str:
+        """Texte reecrit en entier : remet les liens CSR (csr-link) deja decides, s'il y en a ; silencieux sinon."""
+        try:
+            import json
+            from pathlib import Path
+
+            from tsi_agent.csr_link import LINKS_DIR, apply_links
+            root = Path(getattr(self._get_store(), "root", self.output_dir))
+            record = json.loads((root / LINKS_DIR / f"{file_stem(project_id)}.json").read_text(encoding="utf-8"))
+            return apply_links(text, record) if record.get("status") == "ok" else text
+        except Exception:  # pas de decision, fichier illisible : on garde le texte tel quel
+            return text
+
     def _write_record(self, rec: ProjectRecord, run_id: str, today: str) -> str:
         store = self._get_store()
         stored = store.get(rec.ref.project_id)
@@ -75,7 +88,8 @@ class MarkdownProjectWriter:
                           run_id=run_id, model=rec.model, results=rec.results)
         entries = self._deliverable_entries(ref.project_id)
         body = replace_deliverables_section(detail_body(ref, rec), deliverables_section(entries))
-        file = store.write_project_file(ref.project_id, render(with_deliverables_count(fm, len(entries)), body))
+        text = self._with_csr_links(ref.project_id, render(with_deliverables_count(fm, len(entries)), body))
+        file = store.write_project_file(ref.project_id, text)
         self._replace_aliases(ref)
         # Hash de la vue listing : c'est à elle que le prochain run comparera (pas au ref enrichi).
         store.put(self._entry(ref, file, first_seen, today, rec.content_hash, rec.listing_hash))
@@ -89,7 +103,8 @@ class MarkdownProjectWriter:
                           run_id=run_id, model="none")
         entries = self._deliverable_entries(ref.project_id)
         body = replace_deliverables_section(thin_body(ref), deliverables_section(entries))
-        file = store.write_project_file(ref.project_id, render(with_deliverables_count(fm, len(entries)), body))
+        text = self._with_csr_links(ref.project_id, render(with_deliverables_count(fm, len(entries)), body))
+        file = store.write_project_file(ref.project_id, text)
         store.put(self._entry(ref, file, first_seen, today, None, ref.listing_hash()), save=False)
         runlog.event(NAME, "write", ref.project_id, "thin", file=file)
         return file

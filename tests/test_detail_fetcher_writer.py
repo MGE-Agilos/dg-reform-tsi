@@ -298,3 +298,22 @@ def test_refresh_keeps_csrs_metadata(tmp_path):
     w.run(run_id="r2", unchanged=[ref(listing_titles=["HEMS for Croatia"])])
     fm, _ = parse_front_matter(store.read_project_file("hems"))
     assert fm["csrs"] == ["csr-HR-2022-1.1"]
+
+
+def test_full_rewrite_reapplies_stored_csr_links(tmp_path):
+    import json
+
+    store = LocalProjectStore(tmp_path)
+    w = writer(store)
+    links = tmp_path / "csr_links"
+    links.mkdir()
+    (links / "hems.json").write_text(json.dumps({"status": "ok", "basis": "full_text", "links": [
+        {"csr_id": "csr-HR-2022-1.1", "level": "direct", "rationale": "R."}]}), encoding="utf-8")
+    (links / "broken.json").write_text("{", encoding="utf-8")
+    w.run(run_id="r1", records=[record()])
+    fm, body = parse_front_matter(store.read_project_file("hems"))
+    assert fm["csrs"] == ["csr-HR-2022-1.1"] and "## Supported CSRs (AI-assessed)" in body
+    assert body.index("## Supported CSRs") < body.index("## Sources")
+    w.run(run_id="r2", thin=[ProjectRef(project_id="broken", title="B", programme="TSI", year=2022,
+                                        listing_urls=["https://x/b"])])
+    assert "csrs" not in parse_front_matter(store.read_project_file("broken"))[0]

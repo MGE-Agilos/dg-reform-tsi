@@ -96,3 +96,15 @@ def test_find_aggregate_pools_title_project_and_deliverable_hits():
     only_gr = find_aggregate.Code().run(topic="anti-money laundering", keywords=["FIU", "money laundering"],
                                         countries=["GR"], catalog=catalog, project_hits=[], deliverable_hits=[])
     assert "(fiu)" not in only_gr["result"] and "(aml)" in only_gr["result"]
+
+
+def test_list_summary_csr_filter_is_normalised_and_lists_matching_ids():
+    docs = [project("a", "Alpha", ["HR"], csrs=["csr-HR-2022-1.1", "csr-HR-2021-3.1"]),
+            project("b", "Beta", ["HR"], csrs="csr-HR-2022-1.1"), project("c", "Gamma", ["HR"])]
+    run = list_summary.Code().run
+    for wanted in ("CSR-hr-2022-1", " hr-2022-1 ", "HR-2022"):
+        text = run(documents=docs, csr=wanted)["result"]
+        assert text.startswith("Total matching projects: 1 "), wanted
+        assert text.endswith("— CSRs (AI-assessed): csr-HR-2022-1.1"), wanted
+    assert run(documents=docs, csr="   ")["result"].startswith("Total matching projects: 3 ")
+    assert "CSRs (AI-assessed)" not in run(documents=docs, csr="  ")["result"]

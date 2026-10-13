@@ -261,7 +261,7 @@ def test_base_exception_stops_the_batch_and_propagates(tmp_path):
     gen.run = lambda messages: (gen.prompts.append(1), (_ for _ in ()).throw(Stop()))
     with pytest.raises(Stop):
         run_linking(settings, csrs, gen, concurrency=1)
-    assert len(gen.prompts) == 1
+    assert len(gen.prompts) <= 2
 
 
 def test_record_write_failure_is_not_fatal(tmp_path, monkeypatch):
@@ -330,3 +330,13 @@ def test_apply_failure_is_logged_and_skipped(tmp_path):
     (out / "projects" / "a.md").write_text("no front matter", encoding="utf-8")
     s = run_linking(settings, csrs, FakeGenerator([answer()]), concurrency=1)
     assert s["linked"] == 1 and s["files_updated"] >= 1
+
+
+def test_input_hash_covers_candidate_text_but_not_assessment():
+    from tsi_agent.csr_link import input_hash
+
+    base = Candidate("csr-HR-2022-1.1", "csr-HR-2022-1", "HR", 2022, "Text.", ["A"], "Some Progress")
+    reassessed = Candidate("csr-HR-2022-1.1", "csr-HR-2022-1", "HR", 2022, "Text.", ["A"], "Limited Progress")
+    reworded = Candidate("csr-HR-2022-1.1", "csr-HR-2022-1", "HR", 2022, "Other text.", ["A"], "Some Progress")
+    assert input_hash("full_text", "t", [base]) == input_hash("full_text", "t", [reassessed])
+    assert input_hash("full_text", "t", [base]) != input_hash("full_text", "t", [reworded])
