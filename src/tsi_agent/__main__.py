@@ -87,6 +87,11 @@ def main(argv: list[str] | None = None) -> int:
     csrb = sub.add_parser("csr-build", help="fiches Markdown des CSR (output/csr) depuis l'export ECFIN")
     csrb.add_argument("--year-from", type=int, default=2016)
     csrb.add_argument("--year-to", type=int, default=2025)
+    link = sub.add_parser("csr-link", help="lier les projets aux CSR (LLM, CLI Claude ; cache, reprise sur quota)")
+    link.add_argument("--limit", type=int, help="nombre maximal de projets envoyés au LLM")
+    link.add_argument("--project", action="append", dest="projects", help="id de projet (répétable)")
+    link.add_argument("--sample", type=int, help="écrire un échantillon de N projets liés (relecture métier)")
+    link.add_argument("--model", help="modèle du CLI Claude (défaut : réglage model)")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
@@ -160,6 +165,30 @@ def main(argv: list[str] | None = None) -> int:
         written = write_csrs(build_csrs(rows, args.year_from, args.year_to), source.parent)
         print(json.dumps({"rows": len(rows), "csr_files": written, "dir": str(source.parent)}, indent=2))
         return 0
+    if args.command == "csr-link":
+        from tsi_agent import runlog
+        from tsi_agent.chat.generator import LoggedChatGenerator
+        from tsi_agent.components.claude_cli import ClaudeCliChatGenerator
+        from tsi_agent.csr import build_csrs, read_rows
+        from tsi_agent.csr_link import LINK_SCHEMA, run_linking, write_sample
+        source = Path(settings.output_dir) / "csr" / "csr_full.xlsx"
+        if not source.exists():
+            print(f"ERREUR : {source} introuvable — lancer d'abord `python -m tsi_agent csr-fetch`", file=sys.stderr)
+            return 1
+        csrs = build_csrs(read_rows(source))
+        if args.sample:
+            out = Path(settings.output_dir) / "reports" / "csr_links_sample.csv"
+            print(f"Échantillon : {write_sample(settings, csrs, args.sample, out)}")
+            return 0
+        generator = LoggedChatGenerator(chat_generator=ClaudeCliChatGenerator(
+            model=args.model or settings.model, json_schema=LINK_SCHEMA, timeout_s=settings.llm_timeout_s))
+        with runlog.open_run(settings.logs_dir) as run:
+            summary = run_linking(settings, csrs, generator, limit=args.limit, project_ids=args.projects)
+            run.extra.update({"mode": "csr_link", **{k: v for k, v in summary.items() if k != "failed"},
+                              "failed": summary["failed"][:50]})
+        print(json.dumps({**summary, "run": run.final_summary.get("run_id") if run.final_summary else None,
+                          "cost_usd": (run.final_summary or {}).get("cost_usd")}, indent=2, ensure_ascii=False))
+        return 1 if summary["quota_exceeded"] else 0
     if args.command == "impact-rescore":
         from tsi_agent.impact import scoring
         try:

@@ -7,21 +7,31 @@ Decisions dans output/csr_links/<stem>.json (rejouees sans LLM tant que le proje
 pas) ; liens ecrits dans le fichier projet : front matter `csrs` et section SECTION_HEADING.
 """
 
+import csv
 import hashlib
 import json
+import os
+import random
 import re
+import threading
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from haystack.dataclasses import ChatMessage
 
+from tsi_agent import runlog
 from tsi_agent.chunking import split_sections
+from tsi_agent.components.claude_cli import LLMQuotaExceeded
+from tsi_agent.config import Settings
 from tsi_agent.countries import name_from_iso
 from tsi_agent.csr import Csr
 from tsi_agent.fuzzy import prefix_tokens
 from tsi_agent.render import _TAIL_HEADINGS, parse_front_matter, render
+from tsi_agent.store import _retry_on_lock
 
 WINDOW = 3
 MAX_PER_COUNTRY = 15
@@ -194,3 +204,163 @@ def apply_links(text: str, record: dict[str, Any]) -> str:
     if ids:
         fm["csrs"] = ids
     return render(fm, _replace_section(body, links_section(record)))
+
+
+NAME = "CsrLinker"
+
+
+def _is_quota(exc: BaseException) -> bool:
+    return isinstance(exc, LLMQuotaExceeded) or "RateLimit" in type(exc).__name__
+
+
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    payload = json.dumps(data, indent=1, ensure_ascii=False)
+
+    def write() -> None:
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
+
+    _retry_on_lock(write)
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _apply(path: Path, record: dict[str, Any]) -> bool:
+    text = path.read_text(encoding="utf-8")
+    new = apply_links(text, record)
+    if new == text.replace("\r\n", "\n"):
+        return False
+    _retry_on_lock(lambda: path.write_text(new, encoding="utf-8"))
+    return True
+
+
+def run_linking(settings: Settings, csrs: list[Csr], generator: Any, *, concurrency: int | None = None,
+                limit: int | None = None, project_ids: list[str] | None = None) -> dict[str, Any]:
+    """Lie les projets (nouveaux ou modifies) a leurs CSR, puis ecrit les liens de tous les projets deja lies.
+
+    S'arrete proprement sur quota (relancer reprend). Un projet dont la reponse est illisible (2 essais) est
+    saute et liste dans `failed`, sans enregistrement : il sera redemande au prochain run.
+    """
+    root = Path(settings.output_dir)
+    links_dir = root / LINKS_DIR
+    idx = index_parts(csrs)
+    summary: dict[str, Any] = {"projects": 0, "linked": 0, "cached": 0, "no_candidates": 0, "failed": [],
+                               "files_updated": 0, "quota_exceeded": False}
+    todo: list[tuple[Path, dict, str, list[Candidate]]] = []
+    for path in sorted((root / "projects").glob("*.md")):
+        try:
+            fm, body = parse_front_matter(path.read_text(encoding="utf-8").replace("\r\n", "\n"))
+        except ValueError:
+            continue
+        if not isinstance(fm, dict) or not fm.get("project_id"):
+            continue
+        if project_ids and fm["project_id"] not in project_ids:
+            continue
+        summary["projects"] += 1
+        text, _ = project_input(fm, body)
+        cands = select_candidates(fm, text, idx)
+        record_path = links_dir / f"{path.stem}.json"
+        stored = _read_json(record_path)
+        if not cands:
+            if not stored or stored.get("status") != "no_candidates":
+                _write_json(record_path, {"project_id": fm["project_id"], "status": "no_candidates",
+                                          "content_hash": fm.get("content_hash"), "links": [],
+                                          "date": date.today().isoformat()})
+            summary["no_candidates"] += 1
+            continue
+        if stored and stored.get("status") == "ok" and stored.get("content_hash") == fm.get("content_hash") \
+                and stored.get("candidates_hash") == candidates_hash(cands):
+            summary["cached"] += 1
+            continue
+        todo.append((path, fm, body, cands))
+    if limit is not None:
+        todo = todo[:limit]
+    stop = threading.Event()
+    lock = threading.Lock()
+
+    def work(item: tuple[Path, dict, str, list[Candidate]]) -> None:
+        path, fm, body, cands = item
+        if stop.is_set():
+            return
+        for attempt in (1, 2):
+            try:
+                record = link_project(generator, fm, body, cands)
+                break
+            except ValueError as exc:  # reponse illisible : un second essai
+                if attempt == 2:
+                    runlog.event(NAME, "error", fm["project_id"], "bad_reply", error=repr(exc)[:300])
+                    with lock:
+                        summary["failed"].append(fm["project_id"])
+                    return
+            except Exception as exc:
+                if _is_quota(exc):
+                    stop.set()
+                    runlog.event(NAME, "error", fm["project_id"], "quota_exceeded", error=str(exc)[:300])
+                else:
+                    runlog.event(NAME, "error", fm["project_id"], "llm_failed", error=repr(exc)[:300])
+                    with lock:
+                        summary["failed"].append(fm["project_id"])
+                return
+        _write_json(links_dir / f"{path.stem}.json", record)
+        runlog.event(NAME, "link", fm["project_id"], "ok", links=len(record["links"]), basis=record["basis"])
+        with lock:
+            summary["linked"] += 1
+
+    with ThreadPoolExecutor(max_workers=max(1, concurrency or settings.max_concurrency)) as pool:
+        list(pool.map(work, todo))
+    summary["quota_exceeded"] = stop.is_set()
+    summary["failed"] = sorted(summary["failed"])
+    for path in sorted((root / "projects").glob("*.md")):
+        record = _read_json(links_dir / f"{path.stem}.json")
+        if record and record.get("status") in ("ok", "no_candidates") and _apply(path, record):
+            summary["files_updated"] += 1
+    return summary
+
+
+SAMPLE_COLUMNS = ["project_id", "title", "programme", "year", "countries", "basis", "csr_id", "level",
+                  "rationale", "csr_text", "csr_assessment", "verdict"]
+
+
+def write_sample(settings: Settings, csrs: list[Csr], n: int, out: Path, seed: int = 42) -> Path:
+    """Echantillon de n projets lies (au moins un lien), stratifie par programme et annee, graine fixe : une ligne
+    par lien, colonne `verdict` vide pour la relecture metier."""
+    root = Path(settings.output_dir)
+    parts = {c.part_id: c for cands in index_parts(csrs).values() for c in cands}
+    linked: dict[tuple, list[tuple[dict, dict]]] = defaultdict(list)
+    for path in sorted((root / LINKS_DIR).glob("*.json")):
+        record = _read_json(path)
+        project = root / "projects" / f"{path.stem}.md"
+        if not record or not record.get("links") or not project.exists():
+            continue
+        fm, _ = parse_front_matter(project.read_text(encoding="utf-8").replace("\r\n", "\n"))
+        linked[(fm.get("programme"), fm.get("year"))].append((fm, record))
+    rng = random.Random(seed)
+    strata = sorted(linked, key=lambda k: (str(k[0]), k[1] or 0))
+    for key in strata:
+        rng.shuffle(linked[key])
+    chosen: list[tuple[dict, dict]] = []
+    while len(chosen) < n and any(linked[k] for k in strata):
+        for key in strata:
+            if linked[key] and len(chosen) < n:
+                chosen.append(linked[key].pop())
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=SAMPLE_COLUMNS)
+        writer.writeheader()
+        for fm, record in chosen:
+            for link in record["links"]:
+                part = parts.get(link["csr_id"])
+                writer.writerow({"project_id": fm.get("project_id"), "title": fm.get("title"),
+                                 "programme": fm.get("programme"), "year": fm.get("year"),
+                                 "countries": ",".join(fm.get("countries") or []), "basis": record.get("basis"),
+                                 "csr_id": link["csr_id"], "level": link["level"], "rationale": link["rationale"],
+                                 "csr_text": part.text if part else "", "csr_assessment": part.assessment if part else "",
+                                 "verdict": ""})
+    return out

@@ -2,10 +2,12 @@ import json
 
 from haystack.dataclasses import ChatMessage
 
+from tsi_agent.components.claude_cli import LLMQuotaExceeded
+from tsi_agent.config import Settings
 from tsi_agent.csr import build_csrs
 from tsi_agent.csr_link import (LINK_SCHEMA, SECTION_HEADING, Candidate, apply_links, build_prompt, candidates_hash,
-                                index_parts, link_project, links_section, parse_links, project_input,
-                                select_candidates)
+                                index_parts, link_project, links_section, parse_links, project_input, run_linking,
+                                select_candidates, write_sample)
 
 
 def row(country="Croatia", year="2022", nbr="1.1", text="Reform the public administration.", areas="Public administration",
@@ -145,3 +147,86 @@ def test_links_section_and_apply_is_idempotent():
     assert once.index(SECTION_HEADING) < once.index("## Sources")
     cleared = apply_links(once, {"basis": "full_text", "links": []})
     assert "csrs" not in cleared and SECTION_HEADING not in cleared and "## Sources" in cleared
+
+
+PROJECT = """---
+project_id: {pid}
+title: Public administration reform {pid}
+programme: TSI
+year: 2024
+countries:
+- HR
+detail_page: true
+content_hash: sha256:{pid}
+---
+
+# Public administration reform {pid}
+
+Intro {pid}.
+
+## Sources
+
+- https://example.eu/{pid}
+"""
+
+
+def setup_output(tmp_path, pids=("a", "b", "c")):
+    out = tmp_path / "output"
+    (out / "projects").mkdir(parents=True)
+    for pid in pids:
+        (out / "projects" / f"{pid}.md").write_text(PROJECT.format(pid=pid), encoding="utf-8")
+    (out / "projects" / "nocountry.md").write_text(
+        PROJECT.format(pid="nocountry").replace("countries:\n- HR\n", ""), encoding="utf-8")
+    settings = Settings(output_dir=str(out), logs_dir=str(tmp_path / "logs"))
+    return out, settings
+
+
+def answer(cid="csr-HR-2022-1.1"):
+    return {"links": [{"csr_id": cid, "level": "direct", "rationale": "R."}]}
+
+
+def test_run_links_caches_and_resumes(tmp_path):
+    out, settings = setup_output(tmp_path)
+    csrs = build_csrs(ROWS, year_from=2016, year_to=2025)
+    gen = FakeGenerator([answer(), LLMQuotaExceeded("limit reached")])
+    s1 = run_linking(settings, csrs, gen, concurrency=1)
+    assert s1["quota_exceeded"] is True and s1["linked"] == 1 and s1["no_candidates"] == 1
+    assert sorted(p.name for p in (out / "csr_links").glob("*.json")) == ["a.json", "nocountry.json"]
+    assert "csrs:\n- csr-HR-2022-1.1" in (out / "projects" / "a.md").read_text(encoding="utf-8")
+    gen2 = FakeGenerator([answer(), answer("csr-HR-2022-1.2")])
+    s2 = run_linking(settings, csrs, gen2, concurrency=1)
+    assert s2["linked"] == 2 and s2["cached"] == 1 and s2["no_candidates"] == 1 and s2["quota_exceeded"] is False and len(gen2.prompts) == 2
+    s3 = run_linking(settings, csrs, FakeGenerator([]), concurrency=1)
+    assert s3["linked"] == 0 and s3["cached"] == 3 and s3["no_candidates"] == 1
+
+
+def test_changed_project_is_relinked_and_limit(tmp_path):
+    out, settings = setup_output(tmp_path, pids=("a", "b"))
+    csrs = build_csrs(ROWS, year_from=2016, year_to=2025)
+    run_linking(settings, csrs, FakeGenerator([answer(), answer()]), concurrency=1)
+    path = out / "projects" / "a.md"
+    path.write_text(path.read_text(encoding="utf-8").replace("sha256:a", "sha256:a2"), encoding="utf-8")
+    gen = FakeGenerator([answer("csr-HR-2022-1.2")])
+    s = run_linking(settings, csrs, gen, concurrency=1, limit=1)
+    assert s["linked"] == 1 and "csr-HR-2022-1.2" in path.read_text(encoding="utf-8")
+
+
+def test_bad_reply_is_skipped_not_cached(tmp_path):
+    out, settings = setup_output(tmp_path, pids=("a",))
+    csrs = build_csrs(ROWS, year_from=2016, year_to=2025)
+    s = run_linking(settings, csrs, FakeGenerator([{"oops": 1}, {"oops": 1}]), concurrency=1)
+    assert s["failed"] == ["a"] and not (out / "csr_links" / "a.json").exists()
+
+
+def test_write_sample(tmp_path):
+    out, settings = setup_output(tmp_path)
+    csrs = build_csrs(ROWS, year_from=2016, year_to=2025)
+    run_linking(settings, csrs, FakeGenerator([answer(), answer(), answer()]), concurrency=1)
+    path = write_sample(settings, csrs, 2, tmp_path / "sample.csv")
+    import csv as _csv
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        rows = list(_csv.DictReader(fh))
+    assert len({r["project_id"] for r in rows}) == 2
+    assert list(rows[0]) == ["project_id", "title", "programme", "year", "countries", "basis", "csr_id", "level",
+                             "rationale", "csr_text", "csr_assessment", "verdict"]
+    assert rows[0]["csr_text"] == "Reform the public administration." and rows[0]["verdict"] == ""
