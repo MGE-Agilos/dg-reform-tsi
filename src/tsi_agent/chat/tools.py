@@ -229,7 +229,13 @@ class CsrSearch(ProjectSearch):
         embedding = self.text_embedder.run(text=query)["embedding"]
         filters = build_filters(year_from, year_to, doc_type="csr", countries=countries)
         docs = self.retriever.run(query_embedding=embedding, filters=filters, top_k=self.top_k * 3)["documents"]
-        docs = [d for d in docs if _in_countries(d, countries)][: self.top_k]
+        best: list[Document] = []
+        seen: set[str | None] = set()
+        for d in docs:  # un passage par CSR (le mieux classe) : introduction et sous-parties ont les memes mots
+            if _in_countries(d, countries) and d.meta.get("doc_id") not in seen:
+                seen.add(d.meta.get("doc_id"))
+                best.append(d)
+        docs = best[: self.top_k]
         start = len(known_sources or [])
         sources: list[dict[str, Any]] = []
         blocks: list[str] = []

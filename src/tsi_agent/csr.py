@@ -19,6 +19,7 @@ COLUMNS = ("Country", "Year", "CSR Nbr", "Version", "Text", "Policy Area(s)", "E
            "Annual/Multiannual", "Assessment")
 _VERSION_YEAR = re.compile(r"^\s*(\d{4})")
 _EMPTY = {"", "-"}
+NOT_ASSESSED = "Not Assessed"
 
 
 def _clean(value) -> str:
@@ -39,6 +40,12 @@ def _number_key(number: str) -> tuple[int, ...]:
     return tuple(int(n) if n.isdigit() else 0 for n in number.split("."))
 
 
+def _latest(assessments: list[tuple[int, str]]) -> tuple[int, str] | None:
+    """Derniere evaluation reelle : "Not Assessed" ne masque pas une evaluation anterieure."""
+    real = [e for e in assessments if e[1] != NOT_ASSESSED]
+    return real[-1] if real else (assessments[-1] if assessments else None)
+
+
 @dataclass
 class Part:
     """Une CSR complete ou une sous-partie, a sa derniere version."""
@@ -48,8 +55,13 @@ class Part:
     assessments: list[tuple[int, str]]  # (annee de la version, evaluation), chronologique
 
     @property
+    def latest_assessment(self) -> tuple[int, str] | None:
+        return _latest(self.assessments)
+
+    @property
     def assessment(self) -> str | None:
-        return self.assessments[-1][1] if self.assessments else None
+        latest = self.latest_assessment
+        return latest[1] if latest else None
 
 
 @dataclass
@@ -74,11 +86,16 @@ class Csr:
 
     @property
     def policy_areas(self) -> list[str]:
-        return self.full.policy_areas if self.full else []
+        full = self.full.policy_areas if self.full else []
+        return list(dict.fromkeys([*full, *(a for p in self.subparts for a in p.policy_areas)]))
 
     @property
     def assessments(self) -> list[tuple[int, str]]:
         return self.full.assessments if self.full else []
+
+    @property
+    def latest_assessment(self) -> tuple[int, str] | None:
+        return self.full.latest_assessment if self.full else None
 
     @property
     def assessment(self) -> str | None:
@@ -111,11 +128,15 @@ def build_csrs(rows: list[dict], year_from: int = YEAR_FROM, year_to: int = YEAR
     grouped: dict[tuple[str, int, str], dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for r in rows:
         iso = iso_from_name(_clean(r.get("Country")))
-        year, number = _clean(r.get("Year")), _clean(r.get("CSR Nbr"))
-        if not iso or not year.isdigit() or not number or not year_from <= int(year) <= year_to:
+        number = _clean(r.get("CSR Nbr"))
+        try:
+            year = int(float(_clean(r.get("Year"))))
+        except ValueError:
+            continue
+        if not iso or not re.fullmatch(r"\d+(\.\d+)?", number) or not year_from <= year <= year_to:
             continue
         main, _, sub = number.partition(".")
-        grouped[(iso, int(year), main)][number if sub and sub != "0" else main].append(r)
+        grouped[(iso, year, main)][number if sub and sub != "0" else main].append(r)
     csrs = []
     for (iso, year, main), parts in sorted(grouped.items()):
         prefix = f"csr-{iso}-{year}-"
@@ -142,7 +163,7 @@ def render_csr(csr: Csr) -> str:
     if csr.policy_areas:
         lines += ["", f"Policy areas: {'; '.join(csr.policy_areas)}."]
     if csr.assessments:
-        last_year, last = csr.assessments[-1]
+        last_year, last = csr.latest_assessment
         history = "; ".join(f"{y}: {a}" for y, a in csr.assessments)
         lines += ["", "## Assessment", "", f"Latest assessment ({last_year}): {last}. History: {history}."]
     if csr.subparts:

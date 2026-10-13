@@ -116,7 +116,8 @@ def export(output_dir: Path, out_dir: Path) -> dict:
             if not docs:
                 skipped.append(rel)
                 continue
-            name = f"{PREFIX}{doc_type}-{path.name.removeprefix(f'{doc_type}-')}"  # tsi-csr-FR-2023-1.md
+            stem = path.name.removeprefix("csr-") if doc_type == "csr" else path.name
+            name = f"{PREFIX}{doc_type}-{stem}"  # tsi-csr-FR-2023-1.md ; projets : tsi-project-<nom>.md
             target = out_dir / name
             target.write_text("\n".join(section(d) for d in docs), encoding="utf-8", newline="\n")
             meta = file_meta(docs)

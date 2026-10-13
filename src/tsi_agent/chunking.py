@@ -9,6 +9,7 @@ from tsi_agent.countries import COUNTRIES, name_from_iso
 from tsi_agent.render import parse_front_matter
 
 # A incrementer a chaque changement des regles ci-dessous : force une revectorisation complete.
+# Le type csr a ete ajoute sans incrementer CHUNKER_VERSION (morceaux existants inchanges).
 CHUNKER_VERSION = 3  # 2 : section Deliverables (resume IA) ; 3 : texte integral des livrables, un morceau par page
 SPLIT_THRESHOLD_WORDS = 300
 WINDOW_WORDS = 250

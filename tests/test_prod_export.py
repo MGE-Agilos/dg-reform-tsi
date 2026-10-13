@@ -163,3 +163,12 @@ def test_export_includes_csr_files(tmp_path):
     text = (out / "tsi-csr-FR-2023-1.md").read_text(encoding="utf-8")
     assert text.startswith("# France 2023 CSR 1 — 2023 — France — Introduction\n")
     assert "Document id: csr-FR-2023-1" in text and "Detail page" not in text
+
+
+def test_project_file_keeps_its_prod_name(tmp_path):
+    root = tmp_path / "output"
+    write_corpus(root)
+    (root / "projects" / "project-x.md").write_text(PROJECT, encoding="utf-8")
+    out = tmp_path / "build" / "files"
+    export(root, out)
+    assert (out / "tsi-project-project-x.md").exists()

@@ -38,7 +38,7 @@ def test_build_groups_versions_and_subparts():
     assert [p.part_id for p in fr.subparts] == ["csr-FR-2023-1.1", "csr-FR-2023-1.2"]
     assert fr.subparts[0].policy_areas == ["Pension systems and active ageing"]
     assert fr.subparts[0].assessment is None
-    assert fr.policy_areas == ["Healthcare", "Long-term care"]
+    assert fr.policy_areas == ["Healthcare", "Long-term care", "Pension systems and active ageing"]
 
 
 def test_csr_without_full_row_uses_subpart_texts():
@@ -56,7 +56,7 @@ def test_render_front_matter_and_sections():
     assert fm["csr_id"] == "csr-FR-2023-1" and fm["title"] == "France 2023 CSR 1"
     assert fm["countries"] == ["FR"] and fm["year"] == 2023 and fm["number"] == "1"
     assert fm["subparts"] == ["csr-FR-2023-1.1", "csr-FR-2023-1.2"]
-    assert fm["assessment"] == "Some Progress" and fm["policy_areas"] == ["Healthcare", "Long-term care"]
+    assert fm["assessment"] == "Some Progress" and fm["policy_areas"] == ["Healthcare", "Long-term care", "Pension systems and active ageing"]
     assert fm["source_url"].startswith("https://")
     assert body.startswith("# France 2023 CSR 1\n\nImprove the sustainability")
     assert "## Assessment\n\nLatest assessment (2025): Some Progress. History: 2024: Limited Progress; " \
@@ -91,3 +91,26 @@ def test_read_rows_from_xlsx(tmp_path):
     wb.save(path)
     rows = read_rows(path)
     assert rows == [row()]
+
+
+def test_latest_assessment_skips_not_assessed():
+    rows = [row(nbr="1", version=f"{y} - Semester Cycle (June)", assessment=a, year="2021", areas="Healthcare")
+            for y, a in ((2022, "Some Progress"), (2023, "Substantial Progress"), (2024, "Not Assessed"),
+                         (2025, "Not Assessed"))]
+    csr = build_csrs(rows)[0]
+    assert csr.assessment == "Substantial Progress"
+    body = parse_front_matter(render_csr(csr))[1]
+    assert "Latest assessment (2023): Substantial Progress." in body
+    assert "2024: Not Assessed; 2025: Not Assessed" in body
+    only = build_csrs([row(nbr="1", assessment="Not Assessed")])[0]
+    assert only.assessment == "Not Assessed"
+
+
+def test_year_number_robustness_and_ordering():
+    rows = [row(year=2023, nbr="1"), row(year=2022.0, nbr="1"), row(nbr="1a"), row(nbr="2.0", text="Full two."),
+            row(nbr="3.10", text="ten"), row(nbr="3.9", text="nine")]
+    csrs = {c.csr_id: c for c in build_csrs(rows)}
+    assert "csr-FR-2023-1" in csrs and "csr-FR-2022-1" in csrs
+    assert not any(c.number == "1a" for c in csrs.values())
+    assert csrs["csr-FR-2023-2"].full is not None and csrs["csr-FR-2023-2"].number == "2"
+    assert [p.part_id for p in csrs["csr-FR-2023-3"].subparts] == ["csr-FR-2023-3.9", "csr-FR-2023-3.10"]

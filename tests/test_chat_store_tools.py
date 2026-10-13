@@ -370,3 +370,16 @@ def test_csr_search_empty(tmp_path):
     tool = CsrSearch(text_embedder=MockTextEmbedder(model="mock", dimension=8),
                      retriever=LocalQdrantEmbeddingRetriever(document_store=csr_store(tmp_path)))
     assert tool.run(query="x", countries=["SE"])["result"] == "No matching CSR passages found."
+
+
+def test_csr_search_keeps_best_passage_per_csr(tmp_path):
+    store = csr_store(tmp_path)
+    extra = Document(id="csr/csr-HR-2024-1#1", content="Sub-parts of AML.", meta={
+        "doc_id": "csr-HR-2024-1", "doc_type": "csr", "title": "csr-HR-2024-1", "countries": ["HR"], "year": 2024,
+        "section": "Sub-parts", "source_url": "https://ec.europa.eu/csr", "context_header": "csr-HR-2024-1 — 2024",
+        "ai_generated": False, "programme": None, "policy_area": None})
+    store.write_documents(MockDocumentEmbedder(model="mock", dimension=8).run(documents=[extra])["documents"])
+    tool = CsrSearch(text_embedder=MockTextEmbedder(model="mock", dimension=8),
+                     retriever=LocalQdrantEmbeddingRetriever(document_store=store), top_k=10)
+    ids = [s["doc_id"] for s in tool.run(query="x", countries=["HR"])["sources"]]
+    assert sorted(ids) == ["csr-HR-2019-2", "csr-HR-2024-1"]
