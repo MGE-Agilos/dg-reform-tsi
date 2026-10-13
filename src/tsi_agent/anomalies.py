@@ -140,11 +140,29 @@ def possible_duplicates(projects: list[dict]) -> list[Anomaly]:
     return out
 
 
-def detect(projects: list[dict], publications: list[dict], current_year: int) -> list[Anomaly]:
+def load_csr_links(output_dir: Path) -> dict[str, list[str]]:
+    """Liens CSR des projets deja traites par csr-link (statut ok), par project_id."""
+    out: dict[str, list[str]] = {}
+    for path in sorted((output_dir / "csr_links").glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and record.get("status") == "ok" and record.get("project_id"):
+            out[record["project_id"]] = [link.get("csr_id") for link in record.get("links") or []]
+    return out
+
+
+def detect(projects: list[dict], publications: list[dict], current_year: int,
+           csr_links: dict[str, list[str]] | None = None) -> list[Anomaly]:
     known = {p["project_id"] for p in projects} | {a for p in projects for a in p.get("aliases") or []}
     rows = [a for p in projects for a in project_anomalies(p, current_year)]
     rows += orphan_deliverables(publications, known)
     rows += possible_duplicates(projects)
+    for p in projects:
+        if (csr_links is not None and p["project_id"] in csr_links and not csr_links[p["project_id"]]
+                and p.get("programme") == "TSI" and p.get("detail_page")):
+            rows.append(_row(p, "no_csr_link", "info", "no CSR sub-part linked by csr-link"))
     return sorted(rows, key=lambda a: (SEVERITY_ORDER[a.severity], a.type, a.programme, a.year or 0, a.project_id))
 
 
@@ -193,5 +211,6 @@ def write_report(rows: list[Anomaly], out_dir: Path, current_year: int) -> dict:
 
 def run(output_dir: Path, out_dir: Path, current_year: int | None = None) -> dict:
     year = current_year or date.today().year
-    rows = detect(load_projects(output_dir), load_publications(output_dir), year)
+    rows = detect(load_projects(output_dir), load_publications(output_dir), year,
+                  csr_links=load_csr_links(output_dir))
     return write_report(rows, out_dir, year)

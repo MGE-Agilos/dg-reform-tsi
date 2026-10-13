@@ -174,3 +174,23 @@ def test_csv_neutralises_formula_cells(tmp_path):
     with (reports / "anomalies.csv").open(encoding="utf-8-sig", newline="") as fh:
         titles = [r["title"] for r in csv.DictReader(fh)]
     assert "'=HYPERLINK(\"x\")" in titles
+
+
+def test_no_csr_link_only_for_processed_published_tsi():
+    projects = [_project("a"), _project("b"), _project("c", programme="SRSP"), _project("d")]
+    links = {"a": [], "b": ["csr-GR-2021-1.1"], "c": []}  # d : pas encore traite
+    rows = [r for r in detect(projects, [], 2026, csr_links=links) if r.type == "no_csr_link"]
+    assert [(r.project_id, r.severity) for r in rows] == [("a", "info")]
+
+
+def test_run_reports_no_csr_link_from_csr_links_dir(tmp_path):
+    out = _output_dir(tmp_path)
+    (out / "projects" / "gamma.md").write_text(
+        PROJECT_MD.format(pid="gamma", title="Gamma").replace("detail_page: false", "detail_page: true\nresults: achieved\ndeliverables: 1"),
+        encoding="utf-8")
+    (out / "csr_links").mkdir()
+    (out / "csr_links" / "gamma.json").write_text(
+        json.dumps({"project_id": "gamma", "status": "ok", "links": []}), encoding="utf-8")
+    (out / "csr_links" / "broken.json").write_text("{", encoding="utf-8")
+    summary = run(out, tmp_path / "reports", current_year=2026)
+    assert summary["by_type"]["no_csr_link"] == 1
