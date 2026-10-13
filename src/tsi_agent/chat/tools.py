@@ -1,4 +1,4 @@
-"""Outils de l'agent chatbot : recherche semantique (projets, texte integral des livrables), recherche des
+"""Outils de l'agent chatbot : recherche semantique (projets, texte integral des livrables, CSR), recherche des
 projets d'un theme libre (find_projects), liste/comptage de projets, lecture d'un projet.
 
 Composants Haystack exposes via ComponentTool. Les filtres annee/programme/domaine/detail passent par les
@@ -208,6 +208,42 @@ class DeliverableSearch(ProjectSearch):
         runlog.event("DeliverableSearch", "tool_call", "search_deliverables", query=query, countries=countries,
                      publication_id=publication_id, project_id=project_id, filters=filters, results=len(docs),
                      duration_ms=round((time.monotonic() - t0) * 1000))
+        return {"result": result, "sources": sources}
+
+
+@component
+class CsrSearch(ProjectSearch):
+    @component.output_types(result=str, sources=list[dict])
+    def run(self, query: str, countries: list[str] | None = None, year_from: int | None = None,
+            year_to: int | None = None, known_sources: list[dict] | None = None) -> dict[str, Any]:
+        """Semantic search in the country-specific recommendations (CSRs) addressed to EU Member States in the
+        European Semester (2016-2025), with their sub-parts and the Commission's latest assessment of their
+        implementation. Returns numbered passages [n] with the CSR id (e.g. csr-FR-2023-1), to cite.
+
+        :param query: What to look for, in English (e.g. "sustainability of the pension system").
+        :param countries: ISO country codes (e.g. ["HR", "SI"]; Greece is "GR").
+        :param year_from: Keep CSRs adopted from this year on.
+        :param year_to: Keep CSRs adopted up to this year.
+        """
+        t0 = time.monotonic()
+        embedding = self.text_embedder.run(text=query)["embedding"]
+        filters = build_filters(year_from, year_to, doc_type="csr", countries=countries)
+        docs = self.retriever.run(query_embedding=embedding, filters=filters, top_k=self.top_k * 3)["documents"]
+        docs = [d for d in docs if _in_countries(d, countries)][: self.top_k]
+        start = len(known_sources or [])
+        sources: list[dict[str, Any]] = []
+        blocks: list[str] = []
+        for i, doc in enumerate(docs, start=start + 1):
+            meta = doc.meta
+            source = _source(i, doc, meta.get("section"))
+            source["score"] = round(doc.score, 3) if doc.score is not None else None
+            sources.append(source)
+            blocks.append(f"[{i}] {meta.get('context_header') or meta.get('title')} — section: {meta.get('section')}\n"
+                          f"CSR id: {meta.get('doc_id')}\nURL: {meta.get('source_url')}\n"
+                          f"{(doc.content or '')[:SNIPPET_CHARS]}")
+        result = "\n\n".join(blocks) if blocks else "No matching CSR passages found."
+        runlog.event("CsrSearch", "tool_call", "search_csrs", query=query, countries=countries, filters=filters,
+                     results=len(docs), duration_ms=round((time.monotonic() - t0) * 1000))
         return {"result": result, "sources": sources}
 
 

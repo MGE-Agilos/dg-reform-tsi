@@ -47,6 +47,7 @@ def chat_settings(tmp_path) -> Settings:
 def test_system_prompt_has_rules_and_no_jinja():
     text = system_prompt(POLICY_AREAS)
     assert "list_projects" in text and "search_deliverables" in text and "[n]" in text and "GR" in text and "green-transition" in text
+    assert "search_csrs" in text and "csr-FR-2023-1" in text
     assert "{{" not in text and "{%" not in text
 
 
@@ -130,11 +131,12 @@ def test_yaml_round_trip_and_openai_swap(tmp_path, monkeypatch):
                                text_embedder=MockTextEmbedder(model="mock", dimension=8))
     text = pipe.dumps()
     for name in ("Agent", "LoggedChatGenerator", "ClaudeCliChatGenerator", "ProjectSearch", "ProjectLister",
-                 "ProjectReader", "DeliverableSearch", "ProjectFinder", "LocalQdrantEmbeddingRetriever", "LocalQdrantDocumentStore"):
+                 "ProjectReader", "DeliverableSearch", "CsrSearch", "ProjectFinder", "LocalQdrantEmbeddingRetriever", "LocalQdrantDocumentStore"):
         assert name in text
     reloaded = load_pipeline(text)
     tools = reloaded.get_component("agent").tools
-    assert [t.name for t in tools] == ["search_projects", "find_projects", "search_deliverables", "list_projects", "get_project"]
+    assert [t.name for t in tools] == ["search_projects", "find_projects", "search_deliverables", "search_csrs",
+                                       "list_projects", "get_project"]
 
     data = yaml.safe_load(text)
     agent = data["components"]["agent"]["init_parameters"]
