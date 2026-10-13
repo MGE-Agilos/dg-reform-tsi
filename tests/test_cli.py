@@ -272,3 +272,15 @@ def test_csr_link_without_export_is_a_clean_error(tmp_path, capsys):
     settings.write_text(f"output_dir: {(tmp_path / 'output').as_posix()}\n", encoding="utf-8")
     assert cli.main(["--settings", str(settings), "csr-link"]) == 1
     assert "csr-fetch" in capsys.readouterr().err
+
+
+def test_supabase_sync_without_credentials_is_a_clean_error(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(f"output_dir: {(tmp_path / 'output').as_posix()}\n", encoding="utf-8")
+    sources = tmp_path / "sources.yaml"
+    sources.write_text("{}\n", encoding="utf-8")
+    assert cli.main(["--settings", str(settings), "--sources", str(sources), "supabase-sync"]) == 1
+    assert "SUPABASE_SERVICE_KEY" in capsys.readouterr().err

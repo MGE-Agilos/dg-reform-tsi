@@ -86,3 +86,59 @@ def build_rows(output_dir: Path, current_year: int | None = None) -> dict[str, l
                                  current_year or date.today().year, csr_links=load_csr_links(output_dir))]
     return {"projects": projects, "csrs": csr_rows, "csr_parts": part_rows, "project_csr_links": links,
             "anomalies": anomalies}
+
+
+class SyncError(RuntimeError):
+    pass
+
+
+def _dotenv(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip().removeprefix("export ").strip()] = value.strip().strip("'\"")
+    return values
+
+
+def credentials(dotenv: Path = Path(".env")) -> tuple[str, str]:
+    """(url, cle service_role) : variables d'environnement, sinon `.env` ; erreur claire si absentes."""
+    file = _dotenv(dotenv)
+    url = os.environ.get("SUPABASE_URL") or file.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_KEY") or file.get("SUPABASE_SERVICE_KEY")
+    if not url or not key:
+        raise SyncError("SUPABASE_URL et SUPABASE_SERVICE_KEY requis (environnement ou .env, jamais dans git)")
+    return url.rstrip("/"), key
+
+
+def _check(resp: httpx.Response, table: str, action: str) -> None:
+    if resp.status_code >= 300:
+        raise SyncError(f"{action} {table}: HTTP {resp.status_code} {resp.text[:500]}")
+
+
+def push(rows: dict[str, list[dict[str, Any]]], url: str, key: str, *, client: httpx.Client | None = None,
+         backup: Path | None = None) -> dict[str, int]:
+    """Remplace le contenu des tables (sauf testers) ; sauvegarde JSON des lignes avant toute suppression."""
+    if backup is not None:
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        backup.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json",
+               "Prefer": "return=minimal"}
+    own = client is None
+    client = client or httpx.Client(timeout=60)
+    try:
+        for table in DELETE_ORDER:
+            _check(client.delete(f"{url}/rest/v1/{table}?{DELETE_FILTER[table]}", headers=headers), table, "delete")
+        for table in INSERT_ORDER:
+            data = rows.get(table) or []
+            for start in range(0, len(data), BATCH):
+                _check(client.post(f"{url}/rest/v1/{table}", headers=headers,
+                                   content=json.dumps(data[start:start + BATCH], ensure_ascii=False)), table, "insert")
+    finally:
+        if own:
+            client.close()
+    return {table: len(rows.get(table) or []) for table in INSERT_ORDER}

@@ -94,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
                       help="n'envoyer au LLM que les projets avec page détail (les autres plus tard)")
     link.add_argument("--sample", type=int, help="écrire un échantillon de N projets liés (relecture métier)")
     link.add_argument("--model", help="modèle du CLI Claude (défaut : réglage model)")
+    sub.add_parser("supabase-sync", help="publier projets, CSR, liens et anomalies dans Supabase (explorateur web)")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
@@ -192,6 +193,18 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({**summary, "run": run.final_summary.get("run_id") if run.final_summary else None,
                           "cost_usd": (run.final_summary or {}).get("cost_usd")}, indent=2, ensure_ascii=False))
         return 1 if summary["quota_exceeded"] else 0
+    if args.command == "supabase-sync":
+        import httpx
+        from tsi_agent.supabase_sync import SyncError, build_rows, credentials, push
+        try:
+            url, key = credentials()
+            rows = build_rows(Path(settings.output_dir))
+            summary = push(rows, url, key, backup=Path(settings.output_dir) / "state" / "supabase_rows.json")
+        except (SyncError, httpx.HTTPError) as exc:
+            print(f"ERREUR : {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(summary, indent=2))
+        return 0
     if args.command == "impact-rescore":
         from tsi_agent.impact import scoring
         try:
