@@ -794,8 +794,8 @@ Expected : toute la suite passe.
 
 Dans `test_run_links_caches_and_resumes`, les projets sont traités dans l'ordre des fichiers (a, b, c, nocountry) :
 - **1er run** : « nocountry » reçoit `no_candidates` pendant la préparation. a est lié, puis b atteint le quota, et c n'est pas traité.
-- **2e run** : b et c sont liés. a et nocountry sont en cache, d'où `cached == 2`.
-- **3e run** : les 4 projets sont en cache.
+- **2e run** : b et c sont liés, a est en cache (`cached == 1`) et nocountry reste compté dans `no_candidates`.
+- **3e run** : a, b et c sont en cache (`cached == 3`).
 
 - [ ] **Step 5 : commit**
 
