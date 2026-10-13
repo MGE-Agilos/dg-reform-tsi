@@ -1,8 +1,26 @@
 // TSI x CSR Explorer: static page over Supabase (RLS: signed-in testers only).
 // Every database string goes through esc() before being injected; only https:// URLs become links.
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
+// Chat and Impact answers (Markdown) are inserted only after marked + DOMPurify; without them, as escaped text.
+import { SUPABASE_URL, SUPABASE_ANON_KEY, PROXY_URL } from "./config.js";
 
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
+const MARKED_JS = "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
+const PURIFY_JS = "https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.es.mjs";
+const PROXY_TIMEOUT_MS = 160000; // above the proxy's 130 s Gateway timeout, so its 504 arrives first
+const MD_TAGS = ["p", "a", "ul", "ol", "li", "strong", "em", "b", "i", "code", "pre", "blockquote",
+  "h1", "h2", "h3", "h4", "table", "thead", "tbody", "tr", "th", "td", "hr", "br"];
+const MD_ATTRS = ["href", "title", "target", "rel"];
+const MD_URI = /^(?:https:|mailto:|#)/i;
+const MAX_CONTENT = 8000; // per message, as enforced by haystack-proxy
+const CHAT_MAX = 20; // messages kept (and sent), oldest dropped first
+const CHAT_KEY = "tsi-chat-history";
+const IMPACT_KEY = "tsi-impact-report:";
+const CHAT_EXAMPLES = [
+  "Which countries have projects on wildfires or forest fires?",
+  "What did the deliverables of the Spanish primary care project recommend?",
+  "What CSRs did Croatia receive on public administration since 2022, and how were they assessed?",
+  "Which projects support Croatia's 2022 country-specific recommendations?",
+];
 const PAGE_SIZE = 50;
 const CSV_LIMIT = 5000;
 const CSV_PAGE = 1000;
@@ -49,6 +67,16 @@ let authError = "";
 let currentUid; // user id of the last rendered session (undefined before the first render)
 let lastViewKey = null; // route + id of the last rendered view: focus moves only when it changes
 let pendingFocus = null; // name of the filter control that triggered the render
+let markdown = null; // { marked, purify } once loaded
+let markdownLoading = null; // Promise while loading
+let aiEpoch = 0; // bumped on sign-out: late answers of the previous user are dropped
+let chatHistory = null; // [{ role, content }], mirrored in sessionStorage
+let chatPending = false; // a chat question is waiting for its answer
+let chatError = ""; // last chat error (not stored)
+let chatDraft = ""; // text being typed, kept across re-renders
+const impactPending = new Set(); // project ids whose analysis is running
+const impactReports = new Map(); // project id -> { report, at }, mirrored in sessionStorage
+const impactErrors = new Map(); // project id -> last error message
 
 // ---------- helpers ----------
 
@@ -345,7 +373,8 @@ async function renderProject(id, seq) {
     ["Policy area", esc(areaLabel(r.policy_area))], ["Results", esc(r.results || "not stated")],
     ["Deliverables", esc(r.deliverables)], ["Detail page", r.detail_page ? "yes" : "no"], ["Project ID", `<code>${esc(r.project_id)}</code>`],
   ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
-  const page = safeUrl(r.url) ? `<p>${extLink(r.url, "Project page")} ↗</p>` : "";
+  const page = (safeUrl(r.url) ? `<p>${extLink(r.url, "Project page")} ↗</p>` : "")
+    + `<p><a class="btn btn-secondary" href="#impact/${encodeURIComponent(r.project_id)}">Impact analysis</a></p>`;
   const summary = r.summary
     ? `<div class="card"><h3 class="section-label">Summary <span class="ai-note">AI-generated summary</span></h3><p class="prose">${esc(r.summary)}</p></div>`
     : "";
@@ -542,6 +571,347 @@ async function downloadCsv(f) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// ---------- AI services (haystack-proxy): storage, Markdown, relay ----------
+
+function storageGet(key) {
+  try { return sessionStorage.getItem(key); } catch { return null; }
+}
+
+function storageSet(key, value) {
+  try { sessionStorage.setItem(key, value); } catch { /* memory copy only */ }
+}
+
+/** Forget the conversation and the reports (sign-out or another user). */
+function clearAiState() {
+  aiEpoch++;
+  chatHistory = [];
+  chatError = "";
+  chatDraft = "";
+  impactReports.clear();
+  impactErrors.clear();
+  impactPending.clear();
+  chatPending = false;
+  try {
+    sessionStorage.removeItem(CHAT_KEY);
+    for (let i = sessionStorage.length - 1; i >= 0; i--) {
+      const k = sessionStorage.key(i);
+      if (k && k.startsWith(IMPACT_KEY)) sessionStorage.removeItem(k);
+    }
+  } catch { /* storage unavailable */ }
+}
+
+/** marked + DOMPurify, loaded once on demand; null if the CDN fails (a later call retries). */
+function loadMarkdown() {
+  if (markdown) return Promise.resolve(markdown);
+  if (!markdownLoading) {
+    markdownLoading = Promise.all([import(MARKED_JS), import(PURIFY_JS)])
+      .then(([m, p]) => {
+        const purify = p.default;
+        purify.addHook("afterSanitizeAttributes", (node) => {
+          if (node.tagName === "A" && node.hasAttribute("href") && !node.getAttribute("href").startsWith("#")) {
+            node.setAttribute("target", "_blank");
+            node.setAttribute("rel", "noopener noreferrer");
+          }
+        });
+        markdown = { marked: m.marked, purify };
+        return markdown;
+      })
+      .catch(() => null)
+      .finally(() => { markdownLoading = null; });
+  }
+  return markdownLoading;
+}
+
+/** Markdown to HTML sanitised against an allow-list (no img/style/form/id/class; links https:, mailto: or #);
+ * plain escaped text when the libraries are not available. */
+function md(text) {
+  const plain = `<p class="prose">${esc(text)}</p>`;
+  if (!markdown) return plain;
+  try {
+    return markdown.purify.sanitize(markdown.marked.parse(String(text ?? ""), { async: false }), {
+      ALLOWED_TAGS: MD_TAGS, ALLOWED_ATTR: MD_ATTRS, ALLOWED_URI_REGEXP: MD_URI, ALLOW_DATA_ATTR: false,
+    });
+  } catch {
+    return plain;
+  }
+}
+
+function proxyMessage(status, body) {
+  const cause = [body?.error, body?.detail].filter((x) => typeof x === "string" && x).join(": ");
+  if (status === 403) return "Access not authorised.";
+  if (status === 401) return "Your session has expired: sign in again.";
+  if (status === 502 || status === 504) {
+    return `The analysis service did not answer${cause ? ` (${cause})` : ""}.${status === 504 ? " Please try again." : ""}`;
+  }
+  if (status >= 200 && status < 300) return "Unexpected response from the analysis service.";
+  return cause || `Unexpected error (HTTP ${status}).`;
+}
+
+/** POST {service, messages} to haystack-proxy with the session token; returns the answer text or throws. */
+async function callProxy(service, messages) {
+  const { data } = await sb.auth.getSession();
+  const token = data?.session?.access_token;
+  if (!token) throw new Error("Your session has expired: sign in again.");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
+  let res;
+  let body;
+  try {
+    res = await fetch(PROXY_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ service, messages }),
+      signal: controller.signal,
+    });
+    body = await res.json().catch(() => ({}));
+  } catch (e) {
+    throw new Error(e?.name === "AbortError"
+      ? "No answer after 160 seconds. Please try again."
+      : "Could not reach the analysis service. Check your connection and try again.");
+  } finally {
+    clearTimeout(timer);
+  }
+  if (res.ok && typeof body?.answer === "string") return body.answer;
+  throw new Error(proxyMessage(res.status, body));
+}
+
+// ---------- chat ----------
+
+const usable = (m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim();
+
+/** Conversation of the signed-in user: a stored conversation of another user id is ignored. */
+function getChat() {
+  if (!chatHistory) {
+    try {
+      const saved = JSON.parse(storageGet(CHAT_KEY) || "null");
+      const ok = saved && saved.uid && saved.uid === currentUid && Array.isArray(saved.messages);
+      chatHistory = ok ? saved.messages.filter(usable).slice(-CHAT_MAX) : [];
+    } catch {
+      chatHistory = [];
+    }
+  }
+  return chatHistory;
+}
+
+function setChat(history) {
+  chatHistory = history.filter(usable).slice(-CHAT_MAX);
+  storageSet(CHAT_KEY, JSON.stringify({ uid: currentUid, messages: chatHistory }));
+}
+
+function bubble(m) {
+  return m.role === "user"
+    ? `<div class="bubble bubble-user"><span class="sr-only">You:</span><p class="prose">${esc(m.content)}</p></div>`
+    : `<div class="bubble bubble-assistant"><span class="sr-only">Assistant:</span><div class="md">${md(m.content)}</div></div>`;
+}
+
+function paintChat({ scroll = false, status = "" } = {}) {
+  const log = $("chat-log");
+  if (!log) return;
+  const history = getChat();
+  let html = history.map(bubble).join("");
+  if (!history.length && !chatPending) {
+    html = `<div class="examples"><p class="muted">Try an example:</p>`
+      + CHAT_EXAMPLES.map((q, i) => `<button type="button" class="example" data-example="${i}">${esc(q)}</button>`).join("") + `</div>`;
+  }
+  if (chatError) {
+    html += `<div class="error" role="alert">${esc(chatError)} `
+      + `<button type="button" class="btn btn-secondary" id="chat-retry">Retry</button></div>`;
+  }
+  log.innerHTML = html;
+  $("chat-status").textContent = chatPending ? "Thinking… (up to 2 minutes)" : status;
+  $("chat-send").disabled = chatPending;
+  $("chat-new").disabled = chatPending || (!history.length && !chatError);
+  log.querySelectorAll("[data-example]").forEach((b) => b.addEventListener("click", () => sendChat(CHAT_EXAMPLES[b.dataset.example])));
+  $("chat-retry")?.addEventListener("click", () => sendChat(null));
+  if (scroll) log.lastElementChild?.scrollIntoView({ block: "start", behavior: "smooth" });
+  // The example or Retry button that had the focus was just replaced: give it to the question field.
+  if (scroll && (!document.activeElement || document.activeElement === document.body)) $("chat-input")?.focus({ preventScroll: true });
+}
+
+/** Send a new question (text) or retry the last unanswered one (null). On error the question stays in the conversation. */
+async function sendChat(text) {
+  if (chatPending) return;
+  const history = [...getChat()];
+  if (text !== null) {
+    const q = String(text ?? "").trim();
+    if (!q) return;
+    history.push({ role: "user", content: q.slice(0, MAX_CONTENT) });
+    setChat(history);
+    chatDraft = "";
+    const input = $("chat-input");
+    if (input) input.value = "";
+  }
+  const messages = getChat().filter(usable).map((m) => ({ role: m.role, content: m.content.slice(0, MAX_CONTENT) }));
+  if (!messages.length || messages[messages.length - 1].role !== "user") return;
+  const epoch = aiEpoch;
+  chatError = "";
+  chatPending = true;
+  paintChat({ scroll: true });
+  let status = "";
+  try {
+    const answer = await callProxy("chat", messages);
+    if (epoch !== aiEpoch) return;
+    setChat([...getChat(), { role: "assistant", content: answer }]);
+    status = "Answer received.";
+  } catch (e) {
+    if (epoch !== aiEpoch) return;
+    chatError = e?.message || String(e);
+  } finally {
+    if (epoch === aiEpoch) chatPending = false;
+  }
+  paintChat({ scroll: true, status });
+}
+
+async function renderChat(seq) {
+  await loadMarkdown();
+  if (stale(seq)) return;
+  view(`${heading("Chat")}`
+    + `<p class="muted">Ask about TSI projects, their deliverables and the country-specific recommendations. `
+    + `Answers are generated by AI (gpt-5.1 via EC GPT): verify the cited sources.</p>`
+    + `<div class="card chat"><div id="chat-log" class="chat-log"></div>`
+    + `<p id="chat-status" class="chat-status" role="status"></p>`
+    + `<form id="chat-form" class="chat-form"><label for="chat-input">Your question</label>`
+    + `<div class="chat-row"><textarea id="chat-input" rows="3" maxlength="${MAX_CONTENT}" `
+    + `placeholder="e.g. Which projects support pension reforms in Portugal?"></textarea>`
+    + `<button type="submit" class="btn" id="chat-send">Send</button></div>`
+    + `<div class="chat-actions"><span class="muted small">Enter to send · Shift+Enter for a new line</span>`
+    + `<button type="button" class="btn btn-secondary" id="chat-new">New conversation</button></div></form></div>`);
+  const input = $("chat-input");
+  input.value = chatDraft;
+  input.addEventListener("input", () => { chatDraft = input.value; });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      $("chat-form").requestSubmit();
+    }
+  });
+  $("chat-form").addEventListener("submit", (e) => { e.preventDefault(); sendChat(input.value); });
+  $("chat-new").addEventListener("click", () => {
+    setChat([]);
+    chatError = "";
+    paintChat();
+    input.focus();
+  });
+  paintChat();
+}
+
+// ---------- impact ----------
+
+function impactMessage(r) {
+  const countries = (Array.isArray(r.countries) ? r.countries : []).join(", ");
+  return `Project: ${r.title} (id ${r.project_id}; ${[r.programme, r.year].filter(Boolean).join(" ")}; countries ${countries})`;
+}
+
+function loadReport(id) {
+  if (impactReports.has(id)) return impactReports.get(id);
+  try {
+    const saved = JSON.parse(storageGet(IMPACT_KEY + id) || "null");
+    if (saved && saved.uid && saved.uid === currentUid && typeof saved.report === "string" && saved.report.trim()) {
+      impactReports.set(id, saved);
+      return saved;
+    }
+  } catch { /* ignore a corrupt entry */ }
+  return null;
+}
+
+function saveReport(id, report) {
+  const entry = { uid: currentUid, report, at: new Date().toISOString() };
+  impactReports.set(id, entry);
+  storageSet(IMPACT_KEY + id, JSON.stringify(entry));
+}
+
+async function renderImpactSearch(p, seq) {
+  const q = (p.get("q") || "").trim();
+  let results = "";
+  if (q) {
+    const { data, error } = await sb.from("projects").select("project_id,title,programme,year,countries")
+      .ilike("title", likePattern(q)).order("year", { ascending: false }).order("title").limit(10);
+    if (stale(seq)) return;
+    if (error) return showError(error, "Could not search projects");
+    const items = data.map((r) => `<li>${hashLink("impact", r.project_id, r.title)} `
+      + `<span class="muted small">${esc([r.programme, r.year, countriesText(r.countries)].filter(Boolean).join(" · "))}</span></li>`).join("");
+    results = `<div class="card"><h3>Projects</h3>`
+      + (items ? `<ul class="pick-list">${items}</ul>` : `<p class="empty">No project title matches this search.</p>`)
+      + (data.length === 10 ? `<p class="muted small">First 10 matches: refine the search if needed.</p>` : "") + `</div>`;
+  }
+  view(`${heading("Impact analysis")}`
+    + `<p class="muted">Choose a project, or open one from the project list. The analysis combines the project data with a web search `
+    + `and ends with an impact score. Takes 30 s to 2 min; uses web search.</p>`
+    + filterForm("impact", textField("q", "Search project titles", q, "e.g. wildfire, pension")) + results);
+  bindFilters();
+}
+
+function paintImpact(id, status = "") {
+  const box = $("impact-report");
+  if (!box || box.dataset.id !== id) return;
+  const pending = impactPending.has(id);
+  const saved = loadReport(id);
+  const err = impactErrors.get(id);
+  $("impact-run").disabled = pending;
+  $("impact-status").textContent = pending ? "Analysing… (30 s to 2 minutes)" : status;
+  let html = err ? `<div class="error" role="alert">${esc(err)}</div>` : "";
+  if (saved) {
+    const at = new Date(saved.at);
+    html += `<div class="card"><div class="toolbar"><h3 class="section-label">Impact report <span class="ai-note">AI-generated</span></h3>`
+      + `<span class="toolbar-actions"><span id="copy-note" class="muted small" role="status"></span>`
+      + `<button type="button" class="btn btn-secondary" id="impact-copy">Copy report</button></span></div>`
+      + (Number.isNaN(at.getTime()) ? "" : `<p class="muted small">Generated ${esc(at.toLocaleString("en-GB"))}</p>`)
+      + `<div class="md">${md(saved.report)}</div></div>`;
+  }
+  box.innerHTML = html;
+  $("impact-copy")?.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(saved.report);
+      $("copy-note").textContent = "Copied.";
+    } catch {
+      $("copy-note").textContent = "Copy failed: select the text manually.";
+    }
+  });
+}
+
+async function runImpact(r) {
+  const id = r.project_id;
+  if (impactPending.has(id)) return;
+  const epoch = aiEpoch;
+  impactPending.add(id);
+  impactErrors.delete(id);
+  paintImpact(id);
+  let status = "";
+  try {
+    const report = await callProxy("impact", [{ role: "user", content: impactMessage(r).slice(0, MAX_CONTENT) }]);
+    if (epoch !== aiEpoch) return;
+    saveReport(id, report);
+    status = "Report ready.";
+  } catch (e) {
+    if (epoch !== aiEpoch) return;
+    impactErrors.set(id, e?.message || String(e));
+  } finally {
+    if (epoch === aiEpoch) impactPending.delete(id);
+  }
+  paintImpact(id, status);
+}
+
+async function renderImpact(id, p, seq) {
+  if (!id) return renderImpactSearch(p, seq);
+  const [proj] = await Promise.all([
+    sb.from("projects").select("project_id,title,programme,year,countries").eq("project_id", id).single(),
+    loadMarkdown(),
+  ]);
+  if (stale(seq)) return;
+  if (proj.error) return showError(proj.error, proj.error.code === "PGRST116" ? "Project not found" : "Could not load the project");
+  const r = proj.data;
+  const meta = [r.programme, r.year, countriesText(r.countries)].filter(Boolean).map(esc).join(" · ");
+  view(`<a class="back" href="#impact">← Choose another project</a>`
+    + `<div class="card"><p class="muted small">Impact analysis</p><h2 class="detail-title" tabindex="-1">${esc(r.title)}</h2>`
+    + `<p class="muted small">${meta}${meta ? " · " : ""}${hashLink("project", r.project_id, "Project details")}</p>`
+    + `<div class="toolbar"><span class="toolbar-actions"><button type="button" class="btn" id="impact-run">Run impact analysis</button>`
+    + `<span class="muted small">Takes 30 s to 2 min; uses web search.</span></span></div>`
+    + `<p id="impact-status" class="chat-status" role="status"></p></div>`
+    + `<div id="impact-report" data-id="${esc(r.project_id)}"></div>`);
+  $("impact-run").addEventListener("click", () => runImpact(r));
+  paintImpact(r.project_id);
+}
+
 // ---------- auth and routing ----------
 
 function showScreen(name) {
@@ -565,7 +935,8 @@ async function isTester(session) {
 
 async function route(seq) {
   const { route: r, id, params: p } = params();
-  const viewKey = ["project", "csr"].includes(r) && id ? `${r}/${id}` : (["csrs", "anomalies"].includes(r) ? r : "projects");
+  const viewKey = ["project", "csr", "impact"].includes(r) && id ? `${r}/${id}`
+    : (["csrs", "anomalies", "chat", "impact"].includes(r) ? r : "projects");
   setActiveTab(r);
   loading();
   try {
@@ -573,6 +944,8 @@ async function route(seq) {
     else if (r === "csr" && id) await renderCsr(id, seq);
     else if (r === "csrs") await renderCsrs(p, seq);
     else if (r === "anomalies") await renderAnomalies(p, seq);
+    else if (r === "chat") await renderChat(seq);
+    else if (r === "impact") await renderImpact(id, p, seq);
     else { setActiveTab("projects"); await renderProjects(p, seq); }
   } catch (e) {
     if (!stale(seq)) showError(e, "Unexpected error");
@@ -586,7 +959,9 @@ async function render() {
   const { data, error } = await sb.auth.getSession();
   if (stale(seq)) return;
   const session = data?.session;
-  currentUid = session?.user?.id ?? null;
+  const uid = session?.user?.id ?? null;
+  if (currentUid && uid !== currentUid) clearAiState();
+  currentUid = uid;
   showSession(session);
   if (error || !session) {
     showScreen("login");
@@ -669,6 +1044,7 @@ async function init() {
     if (event === "INITIAL_SESSION") return; // covered by the first render() below
     const uid = session?.user?.id ?? null;
     if (uid === currentUid && event !== "USER_UPDATED") return;
+    if (currentUid && uid !== currentUid) clearAiState(); // sign-out or another user: drop chat and reports
     currentUid = uid;
     testerCache = null;
     setTimeout(render, 0);

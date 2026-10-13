@@ -500,6 +500,75 @@ Liste de contrôle après déploiement :
 
 Les résumés et les liens projet → CSR sont générés par IA : la page le signale et ils sont à vérifier avant usage.
 
+### Chat et impact (lot 2)
+
+Les onglets *Chat* et *Impact* de l'explorateur interrogent les services `tsi-chat` et `tsi-impact` de la Haystack
+Enterprise Platform, par l'Edge Function Supabase `haystack-proxy` (spec :
+`docs/superpowers/specs/2026-10-13-web-chat-impact-design.md`). La fonction vérifie que l'appelant est un testeur
+(`is_tester()` appelée avec son jeton), puis relaie `{model, messages, stream: false}` vers l'endpoint compatible OpenAI
+du service. La clé Haystack reste dans les secrets de la fonction : elle n'apparaît ni dans la page ni dans le dépôt.
+
+Mise en service (une fois) :
+
+1. **Gateway.** Pour chaque service (`tsi-chat`, `tsi-impact`), copier depuis sa page Gateway l'URL complète de
+   l'endpoint compatible OpenAI (`.../chat/completions`) et, si l'exemple de la page l'indique, la valeur `model`.
+2. **Fonction.** Dans Supabase, *Edge Functions > Deploy a new function > Via Editor* : nommer la fonction
+   `haystack-proxy`, coller le contenu de `supabase/functions/haystack-proxy/index.ts` (fichier unique, sans import),
+   puis *Deploy*. Après le déploiement, vérifier dans les réglages de la fonction (*Edge Functions > haystack-proxy >
+   Settings*) que *Verify JWT* est activé. Sur un projet qui utilise les nouvelles clés de signature JWT, Supabase peut
+   conseiller de désactiver « Verify JWT with legacy secret » : c'est sans risque ici, car la fonction vérifie
+   elle-même l'appelant en appelant `is_tester()` avec son jeton (sans jeton valide de testeur : 403).
+3. **Secrets.** Dans *Edge Functions > Secrets*, renseigner `HAYSTACK_API_KEY` (clé API du workspace `tsi-reform`),
+   `HAYSTACK_CHAT_URL`, `HAYSTACK_IMPACT_URL`, et si besoin `HAYSTACK_CHAT_MODEL` et `HAYSTACK_IMPACT_MODEL` (par défaut
+   `tsi-chat` et `tsi-impact`). `ALLOWED_ORIGINS` est facultatif (par défaut : `https://mge-agilos.github.io` et
+   `http://localhost:8000`, séparés par des virgules). `SUPABASE_URL` et `SUPABASE_ANON_KEY` sont fournies
+   automatiquement (à défaut de `SUPABASE_ANON_KEY`, la fonction reprend l'en-tête `apikey` envoyé par la page, qui est
+   cette même clé publique).
+4. **Test.** Avec le jeton de session d'un testeur (par exemple `access_token` de la session, visible dans les outils de
+   développement du navigateur une fois connecté) :
+
+   ```bash
+   curl -X POST <SUPABASE_URL>/functions/v1/haystack-proxy -H "Authorization: Bearer <jeton de session testeur>" -H "apikey: <cle anon de web/config.js>" -H "Content-Type: application/json" -d '{"service":"chat","messages":[{"role":"user","content":"How many TSI projects does Greece have?"}]}'
+   ```
+
+   Réponse attendue : `{"answer": "..."}`. Un utilisateur non testeur reçoit 403 `Access not authorised`.
+5. **Préalable plateforme.** Pour que le chat connaisse les CSR et les liens : supprimer les anciens fichiers `tsi-*`
+   du workspace, téléverser `deploy/prod/build/files` (3 632 fichiers), puis mettre à jour et republier `tsi-chat`
+   avec `pipeline-tsi-chat.yaml`. Sans cette mise à jour, le chat fonctionne mais ignore les CSR.
+
+Comportement de la fonction : 400 si la requête est invalide (service `chat` ou `impact`, 1 à 20 messages, rôles
+`user`/`assistant`, 8 000 caractères au plus par message, dernier message de l'utilisateur), 401 sans jeton, 403 si
+l'appelant n'est pas testeur, 400 aussi au-delà de 40 000 caractères au total, 502 si la Gateway répond en erreur
+ou par une réponse vide, 504 au-delà de 130 s (la page abandonne à 160 s). Elle ne journalise que le service, le
+statut et la durée, le statut de `is_tester` en cas d'échec et un extrait (300 caractères) du message d'erreur de la
+Gateway, qui n'est pas renvoyé au navigateur ; jamais les questions ni les clés.
+
+**Pas de limite de débit :** l'accès est réservé aux testeurs, le temps de l'essai ; chaque appel consomme du LLM (et
+SearchApi pour l'impact). Des quotas par testeur seraient à ajouter avant une ouverture plus large.
+
+Côté page : la conversation est gardée dans l'onglet du navigateur (`sessionStorage`, 20 messages au plus) et effacée
+à la déconnexion ; le dernier rapport d'impact de chaque projet aussi. Ces données portent l'identifiant de
+l'utilisateur et sont ignorées pour un autre compte. Les réponses Markdown passent par `marked` puis `DOMPurify`
+(versions figées, jsDelivr) avec une liste blanche de balises (texte, listes, titres, tableaux, code ; ni image, ni
+style, ni formulaire) et des liens limités à `https:`, `mailto:` et `#` ; si ces bibliothèques ne se chargent pas, le
+texte brut est affiché.
+
+Liste de contrôle après déploiement :
+
+- l'onglet *Chat* propose quatre questions d'exemple ; une question reçoit une réponse en moins de 2 minutes, avec
+  des liens qui s'ouvrent dans un nouvel onglet ; *New conversation* vide l'historique ;
+- une erreur (service arrêté, délai dépassé) s'affiche dans la conversation avec un bouton *Retry*, sans perdre la
+  question ;
+- depuis la fiche d'un projet, *Impact analysis* ouvre l'onglet *Impact* ; *Run impact analysis* produit un rapport
+  qui se termine par le score d'impact, et *Copy report* le copie ;
+- un utilisateur invité mais absent de `testers` reçoit « Access not authorised ».
+
+Tests de la fonction (Node 22, sans réseau : `fetch` est simulé) :
+
+```bash
+node --experimental-strip-types --test supabase/functions/haystack-proxy/index.test.ts
+```
+
 ## Planification (Windows)
 
 À exécuter depuis le dossier du dépôt (les chemins sont résolus en absolu à partir du dossier courant) :
@@ -566,6 +635,7 @@ bien). Ce n'est pas le cas de tout le reste :
 
 ```powershell
 .venv\Scripts\python -m pytest -q
+node --experimental-strip-types --test supabase/functions/haystack-proxy/index.test.ts
 ```
 
 Les fixtures de `tests/fixtures/` sont des copies réelles des pages du site (septembre 2026).
