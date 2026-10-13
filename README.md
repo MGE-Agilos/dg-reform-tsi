@@ -508,6 +508,9 @@ Enterprise Platform, par l'Edge Function Supabase `haystack-proxy` (spec :
 (`is_tester()` appelée avec son jeton), puis relaie `{model, messages, stream: false}` vers l'endpoint compatible OpenAI
 du service. La clé Haystack reste dans les secrets de la fonction : elle n'apparaît ni dans la page ni dans le dépôt.
 
+> Depuis le lot 2b, la page appelle par défaut l'Edge Function `tsi-assistant` (Claude, voir « Assistant Claude
+> (lot 2b) » plus bas) ; ce relais reste dans le dépôt, prêt à resservir en changeant `PROXY_URL`.
+
 Mise en service (une fois) :
 
 1. **Gateway.** Pour chaque service (`tsi-chat`, `tsi-impact`), copier depuis sa page Gateway l'URL complète de
@@ -567,6 +570,78 @@ Tests de la fonction (Node 22, sans réseau : `fetch` est simulé) :
 
 ```bash
 node --experimental-strip-types --test supabase/functions/haystack-proxy/index.test.ts
+```
+
+### Assistant Claude (lot 2b)
+
+Pour que les onglets *Chat* et *Impact* fonctionnent sans l'environnement client, la page appelle par défaut l'Edge
+Function `tsi-assistant` (`web/config.js`, `PROXY_URL`), qui sert les deux onglets avec Claude (API Anthropic). Le
+contrat est celui de `haystack-proxy` : `POST {service: "chat"|"impact", messages}` avec le jeton de session du
+testeur, réponse `{answer}` ; mêmes règles CORS, 401 sans jeton, 403 si l'appelant n'est pas testeur, mêmes limites
+de validation (400). Plan et design : `docs/superpowers/plans/2026-10-14-web-claude-assistant.md`.
+
+Architecture :
+
+- **Boucle d'outils.** La fonction appelle `POST https://api.anthropic.com/v1/messages` avec les outils déclarés,
+  exécute les outils demandés par Claude, renvoie leurs résultats, et recommence jusqu'à la réponse finale.
+- **Outils du chat**, exécutés par la fonction via PostgREST **avec le jeton du testeur** (le RLS s'applique) :
+  `search_projects` et `search_csrs` (recherche plein texte, fonctions SQL de `002_search.sql`), `list_projects`
+  (comptes exacts par programme, année, pays et domaine, filtre `csr` par identifiant ou préfixe), `get_project`
+  (fiche et liens CSR) et `get_csr` (CSR, sous-parties et projets liés).
+- **Impact :** `get_project`, `search_projects` et l'outil de recherche web d'Anthropic (`web_search`, 4 recherches
+  au plus), avec la méthode, les sections et la grille de score de `impact_prompt` (`deploy/prod/build_pipelines.py`).
+- **Fichiers :** `supabase/functions/tsi-assistant/index.ts` (fichier unique, sans import) et
+  `supabase/migrations/002_search.sql` (colonnes générées `fts`, index GIN, `search_projects`, `search_csrs` en
+  `security invoker`). `supabase-sync` n'envoie jamais les colonnes `fts` : elles sont recalculées par Postgres.
+
+Secrets (*Edge Functions > Secrets*, partagés par toutes les fonctions du projet) :
+
+- `ANTHROPIC_API_KEY` : déjà présent dans le projet ; sans lui, la fonction répond 500
+  `ANTHROPIC_API_KEY not configured` ;
+- `TSI_MODEL` (facultatif) : modèle Claude, `claude-sonnet-5-5` par défaut ;
+- `ALLOWED_ORIGINS` (facultatif) : comme pour `haystack-proxy`. `SUPABASE_URL` et `SUPABASE_ANON_KEY` sont fournies.
+
+Déploiement :
+
+1. **Migration.** Coller `supabase/migrations/002_search.sql` dans *SQL Editor* et l'exécuter (rejouable), ou
+   l'envoyer par l'API de gestion : `POST https://api.supabase.com/v1/projects/<ref>/database/query` avec
+   `{"query": "<contenu du fichier>"}` et l'en-tête `Authorization: Bearer <SUPABASE_ACCESS_TOKEN>` (jeton lu dans
+   `.env`, jamais commité ni affiché).
+2. **Fonction.** Soit *Edge Functions > Deploy a new function > Via Editor* : nom `tsi-assistant`, coller
+   `index.ts`, *Deploy*, puis vérifier que *Verify JWT* est actif ; soit l'API de gestion :
+   `POST https://api.supabase.com/v1/projects/<ref>/functions/deploy?slug=tsi-assistant` en multipart, avec
+   `metadata` = `{"entrypoint_path": "index.ts", "name": "tsi-assistant", "verify_jwt": true}` et `file` = `index.ts`
+   (même jeton `SUPABASE_ACCESS_TOKEN`).
+3. **Contrôles.** `OPTIONS` depuis l'origine de la page : 204 ; `POST` sans jeton : 401 ; avec la clé anon comme
+   jeton : 401 ou 403 ; puis une question dans l'onglet *Chat* et une analyse dans l'onglet *Impact*.
+
+Limites :
+
+- le texte intégral des livrables n'est pas dans Supabase : le chat ne le cherche pas et le dit ;
+- 8 tours d'outils au plus, puis un dernier appel sans outils ; au-delà de 115 s, le dernier appel est fait sans
+  outils ; chaque appel à Anthropic est limité à 60 s et aucun ne dépasse 150 s depuis le début (la page abandonne à
+  160 s) : compter jusqu'à environ 2 minutes ;
+- 502 si Anthropic répond en erreur (le détail reste dans le journal : statut et type d'erreur seulement) ou par une
+  réponse vide, 504 si l'appel dépasse son délai. Le journal ne contient que le service, le statut, la durée et le
+  nombre d'étapes : jamais les questions, les résultats d'outils ni les clés.
+
+Coûts indicatifs (tarif `claude-sonnet-5-5` : 2 $ par million de jetons en entrée, 10 $ en sortie ; le prompt
+système est mis en cache entre les tours de la boucle) :
+
+- **chat :** 2 à 5 appels de quelques milliers à 15 000 jetons d'entrée, soit environ 0,02 à 0,15 $ par question ;
+- **impact :** les résultats de recherche web gonflent l'entrée (souvent 50 000 à 150 000 jetons au total), soit
+  environ 0,15 à 0,40 $ par analyse, plus la recherche web, facturée à part par Anthropic (au nombre de recherches,
+  4 au plus ; voir la grille tarifaire en vigueur).
+
+Il n'y a pas de limite de débit par testeur (comme pour `haystack-proxy`) : à ajouter avant une ouverture plus large.
+
+**Revenir aux services Haystack :** remettre `PROXY_URL = SUPABASE_URL + "/functions/v1/haystack-proxy"` dans
+`web/config.js` (et, si besoin, les mentions « Claude (Anthropic) » de la page) : `haystack-proxy` reste dans le dépôt.
+
+Tests de la fonction (Node 22, sans réseau : `fetch` est simulé) :
+
+```bash
+node --experimental-strip-types --test supabase/functions/tsi-assistant/index.test.ts
 ```
 
 ## Planification (Windows)
