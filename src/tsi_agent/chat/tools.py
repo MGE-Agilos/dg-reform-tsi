@@ -409,6 +409,13 @@ class ProjectFinder:
         return {"result": "\n".join(lines), "sources": sources}
 
 
+def csr_matches(csrs: Any, wanted: str) -> bool:
+    """`wanted` : id de CSR ou de sous-partie, ou prefixe pays-annee ("csr-HR-2022") ; pas de faux prefixe
+    (csr-HR-2022-1 ne trouve pas csr-HR-2022-10.1)."""
+    wanted = wanted.strip()
+    return any(c == wanted or c.startswith(wanted + ".") or c.startswith(wanted + "-") for c in csrs or [])
+
+
 @component
 class ProjectLister:
     def __init__(self, document_store: Any):
@@ -425,7 +432,8 @@ class ProjectLister:
     @component.output_types(result=str)
     def run(self, countries: list[str] | None = None, year_from: int | None = None, year_to: int | None = None,
             programme: str | None = None, policy_area: str | None = None, detail_only: bool = False,
-            title_contains: str | None = None, limit: int = LISTER_DEFAULT_LIMIT) -> dict[str, Any]:
+            title_contains: str | None = None, csr: str | None = None,
+            limit: int = LISTER_DEFAULT_LIMIT) -> dict[str, Any]:
         """Count and list distinct projects matching filters, over the whole corpus. Use it for any number or list.
 
         The result gives the total, counts by programme, by year, by country and (without a policy_area filter) by
@@ -438,6 +446,7 @@ class ProjectLister:
         :param policy_area: Policy area slug (e.g. "health-and-long-term-care").
         :param detail_only: Only projects with a detail page.
         :param title_contains: Case-insensitive word or phrase that must appear in the project title.
+        :param csr: CSR id or prefix (e.g. "csr-HR-2022-1", "csr-HR-2022-1.2" or "csr-HR-2022" for all 2022 CSRs of Croatia): only projects linked to it (AI-assessed links).
         :param limit: Maximum number of projects to list (the total is always given).
         """
         t0 = time.monotonic()
@@ -448,6 +457,8 @@ class ProjectLister:
             if doc_id in projects or not _in_countries(doc, countries):
                 continue
             if title_contains and title_contains.lower() not in str(doc.meta.get("title") or "").lower():
+                continue
+            if csr and not csr_matches(doc.meta.get("csrs"), csr):
                 continue
             projects[doc_id] = doc.meta
         ordered = sorted(projects.values(), key=lambda m: (-(m.get("year") or 0), str(m.get("title"))))
@@ -465,7 +476,7 @@ class ProjectLister:
                          f"{', '.join(m.get('countries') or [])} — detail page: "
                          f"{'yes' if m.get('detail_page') else 'no'} — {m.get('source_url')}")
         runlog.event("ProjectLister", "tool_call", "list_projects", countries=countries, filters=filters,
-                     title_contains=title_contains, results=len(ordered),
+                     title_contains=title_contains, csr=csr, results=len(ordered),
                      duration_ms=round((time.monotonic() - t0) * 1000))
         return {"result": "\n".join(lines)}
 

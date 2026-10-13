@@ -70,6 +70,8 @@ def list_projects_tool() -> str:
         **_filter_args(),
         "detail_only": {"type": "boolean", "description": "Only projects with a detail page."},
         "title_contains": {"type": "string", "description": "Word or phrase that must appear in the project title."},
+        "csr": {"type": "string", "description": "CSR id or prefix, e.g. csr-HR-2022-1, csr-HR-2022-1.2 or "
+                                                 "csr-HR-2022: only projects linked to it (AI-assessed links)."},
         "limit": {"type": "integer", "description": "Maximum number of projects to list (default 20); the totals "
                                                     "always cover every matching project."},
     }}
@@ -85,7 +87,7 @@ def list_projects_tool() -> str:
                           "programme": ["filters.programme"],
                           "policy_area": ["filters.policy_area", "summary.policy_area"],
                           "detail_only": ["filters.detail_only"], "title_contains": ["summary.title_contains"],
-                          "limit": ["summary.limit"]},
+                          "csr": ["summary.csr"], "limit": ["summary.limit"]},
         "output_mapping": {"summary.result": "result"},
         "outputs_to_string": {"source": "result"},
         "is_pipeline_async": False,
@@ -433,7 +435,7 @@ Tools:
 - search_csrs: EU country-specific recommendations (CSRs, European Semester 2016-2025). Each passage starts with
   "country year CSR n — year — country — section" and ends with the CSR id and the source URL.
 - list_projects: exact counts and lists of projects over the whole corpus, with filters (countries, years,
-  programme, policy area, detail page, title words).
+  programme, policy area, detail page, title words, csr).
 - find_projects: CANDIDATE projects on a free topic, over the whole corpus (best matches in project texts and
   deliverables plus keywords in titles, no relevance threshold), for you to judge.
 
@@ -473,6 +475,8 @@ Rules:
 14. For questions about country-specific recommendations (CSRs) or the European Semester, call search_csrs and
     cite the CSR id (e.g. csr-FR-2023-1) with its passage number; say that assessments come from the
     Commission's CSR database. Do not state that a project implements a CSR unless a tool result says so.
+    To list the projects linked to a CSR, call list_projects with csr (a CSR id or a prefix such as
+    csr-HR-2022); these links are assessed by an AI model: say so.
 
 Filter values: countries are ISO codes (AT Austria, BE Belgium, BG Bulgaria, HR Croatia, CY Cyprus, CZ Czechia,
 DK Denmark, EE Estonia, FI Finland, FR France, DE Germany, GR Greece, HU Hungary, IE Ireland, IT Italy, LV Latvia,

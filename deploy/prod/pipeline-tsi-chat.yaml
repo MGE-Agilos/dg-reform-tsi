@@ -46,7 +46,7 @@ components:
         - search_csrs: EU country-specific recommendations (CSRs, European Semester 2016-2025). Each passage starts with
           "country year CSR n — year — country — section" and ends with the CSR id and the source URL.
         - list_projects: exact counts and lists of projects over the whole corpus, with filters (countries, years,
-          programme, policy area, detail page, title words).
+          programme, policy area, detail page, title words, csr).
         - find_projects: CANDIDATE projects on a free topic, over the whole corpus (best matches in project texts and
           deliverables plus keywords in titles, no relevance threshold), for you to judge.
 
@@ -86,6 +86,8 @@ components:
         14. For questions about country-specific recommendations (CSRs) or the European Semester, call search_csrs and
             cite the CSR id (e.g. csr-FR-2023-1) with its passage number; say that assessments come from the
             Commission's CSR database. Do not state that a project implements a CSR unless a tool result says so.
+            To list the projects linked to a CSR, call list_projects with csr (a CSR id or a prefix such as
+            csr-HR-2022); these links are assessed by an AI model: say so.
 
         Filter values: countries are ISO codes (AT Austria, BE Belgium, BG Bulgaria, HR Croatia, CY Cyprus, CZ Czechia,
         DK Denmark, EE Estonia, FI Finland, FR France, DE Germany, GR Greece, HU Hungary, IE Ireland, IT Italy, LV Latvia,
@@ -415,6 +417,10 @@ components:
               title_contains:
                 type: string
                 description: Word or phrase that must appear in the project title.
+              csr:
+                type: string
+                description: 'CSR id or prefix, e.g. csr-HR-2022-1, csr-HR-2022-1.2 or csr-HR-2022: only projects linked to it (AI-assessed
+                  links).'
               limit:
                 type: integer
                 description: Maximum number of projects to list (default 20); the totals always cover every matching project.
@@ -435,6 +441,8 @@ components:
             - filters.detail_only
             title_contains:
             - summary.title_contains
+            csr:
+            - summary.csr
             limit:
             - summary.limit
           output_mapping:
@@ -521,6 +529,11 @@ components:
                         return ", ".join(parts + ([f"none {none}"] if none else []))
 
 
+                    def _csr_matches(csrs, wanted: str) -> bool:
+                        wanted = wanted.strip()
+                        return any(c == wanted or c.startswith(wanted + ".") or c.startswith(wanted + "-") for c in csrs or [])
+
+
                     @component
                     class Code:
                         """Compte et liste les projets distincts parmi les morceaux filtres (un projet = un doc_id), comme
@@ -528,7 +541,8 @@ components:
 
                         @component.output_types(result=str)
                         def run(self, documents: list[Document], countries: Optional[list[str]] = None,
-                                policy_area: Optional[str] = None, title_contains: Optional[str] = None, limit: int = 20) -> dict:
+                                policy_area: Optional[str] = None, title_contains: Optional[str] = None, csr: Optional[str] = None,
+                                limit: int = 20) -> dict:
                             wanted = {c.strip().upper() for c in (countries or []) if c and c.strip()}
                             projects = {}
                             for doc in documents:
@@ -539,6 +553,8 @@ components:
                                 if wanted and not wanted & set(meta.get("countries") or []):
                                     continue
                                 if title_contains and title_contains.lower() not in str(meta.get("title") or "").lower():
+                                    continue
+                                if csr and not _csr_matches(meta.get("csrs"), csr):
                                     continue
                                 projects[doc_id] = meta
                             ordered = sorted(projects.values(), key=lambda m: (-(m.get("year") or 0), str(m.get("title"))))

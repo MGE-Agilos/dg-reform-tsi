@@ -172,3 +172,18 @@ def test_project_file_keeps_its_prod_name(tmp_path):
     out = tmp_path / "build" / "files"
     export(root, out)
     assert (out / "tsi-project-project-x.md").exists()
+
+
+def test_project_csrs_in_meta_only_when_present(tmp_path):
+    output = tmp_path / "output"
+    (output / "projects").mkdir(parents=True)
+    (output / "projects" / "alpha.md").write_text(
+        PROJECT.replace("results: achieved\n", "results: achieved\ncsrs: [csr-HR-2022-1.1]\n", 1), encoding="utf-8")
+    (output / "projects" / "beta.md").write_text(PROJECT.replace("alpha", "beta").replace("Alpha", "Beta"),
+                                                 encoding="utf-8")
+    out = tmp_path / "build" / "files"
+    manifest = export(output, out)
+    assert manifest["meta_type_problems"] == []
+    alpha = json.loads((out / "tsi-project-alpha.md.meta.json").read_text(encoding="utf-8"))
+    beta = json.loads((out / "tsi-project-beta.md.meta.json").read_text(encoding="utf-8"))
+    assert alpha["csrs"] == ["csr-HR-2022-1.1"] and "csrs" not in beta

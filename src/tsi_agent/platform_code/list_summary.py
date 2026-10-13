@@ -13,6 +13,11 @@ def _breakdown(values) -> str:
     return ", ".join(parts + ([f"none {none}"] if none else []))
 
 
+def _csr_matches(csrs, wanted: str) -> bool:
+    wanted = wanted.strip()
+    return any(c == wanted or c.startswith(wanted + ".") or c.startswith(wanted + "-") for c in csrs or [])
+
+
 @component
 class Code:
     """Compte et liste les projets distincts parmi les morceaux filtres (un projet = un doc_id), comme
@@ -20,7 +25,8 @@ class Code:
 
     @component.output_types(result=str)
     def run(self, documents: list[Document], countries: Optional[list[str]] = None,
-            policy_area: Optional[str] = None, title_contains: Optional[str] = None, limit: int = 20) -> dict:
+            policy_area: Optional[str] = None, title_contains: Optional[str] = None, csr: Optional[str] = None,
+            limit: int = 20) -> dict:
         wanted = {c.strip().upper() for c in (countries or []) if c and c.strip()}
         projects = {}
         for doc in documents:
@@ -31,6 +37,8 @@ class Code:
             if wanted and not wanted & set(meta.get("countries") or []):
                 continue
             if title_contains and title_contains.lower() not in str(meta.get("title") or "").lower():
+                continue
+            if csr and not _csr_matches(meta.get("csrs"), csr):
                 continue
             projects[doc_id] = meta
         ordered = sorted(projects.values(), key=lambda m: (-(m.get("year") or 0), str(m.get("title"))))

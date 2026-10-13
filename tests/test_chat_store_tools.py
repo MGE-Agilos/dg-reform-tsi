@@ -383,3 +383,15 @@ def test_csr_search_keeps_best_passage_per_csr(tmp_path):
                      retriever=LocalQdrantEmbeddingRetriever(document_store=store), top_k=10)
     ids = [s["doc_id"] for s in tool.run(query="x", countries=["HR"])["sources"]]
     assert sorted(ids) == ["csr-HR-2019-2", "csr-HR-2024-1"]
+
+
+def test_lister_csr_filter(tmp_path):
+    store = open_store(str(tmp_path), 8)
+    docs = [Document(id=f"projects/{pid}#0", content="x", meta={
+        "doc_id": pid, "doc_type": "project", "title": pid, "countries": ["HR"], "year": 2024, "programme": "TSI",
+        "csrs": csrs}) for pid, csrs in (("a", ["csr-HR-2022-1.1"]), ("b", ["csr-HR-2022-10.1"]), ("c", None))]
+    store.write_documents(MockDocumentEmbedder(model="mock", dimension=8).run(documents=docs)["documents"])
+    lister = ProjectLister(document_store=store)
+    assert lister.run(csr="csr-HR-2022-1")["result"].startswith("Total matching projects: 1 ")
+    assert lister.run(csr="csr-HR-2022")["result"].startswith("Total matching projects: 2 ")
+    assert lister.run(csr="csr-HR-2022-1.1")["result"].startswith("Total matching projects: 1 ")

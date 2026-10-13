@@ -30,7 +30,7 @@ _HEADING = re.compile(r"^[ \t]{0,3}(?:#+(?:[ \t]+|$))+", re.MULTILINE)
 META_TYPES: dict[str, type] = {
     "Topic": str, "corpus": str, "doc_type": str, "doc_id": str, "title": str, "countries": list, "programme": str,
     "year": int, "policy_area": str, "results": str, "projects": list, "multi_country": bool, "detail_page": bool,
-    "source_url": str, "listing_titles": list, "chunks": int,
+    "source_url": str, "listing_titles": list, "csrs": list, "chunks": int,
 }
 
 
@@ -66,6 +66,7 @@ def file_meta(docs: list[Document]) -> dict:
         "projects": list(projects or []), "multi_country": first.get("multi_country"),
         "detail_page": first.get("detail_page"), "source_url": source_url,
         "listing_titles": list(first.get("listing_titles") or []) if doc_type == "project" else None,
+        "csrs": (list(first.get("csrs") or []) or None) if doc_type == "project" else None,
         "chunks": len(docs),
     }
     meta = {}

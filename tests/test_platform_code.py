@@ -63,6 +63,15 @@ def test_list_summary_counts_distinct_projects_and_filters_countries_in_code():
     assert text.startswith("Total matching projects: 1") and "By policy area" not in text
 
 
+def test_list_summary_csr_filter_matches_ids_and_prefixes_without_false_prefix():
+    docs = [project("a", "Alpha", ["HR"], csrs=["csr-HR-2022-1.1"]), project("b", "Beta", ["HR"], csrs=["csr-HR-2022-10.1"]),
+            project("c", "Gamma", ["HR"])]
+    run = list_summary.Code().run
+    assert run(documents=docs, csr="csr-HR-2022-1")["result"].startswith("Total matching projects: 1 ")
+    assert run(documents=docs, csr="csr-HR-2022")["result"].startswith("Total matching projects: 2 ")
+    assert run(documents=docs, csr="csr-HR-2022-1.1")["result"].startswith("Total matching projects: 1 ")
+
+
 def test_list_summary_warns_when_the_search_limit_is_hit():
     docs = [project("a", "Alpha", ["GR"])] * list_summary.MAX_RESULTS
     assert list_summary.Code().run(documents=docs)["result"].startswith("WARNING")

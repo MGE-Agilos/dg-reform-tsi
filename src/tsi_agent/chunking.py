@@ -10,6 +10,8 @@ from tsi_agent.render import parse_front_matter
 
 # A incrementer a chaque changement des regles ci-dessous : force une revectorisation complete.
 # Le type csr a ete ajoute sans incrementer CHUNKER_VERSION (morceaux existants inchanges).
+# csrs et la section des liens CSR ajoutes sans changer CHUNKER_VERSION : presents dans les fichiers revectorises
+# (csr-link reecrit les fichiers lies).
 CHUNKER_VERSION = 3  # 2 : section Deliverables (resume IA) ; 3 : texte integral des livrables, un morceau par page
 SPLIT_THRESHOLD_WORDS = 300
 WINDOW_WORDS = 250
@@ -19,13 +21,14 @@ SENTENCE_LOOKBACK_WORDS = 50
 INTRO = "Introduction"
 SUMMARY = "Summary (AI-generated)"
 DELIVERABLES = "Deliverables (AI-generated summary)"
-AI_SECTIONS = {SUMMARY, DELIVERABLES}
+CSR_LINKS = "Supported CSRs (AI-assessed)"
+AI_SECTIONS = {SUMMARY, DELIVERABLES, CSR_LINKS}
 # Listes d'URL et titres de listing : deja en metadonnees, sans valeur pour la recherche.
 SKIPPED_SECTIONS = {"Sources", "Listed in country factsheets as"}
 # listing_titles : titres des listings (recherche par mots du titre de find_projects). Ajoute sans changer
 # CHUNKER_VERSION : present dans les fichiers revectorises ; `index --full` pour toute la couche.
 PROJECT_FIELDS = ("title", "programme", "year", "countries", "multi_country", "policy_area", "detail_page",
-                  "results", "spotlight", "highlighted", "listed", "listing_titles")
+                  "results", "spotlight", "highlighted", "listed", "listing_titles", "csrs")
 
 _TITLE = re.compile(r"\A# [^\n]*(?:\n|\Z)")
 _HEADING = re.compile(r"^## (.+?)[ \t]*$", re.MULTILINE)

@@ -169,3 +169,12 @@ def test_chunk_file_window_is_parametrizable_without_changing_defaults():
     deliv = read("vec_deliverable.md")
     assert len(chunk_file("deliverables/g.md", deliv, threshold=60, window=50, overlap=8)) > \
         len(chunk_file("deliverables/g.md", deliv))
+
+
+def test_csr_links_section_is_ai_generated_and_csrs_in_meta():
+    text = ("---\nproject_id: p\ntitle: P\ncountries: [HR]\nyear: 2024\ncsrs: [csr-HR-2022-1.1]\n---\n\n# P\n\n"
+            "Intro.\n\n## Supported CSRs (AI-assessed)\n\n- csr-HR-2022-1.1 (direct): R.\n")
+    docs = chunk_file("projects/p.md", text)
+    sec = [d for d in docs if d.meta["section"] == "Supported CSRs (AI-assessed)"]
+    assert len(sec) == 1 and sec[0].meta["ai_generated"] is True
+    assert all(d.meta["csrs"] == ["csr-HR-2022-1.1"] for d in docs)

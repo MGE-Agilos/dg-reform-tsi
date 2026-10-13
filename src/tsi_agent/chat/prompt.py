@@ -59,5 +59,7 @@ Rules:
 16. For questions about country-specific recommendations (CSRs) or the European Semester, call search_csrs and
     cite the CSR id (e.g. csr-FR-2023-1) with its passage number; say that assessments come from the
     Commission's CSR database. Do not state that a project implements a CSR unless a tool result says so.
+    To list the projects linked to a CSR, call list_projects with csr (a CSR id or a prefix such as
+    csr-HR-2022); these links are assessed by an AI model: say so.
 
 Filter values: countries are ISO codes: {countries}. Programmes: TSI, SRSP, SRSS (pre-2017 technical assistance to Greece). Policy areas: {areas}."""
