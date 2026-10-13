@@ -8,7 +8,7 @@ alter table public.csrs add column if not exists fts tsvector
   generated always as (to_tsvector('english', coalesce(title, '') || ' ' || coalesce(text, ''))) stored;
 create index if not exists csrs_fts_idx on public.csrs using gin (fts);
 
-create or replace function public.search_projects(q text, p_countries text[] default null,
+create or replace function public.tsi_search_projects(q text, p_countries text[] default null,
   p_programme text default null, p_year_from int default null, p_year_to int default null, lim int default 10)
 returns table (project_id text, title text, programme text, year int, countries text[], policy_area text,
                detail_page boolean, url text, summary text, csrs text[], rank real)
@@ -25,7 +25,7 @@ language sql stable security invoker set search_path = public as $$
   limit least(greatest(coalesce(lim, 10), 1), 20);
 $$;
 
-create or replace function public.search_csrs(q text, p_countries text[] default null,
+create or replace function public.tsi_search_csrs(q text, p_countries text[] default null,
   p_year_from int default null, p_year_to int default null, lim int default 10)
 returns table (csr_id text, country text, year int, title text, text text, assessment text,
                assessment_year int, rank real)
@@ -41,7 +41,7 @@ language sql stable security invoker set search_path = public as $$
   limit least(greatest(coalesce(lim, 10), 1), 20);
 $$;
 
-revoke all on function public.search_projects(text, text[], text, int, int, int) from public, anon;
-revoke all on function public.search_csrs(text, text[], int, int, int) from public, anon;
-grant execute on function public.search_projects(text, text[], text, int, int, int) to authenticated, service_role;
-grant execute on function public.search_csrs(text, text[], int, int, int) to authenticated, service_role;
+revoke all on function public.tsi_search_projects(text, text[], text, int, int, int) from public, anon;
+revoke all on function public.tsi_search_csrs(text, text[], int, int, int) from public, anon;
+grant execute on function public.tsi_search_projects(text, text[], text, int, int, int) to authenticated, service_role;
+grant execute on function public.tsi_search_csrs(text, text[], int, int, int) to authenticated, service_role;

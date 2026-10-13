@@ -13,12 +13,12 @@
 
   La page change seulement `PROXY_URL` et les mentions sur l'IA.
 - **Outils du chat.** Ils sont exécutés par la fonction via PostgREST, **avec le jeton du testeur**, si bien que le RLS s'applique :
-  - `search_projects(query, countries?, programme?, year_from?, year_to?, limit≤20)` : RPC `search_projects`, plein texte sur le titre et le résumé ;
+  - `search_projects(query, countries?, programme?, year_from?, year_to?, limit≤20)` : RPC `tsi_search_projects`, plein texte sur le titre et le résumé ;
   - `list_projects(countries?, programme?, year_from?, year_to?, policy_area?, detail_only?, title_contains?, csr?, limit≤50)` : comptes exacts (total, par programme, par année, par pays, par domaine) et liste tronquée, avec le filtre `csr` par identifiant ou préfixe, sans faux préfixe et sans tenir compte de la casse ;
   - `get_project(project_id)` : la fiche du projet et ses liens CSR (niveau, justification, texte de la sous-partie, évaluation) ;
-  - `search_csrs(query, countries?, year_from?, year_to?, limit≤20)` : RPC `search_csrs` ;
+  - `search_csrs(query, countries?, year_from?, year_to?, limit≤20)` : RPC `tsi_search_csrs` ;
   - `get_csr(csr_id)` : la CSR, ses sous-parties et les projets liés.
-- **Impact.** Outils `get_project` et `search_projects`, plus l'outil serveur d'Anthropic `{"type": "web_search_20250305", "name": "web_search", "max_uses": 4}`. Le prompt reprend la méthode, les règles, les sections et **la grille de score** de `impact_prompt` (`deploy/prod/build_pipelines.py`), avec un projet lu par `get_project` à la place de `search_projects`/`search_deliverables`.
+- **Impact.** Outils `get_project` et `search_projects`, plus l'outil serveur d'Anthropic `{"type": "web_search_20260209", "name": "web_search", "max_uses": 4}`. Le prompt reprend la méthode, les règles, les sections et **la grille de score** de `impact_prompt` (`deploy/prod/build_pipelines.py`), avec un projet lu par `get_project` à la place de `search_projects`/`search_deliverables`.
 - **Modèle et limites.**
   - `TSI_MODEL` vaut `claude-sonnet-5-5` par défaut ; `max_tokens` vaut 4 096 pour le chat et 6 000 pour l'impact.
   - 8 tours de boucle d'outils au maximum.
@@ -42,7 +42,7 @@ alter table public.csrs add column if not exists fts tsvector
   generated always as (to_tsvector('english', coalesce(title, '') || ' ' || coalesce(text, ''))) stored;
 create index if not exists csrs_fts_idx on public.csrs using gin (fts);
 
-create or replace function public.search_projects(q text, p_countries text[] default null,
+create or replace function public.tsi_search_projects(q text, p_countries text[] default null,
   p_programme text default null, p_year_from int default null, p_year_to int default null, lim int default 10)
 returns table (project_id text, title text, programme text, year int, countries text[], policy_area text,
                detail_page boolean, url text, summary text, csrs text[], rank real)
@@ -59,7 +59,7 @@ language sql stable security invoker set search_path = public as $$
   limit least(greatest(coalesce(lim, 10), 1), 20);
 $$;
 
-create or replace function public.search_csrs(q text, p_countries text[] default null,
+create or replace function public.tsi_search_csrs(q text, p_countries text[] default null,
   p_year_from int default null, p_year_to int default null, lim int default 10)
 returns table (csr_id text, country text, year int, title text, text text, assessment text,
                assessment_year int, rank real)
@@ -75,10 +75,10 @@ language sql stable security invoker set search_path = public as $$
   limit least(greatest(coalesce(lim, 10), 1), 20);
 $$;
 
-revoke all on function public.search_projects(text, text[], text, int, int, int) from public, anon;
-revoke all on function public.search_csrs(text, text[], int, int, int) from public, anon;
-grant execute on function public.search_projects(text, text[], text, int, int, int) to authenticated, service_role;
-grant execute on function public.search_csrs(text, text[], int, int, int) to authenticated, service_role;
+revoke all on function public.tsi_search_projects(text, text[], text, int, int, int) from public, anon;
+revoke all on function public.tsi_search_csrs(text, text[], int, int, int) from public, anon;
+grant execute on function public.tsi_search_projects(text, text[], text, int, int, int) to authenticated, service_role;
+grant execute on function public.tsi_search_csrs(text, text[], int, int, int) to authenticated, service_role;
 ```
 
 Points à vérifier :
@@ -114,7 +114,7 @@ Points à vérifier :
   - écrire les requêtes des outils en anglais.
 
   Les valeurs des filtres sont : codes pays ISO de l'UE-27 (Grèce = `GR`), programmes `TSI`, `SRSP` et `SRSS`, et les 10 slugs de domaines (voir `web/app.js`).
-- `TOOLS_CHAT` et `TOOLS_IMPACT` : les schémas JSON des outils. Pour l'impact, `TOOLS_IMPACT` contient `get_project`, `search_projects` et l'outil serveur `web_search_20250305` avec `max_uses: 4`.
+- `TOOLS_CHAT` et `TOOLS_IMPACT` : les schémas JSON des outils. Pour l'impact, `TOOLS_IMPACT` contient `get_project`, `search_projects` et l'outil serveur `web_search_20260209` avec `max_uses: 4`.
 - `runTool(name, input, ctx)` : exécute un outil client via PostgREST et renvoie un **texte** compact. Le contexte `ctx` contient `{supabaseUrl, apikey, userAuth, fetchImpl}`. Les entrées sont validées (limites bornées, types). Une erreur renvoie le texte `"Tool error: ..."`, sans lever d'exception.
   - `list_projects` récupère les colonnes légères (`project_id,title,programme,year,countries,policy_area,detail_page,url,csrs`) avec les filtres côté serveur, par pages de 1 000. Elle applique côté code les filtres `csr` et `title_contains`, puis calcule les répartitions.
 - `agentLoop(service, messages, env, fetchImpl, now)` : la boucle Anthropic.
@@ -184,5 +184,5 @@ Dans la section du lot 2, ajouter une sous-section « Assistant Claude (lot 2b) 
    - `OPTIONS` depuis l'origine Pages, qui doit répondre 204 ;
    - un `POST` sans jeton, qui doit répondre 401 ;
    - un `POST` avec la clé anon comme jeton, qui doit répondre 401 ou 403 ;
-   - l'appel `rpc/search_projects` avec la clé `service_role`, qui doit renvoyer des résultats.
+   - l'appel `rpc/tsi_search_projects` avec la clé `service_role`, qui doit renvoyer des résultats.
 4. Pousser `main`, puis vérifier le workflow Pages. L'essai final dans la page est fait par l'utilisateur.

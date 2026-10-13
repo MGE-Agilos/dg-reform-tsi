@@ -583,15 +583,18 @@ de validation (400). Plan et design : `docs/superpowers/plans/2026-10-14-web-cla
 Architecture :
 
 - **Boucle d'outils.** La fonction appelle `POST https://api.anthropic.com/v1/messages` avec les outils déclarés,
-  exécute les outils demandés par Claude, renvoie leurs résultats, et recommence jusqu'à la réponse finale.
+  exécute les outils demandés par Claude (en parallèle quand un même tour en demande plusieurs), renvoie leurs
+  résultats, et recommence jusqu'à la réponse finale. Effort `low` pour le chat et `medium` pour l'impact,
+  `max_tokens` 16 000.
 - **Outils du chat**, exécutés par la fonction via PostgREST **avec le jeton du testeur** (le RLS s'applique) :
-  `search_projects` et `search_csrs` (recherche plein texte, fonctions SQL de `002_search.sql`), `list_projects`
+  `search_projects` et `search_csrs` (recherche plein texte, fonctions SQL `tsi_search_projects` et
+  `tsi_search_csrs` de `002_search.sql`, préfixées car le projet Supabase est partagé), `list_projects`
   (comptes exacts par programme, année, pays et domaine, filtre `csr` par identifiant ou préfixe), `get_project`
   (fiche et liens CSR) et `get_csr` (CSR, sous-parties et projets liés).
-- **Impact :** `get_project`, `search_projects` et l'outil de recherche web d'Anthropic (`web_search`, 4 recherches
-  au plus), avec la méthode, les sections et la grille de score de `impact_prompt` (`deploy/prod/build_pipelines.py`).
+- **Impact :** `get_project`, `search_projects` et l'outil de recherche web d'Anthropic (`web_search_20260209`, 4
+  recherches au plus sur toute l'analyse), avec la méthode, les sections et la grille de score de `impact_prompt` (`deploy/prod/build_pipelines.py`).
 - **Fichiers :** `supabase/functions/tsi-assistant/index.ts` (fichier unique, sans import) et
-  `supabase/migrations/002_search.sql` (colonnes générées `fts`, index GIN, `search_projects`, `search_csrs` en
+  `supabase/migrations/002_search.sql` (colonnes générées `fts`, index GIN, `tsi_search_projects`, `tsi_search_csrs` en
   `security invoker`). `supabase-sync` n'envoie jamais les colonnes `fts` : elles sont recalculées par Postgres.
 
 Secrets (*Edge Functions > Secrets*, partagés par toutes les fonctions du projet) :
@@ -618,15 +621,18 @@ Déploiement :
 Limites :
 
 - le texte intégral des livrables n'est pas dans Supabase : le chat ne le cherche pas et le dit ;
-- 8 tours d'outils au plus, puis un dernier appel sans outils ; au-delà de 115 s, le dernier appel est fait sans
-  outils ; chaque appel à Anthropic est limité à 60 s et aucun ne dépasse 150 s depuis le début (la page abandonne à
-  160 s) : compter jusqu'à environ 2 minutes ;
+- 8 tours d'outils au plus, puis un dernier appel sans outils ; au-delà de 110 s, le dernier appel est fait sans
+  outils ; chaque appel à Anthropic est limité à 60 s, et ni les appels à Anthropic ni ceux à la base ne dépassent
+  140 s depuis le début (la page abandonne à 160 s) : compter jusqu'à environ 2 minutes. `list_projects` s'arrête
+  de paginer à moins de 5 s de cette limite et le signale (« Partial: time limit ») ;
 - 502 si Anthropic répond en erreur (le détail reste dans le journal : statut et type d'erreur seulement) ou par une
-  réponse vide, 504 si l'appel dépasse son délai. Le journal ne contient que le service, le statut, la durée et le
-  nombre d'étapes : jamais les questions, les résultats d'outils ni les clés.
+  réponse vide, 504 si l'appel dépasse son délai, 422 si le modèle refuse la demande ; une réponse coupée par
+  `max_tokens` est renvoyée avec la mention « [answer truncated] ». Le journal ne contient que le service, le
+  statut, la durée, le nombre d'étapes et de recherches web, et les jetons consommés (entrée, sortie, lus et écrits
+  en cache) : jamais les questions, les résultats d'outils ni les clés.
 
 Coûts indicatifs (tarif `claude-sonnet-5-5` : 2 $ par million de jetons en entrée, 10 $ en sortie ; le prompt
-système est mis en cache entre les tours de la boucle) :
+système et la conversation sont mis en cache entre les tours de la boucle) :
 
 - **chat :** 2 à 5 appels de quelques milliers à 15 000 jetons d'entrée, soit environ 0,02 à 0,15 $ par question ;
 - **impact :** les résultats de recherche web gonflent l'entrée (souvent 50 000 à 150 000 jetons au total), soit

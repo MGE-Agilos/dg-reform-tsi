@@ -5,10 +5,10 @@
 // Single self-contained file, no imports: paste it into Supabase (Edge Functions > Via Editor), keep "Verify JWT" on.
 // Secrets (Edge Functions > Secrets): ANTHROPIC_API_KEY; optional TSI_MODEL (default claude-sonnet-5-5), ALLOWED_ORIGINS.
 // SUPABASE_URL and SUPABASE_ANON_KEY are provided (if SUPABASE_ANON_KEY is missing, the caller's apikey header, i.e. the
-// public anon key, is used). Needs supabase/migrations/002_search.sql (search_projects, search_csrs).
+// public anon key, is used). Needs supabase/migrations/002_search.sql (tsi_search_projects, tsi_search_csrs).
 // The pure logic is exported and tested with Node: node --experimental-strip-types --test supabase/functions/tsi-assistant/index.test.ts
-// Never logs message contents, tool inputs nor keys: only service, status, duration, steps, the is_tester status on
-// failure and the Anthropic error status/type.
+// Never logs message contents, tool inputs nor keys: only service, status, duration, steps, token usage, the is_tester
+// status on failure and the Anthropic error status/type.
 
 type Env = Record<string, string | undefined>;
 type Message = { role: "user" | "assistant"; content: string };
@@ -16,8 +16,12 @@ type FetchImpl = (url: string, init: RequestInit) => Promise<Response>;
 type ServiceName = "chat" | "impact";
 type Block = { type: string; [key: string]: unknown };
 type ApiMessage = { role: "user" | "assistant"; content: string | Block[] };
-type ModelResponse = { content: Block[]; stop_reason: string | null };
-export type ToolContext = { supabaseUrl: string; apikey: string; userAuth: string; fetchImpl: FetchImpl };
+type Usage = { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+type ModelResponse = { content: Block[]; stop_reason: string | null; usage?: Usage };
+/** deadline: absolute time (same clock as now) after which no database call may run. */
+export type ToolContext = { supabaseUrl: string; apikey: string; userAuth: string; fetchImpl: FetchImpl; deadline?: number; now?: () => number };
+/** Run statistics, filled in place (also when the run fails) and logged without any content. */
+export type RunStats = { steps: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; web_searches: number };
 
 export const MAX_MESSAGES = 20;
 export const MAX_CONTENT = 8000; // per message
@@ -25,12 +29,15 @@ export const MAX_TOTAL = 40000; // all messages together
 export const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 export const ANTHROPIC_VERSION = "2023-06-01";
 export const DEFAULT_MODEL = "claude-sonnet-5-5";
-export const MAX_TOKENS: Record<ServiceName, number> = { chat: 4096, impact: 6000 };
+export const MAX_TOKENS: Record<ServiceName, number> = { chat: 16000, impact: 16000 };
+export const EFFORT: Record<ServiceName, string> = { chat: "low", impact: "medium" };
 export const MAX_STEPS = 8; // tool rounds; then one last call without tools
-export const BUDGET_MS = 115000; // beyond it, one last call without tools
 export const MODEL_TIMEOUT_MS = 60000; // per Anthropic call
-export const DEADLINE_MS = 150000; // no Anthropic call runs past it (the page gives up at 160 s)
+export const DEADLINE_MS = 140000; // nothing runs past it (the page gives up at 160 s)
+export const BUDGET_MS = DEADLINE_MS - 30000; // beyond it, one last call without tools (with at least ~30 s left)
 export const DB_TIMEOUT_MS = 20000; // per PostgREST call
+export const LIST_MIN_REMAINING_MS = 5000; // list_projects stops paging below this
+export const TESTER_TIMEOUT_MS = 10000;
 export const WEB_SEARCH_MAX_USES = 4;
 const TOOL_OUTPUT_MAX = 15000; // characters returned to the model per tool call
 const DEFAULT_ORIGINS = ["https://mge-agilos.github.io", "http://localhost:8000"];
@@ -212,7 +219,7 @@ const GET_CSR = {
     required: ["csr_id"],
   },
 };
-export const WEB_SEARCH_TOOL = { type: "web_search_20250305", name: "web_search", max_uses: WEB_SEARCH_MAX_USES };
+export const WEB_SEARCH_TOOL = { type: "web_search_20260209", name: "web_search", max_uses: WEB_SEARCH_MAX_USES };
 
 export const TOOLS_CHAT: Record<string, unknown>[] = [SEARCH_PROJECTS, LIST_PROJECTS, GET_PROJECT, SEARCH_CSRS, GET_CSR];
 export const TOOLS_IMPACT: Record<string, unknown>[] = [GET_PROJECT, SEARCH_PROJECTS, WEB_SEARCH_TOOL];
@@ -300,19 +307,25 @@ export function canonicalCsrId(value: string): string | null {
 
 // ---------- tool execution (PostgREST with the tester's token) ----------
 
+function remainingMs(ctx: ToolContext): number {
+  return ctx.deadline === undefined ? Infinity : ctx.deadline - (ctx.now ?? Date.now)();
+}
+
 async function db(ctx: ToolContext, path: string, body?: unknown): Promise<unknown> {
   const headers: Record<string, string> = { "apikey": ctx.apikey, "Authorization": ctx.userAuth, "Accept": "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
+  const remaining = remainingMs(ctx);
+  if (remaining <= 0) throw new ToolError("time limit reached");
   let res: Response;
   try {
     res = await ctx.fetchImpl(`${ctx.supabaseUrl}/rest/v1/${path}`, {
       method: body === undefined ? "GET" : "POST",
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(DB_TIMEOUT_MS),
+      signal: AbortSignal.timeout(Math.max(1, Math.min(DB_TIMEOUT_MS, remaining))),
     });
-  } catch {
-    throw new ToolError("database unreachable");
+  } catch (e) {
+    throw new ToolError(isTimeout(e) ? "database timed out" : "database unreachable");
   }
   if (!res.ok) throw new ToolError(`database request failed (${res.status})`);
   try {
@@ -355,7 +368,7 @@ function projectLine(p: ProjectRow): string {
 
 async function searchProjects(input: Input, ctx: ToolContext): Promise<string> {
   const q = reqString(input, "query");
-  const rows = await db(ctx, "rpc/search_projects", {
+  const rows = await db(ctx, "rpc/tsi_search_projects", {
     q, p_countries: optCountries(input), p_programme: optProgramme(input),
     p_year_from: optYear(input, "year_from"), p_year_to: optYear(input, "year_to"), lim: limitOf(input, 10, 20),
   }) as ProjectRow[];
@@ -393,7 +406,12 @@ async function listProjects(input: Input, ctx: ToolContext): Promise<string> {
   if (area) filters.push(`policy_area=${eq(area)}`);
   if (detailOnly) filters.push("detail_page=is.true");
   let rows: ProjectRow[] = [];
+  let partial = false;
   for (let page = 0; page < LIST_MAX_PAGES; page++) {
+    if (page > 0 && remainingMs(ctx) < LIST_MIN_REMAINING_MS) {
+      partial = true;
+      break;
+    }
     const batch = await db(ctx, `projects?${filters.join("&")}&limit=${LIST_PAGE}&offset=${page * LIST_PAGE}`) as ProjectRow[];
     if (!Array.isArray(batch)) throw new ToolError("unexpected database response");
     rows = rows.concat(batch);
@@ -411,6 +429,7 @@ async function listProjects(input: Input, ctx: ToolContext): Promise<string> {
   const lines = [
     `Total matching projects: ${rows.length}${rows.length ? ` (by programme: ${byProgramme})` : ""}`,
   ];
+  if (partial) lines.unshift(`Partial: time limit — only the first ${rows.length} projects read were counted; the figures are not exact.`);
   if (rows.length) {
     lines.push(`By year: ${byYear}`);
     lines.push(`By country: ${breakdown(rows.flatMap((p) => (p.countries?.length ? p.countries : [null])))}`);
@@ -459,7 +478,7 @@ type CsrRow = { csr_id: string; country: string; year: number; title: string; te
 
 async function searchCsrs(input: Input, ctx: ToolContext): Promise<string> {
   const q = reqString(input, "query");
-  const rows = await db(ctx, "rpc/search_csrs", {
+  const rows = await db(ctx, "rpc/tsi_search_csrs", {
     q, p_countries: optCountries(input), p_year_from: optYear(input, "year_from"), p_year_to: optYear(input, "year_to"),
     lim: limitOf(input, 10, 20),
   }) as CsrRow[];
@@ -527,39 +546,67 @@ function isTimeout(e: unknown): boolean {
   return name === "TimeoutError" || name === "AbortError";
 }
 
-/** Final text: the text blocks after the last tool block (the report, without "I'll search..." preambles), joined
- * as written (Claude splits cited text into several adjacent blocks); all text blocks if none follows a tool block. */
-export function answerText(content: Block[]): string {
-  const blocks = Array.isArray(content) ? content : [];
+const NOT_ANSWER_BLOCKS = new Set(["thinking", "redacted_thinking"]); // ignored: neither text nor a tool boundary
+
+/** Final text, joined as written (Claude splits cited text into several adjacent blocks). If the content ends with text,
+ * only the text after the last tool block (the report, without "I'll search..." preambles); with trailingOnly (turn
+ * stopped mid tool use), that trailing text or nothing; otherwise all text groups. Thinking blocks are skipped. */
+export function answerText(content: Block[], trailingOnly = false): string {
+  const blocks = (Array.isArray(content) ? content : []).filter((b) => b && !NOT_ANSWER_BLOCKS.has(b.type));
   const groups: string[][] = [[]];
   for (const b of blocks) {
-    if (b?.type === "text" && typeof b.text === "string") groups[groups.length - 1].push(b.text);
+    if (b.type === "text" && typeof b.text === "string") groups[groups.length - 1].push(b.text);
     else if (groups[groups.length - 1].length) groups.push([]);
   }
-  const texts = groups.map((g) => g.join("").trim()).filter(Boolean);
-  if (!texts.length) return "";
-  const last = blocks.length ? blocks[blocks.length - 1] : null;
-  const endsWithText = last?.type === "text";
-  return endsWithText ? texts[texts.length - 1] : texts.join("\n\n");
+  const endsWithText = blocks.length > 0 && blocks[blocks.length - 1].type === "text";
+  const trailing = endsWithText ? groups[groups.length - 1].join("").trim() : "";
+  if (trailing || trailingOnly) return trailing;
+  return groups.map((g) => g.join("").trim()).filter(Boolean).join("\n\n");
+}
+
+export function emptyStats(): RunStats {
+  return { steps: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, web_searches: 0 };
+}
+
+/** Copy of the conversation whose last user message carries a cache breakpoint on its last block (caches the loop
+ * prefix); an assistant last message (pause_turn) is sent back unchanged. The conversation itself is not modified. */
+export function withCacheBreakpoint(conversation: ApiMessage[]): ApiMessage[] {
+  const out = conversation.slice();
+  const last = out[out.length - 1];
+  if (!last || last.role !== "user") return out;
+  const blocks: Block[] = typeof last.content === "string" ? [{ type: "text", text: last.content }] : last.content.slice();
+  if (!blocks.length) return out;
+  blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], cache_control: { type: "ephemeral" } };
+  out[out.length - 1] = { role: "user", content: blocks };
+  return out;
 }
 
 export async function agentLoop(
   service: ServiceName, messages: Message[], env: Env, fetchImpl: FetchImpl, now: () => number = Date.now,
-  ctx?: Omit<ToolContext, "fetchImpl">,
-): Promise<{ answer: string; steps: number }> {
+  ctx?: { supabaseUrl: string; apikey: string; userAuth: string }, stats: RunStats = emptyStats(),
+): Promise<{ answer: string; steps: number; stats: RunStats }> {
   const key = env.ANTHROPIC_API_KEY;
   if (!key) throw new HttpError(500, "ANTHROPIC_API_KEY not configured");
   const cfg = SERVICES[service];
-  const toolCtx: ToolContext = { supabaseUrl: ctx?.supabaseUrl ?? env.SUPABASE_URL ?? "", apikey: ctx?.apikey ?? "", userAuth: ctx?.userAuth ?? "", fetchImpl };
+  const started = now();
+  const deadline = started + DEADLINE_MS;
+  const toolCtx: ToolContext = {
+    supabaseUrl: ctx?.supabaseUrl ?? env.SUPABASE_URL ?? "", apikey: ctx?.apikey ?? "", userAuth: ctx?.userAuth ?? "",
+    fetchImpl, deadline, now,
+  };
   const model = env.TSI_MODEL || DEFAULT_MODEL;
   const system = [{ type: "text", text: cfg.system(), cache_control: { type: "ephemeral" } }];
   const conversation: ApiMessage[] = messages.map((m) => ({ role: m.role, content: m.content }));
-  const started = now();
 
   const call = async (final: boolean): Promise<ModelResponse> => {
-    const body: Record<string, unknown> = { model, max_tokens: MAX_TOKENS[service], system, tools: cfg.tools, messages: conversation };
+    // Once the web searches allowed for the run are used up, the server tool is no longer offered (history unchanged).
+    const tools = stats.web_searches >= WEB_SEARCH_MAX_USES ? cfg.tools.filter((t) => t !== WEB_SEARCH_TOOL) : cfg.tools;
+    const body: Record<string, unknown> = {
+      model, max_tokens: MAX_TOKENS[service], system, tools, messages: withCacheBreakpoint(conversation),
+      output_config: { effort: EFFORT[service] },
+    };
     if (final) body.tool_choice = { type: "none" };
-    const timeout = Math.max(1000, Math.min(MODEL_TIMEOUT_MS, DEADLINE_MS - (now() - started)));
+    const timeout = Math.max(1000, Math.min(MODEL_TIMEOUT_MS, deadline - now()));
     let res: Response;
     try {
       res = await fetchImpl(ANTHROPIC_URL, {
@@ -585,33 +632,43 @@ export async function agentLoop(
       throw new HttpError(502, "Unexpected response from the model service");
     }
     if (!json || !Array.isArray(json.content)) throw new HttpError(502, "Unexpected response from the model service");
+    const u = json.usage ?? {};
+    stats.input_tokens += u.input_tokens ?? 0;
+    stats.output_tokens += u.output_tokens ?? 0;
+    stats.cache_read_tokens += u.cache_read_input_tokens ?? 0;
+    stats.cache_creation_tokens += u.cache_creation_input_tokens ?? 0;
+    stats.web_searches += json.content.filter((b) => b?.type === "server_tool_use" && b.name === "web_search").length;
     return json;
   };
 
-  let steps = 0;
   let res = await call(false);
   let final = false;
   while (!final && (res.stop_reason === "tool_use" || res.stop_reason === "pause_turn")) {
-    steps++;
+    stats.steps++;
     conversation.push({ role: "assistant", content: res.content }); // as received, server tool blocks included
     if (res.stop_reason === "tool_use") {
-      const results: Block[] = [];
-      for (const block of res.content) {
-        if (block.type !== "tool_use") continue; // server_tool_use is run by Anthropic, never answered here
-        const name = String(block.name ?? "");
-        const output = cfg.clientTools.includes(name)
-          ? await runTool(name, block.input, toolCtx)
-          : `Tool error: unknown tool ${name.slice(0, 60)}`;
-        results.push({ type: "tool_result", tool_use_id: block.id, content: output });
-      }
+      // Client tools of one turn run in parallel; server_tool_use is run by Anthropic, never answered here.
+      const uses = res.content.filter((b) => b?.type === "tool_use");
+      const outputs = await Promise.all(uses.map((b) => {
+        const name = String(b.name ?? "");
+        return cfg.clientTools.includes(name) ? runTool(name, b.input, toolCtx) : Promise.resolve(`Tool error: unknown tool ${name.slice(0, 60)}`);
+      }));
+      const results: Block[] = uses.map((b, i) => {
+        const result: Block = { type: "tool_result", tool_use_id: b.id, content: outputs[i] };
+        if (outputs[i].startsWith("Tool error:")) result.is_error = true;
+        return result;
+      });
       if (results.length) conversation.push({ role: "user", content: results });
     }
-    final = steps >= MAX_STEPS || now() - started > BUDGET_MS;
+    final = stats.steps >= MAX_STEPS || now() - started > BUDGET_MS;
     res = await call(final);
   }
-  const answer = answerText(res.content);
+  if (res.stop_reason === "refusal") throw new HttpError(422, "The model declined this request");
+  const midTool = res.stop_reason === "tool_use" || res.stop_reason === "pause_turn";
+  let answer = answerText(res.content, midTool);
   if (!answer) throw new HttpError(502, "Empty response from the model");
-  return { answer, steps };
+  if (res.stop_reason === "max_tokens") answer += "\n\n[answer truncated]";
+  return { answer, steps: stats.steps, stats };
 }
 
 // ---------- HTTP handler (same contract and checks as haystack-proxy) ----------
@@ -648,6 +705,7 @@ export function validate(body: unknown): { service: ServiceName; messages: Messa
   });
   const total = clean.reduce((n, m) => n + m.content.length, 0);
   if (total > MAX_TOTAL) throw new HttpError(400, `messages exceed ${MAX_TOTAL} characters in total`);
+  if (clean[0].role !== "user") throw new HttpError(400, "The first message must come from the user");
   if (clean[clean.length - 1].role !== "user") throw new HttpError(400, "The last message must come from the user");
   return { service, messages: clean };
 }
@@ -658,6 +716,7 @@ async function checkTester(authorization: string, apikey: string, env: Env, fetc
       method: "POST",
       headers: { "apikey": apikey, "Authorization": authorization, "Content-Type": "application/json" },
       body: "{}",
+      signal: AbortSignal.timeout(TESTER_TIMEOUT_MS),
     });
     if (!res.ok) {
       console.log(JSON.stringify({ rpcStatus: res.status }));
@@ -685,7 +744,7 @@ export async function handle(req: Request, env: Env, fetchImpl: FetchImpl, now: 
   const started = Date.now();
   let service = "?";
   let status = 500;
-  let steps = 0;
+  const stats = emptyStats();
   try {
     if (!env.SUPABASE_URL) throw new HttpError(500, "SUPABASE_URL not configured");
     const apikey = env.SUPABASE_ANON_KEY || req.headers.get("apikey") || "";
@@ -703,8 +762,7 @@ export async function handle(req: Request, env: Env, fetchImpl: FetchImpl, now: 
     const valid = validate(body);
     service = valid.service;
     const result = await agentLoop(valid.service, valid.messages, env, fetchImpl, now,
-      { supabaseUrl: env.SUPABASE_URL, apikey, userAuth: authorization });
-    steps = result.steps;
+      { supabaseUrl: env.SUPABASE_URL, apikey, userAuth: authorization }, stats);
     status = 200;
     return reply(200, { answer: result.answer });
   } catch (e) {
@@ -715,7 +773,7 @@ export async function handle(req: Request, env: Env, fetchImpl: FetchImpl, now: 
     status = 500;
     return reply(500, { error: "Internal error" });
   } finally {
-    console.log(JSON.stringify({ service, status, ms: Date.now() - started, steps }));
+    console.log(JSON.stringify({ service, status, ms: Date.now() - started, ...stats }));
   }
 }
 

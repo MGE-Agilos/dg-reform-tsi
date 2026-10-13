@@ -358,7 +358,7 @@ function linkItem(link) {
 
 async function renderProject(id, seq) {
   const [proj, links] = await Promise.all([
-    sb.from("projects").select("*").eq("project_id", id).single(),
+    sb.from("projects").select("project_id,title,programme,year,countries,policy_area,results,detail_page,url,summary,deliverables,csrs").eq("project_id", id).single(),
     sb.from("project_csr_links").select("level,rationale,basis,part_id,csr_parts(text,assessment,csr_id,csrs(title,year))").eq("project_id", id),
   ]);
   if (stale(seq)) return;
@@ -447,7 +447,7 @@ function partBlock(part) {
 
 async function renderCsr(id, seq) {
   const [csr, parts] = await Promise.all([
-    sb.from("csrs").select("*").eq("csr_id", id).single(),
+    sb.from("csrs").select("csr_id,country,year,number,title,text,policy_areas,assessment,assessment_year,source_url").eq("csr_id", id).single(),
     sb.from("csr_parts").select("part_id,text,policy_areas,assessment,project_csr_links(level,rationale,projects(project_id,title,programme,year))")
       .eq("csr_id", id).order("part_id"),
   ]);
