@@ -271,6 +271,10 @@ country, the institution or the reform.""", 12)
 DELIVERABLES = indent("""Semantic and keyword search in the full text of the projects' deliverables (reports, studies,
 roadmaps, presentations). Returns numbered passages with the document and the page. Write a precise English query
 with the project title or topic and the country.""", 12)
+CSRS = indent("""Semantic and keyword search in the country-specific recommendations (CSRs) addressed to EU Member
+States in the European Semester (2016-2025), with their sub-parts and the Commission's latest assessment of their
+implementation. Returns numbered passages with the CSR id. Write a precise English query naming the country and
+the policy topic.""", 12)
 
 WEB_SEARCH_OPENAI = """      - type: haystack.tools.component_tool.ComponentTool
         data:
@@ -426,6 +430,8 @@ Tools:
 - search_deliverables: full text of the projects' deliverables. Each passage starts with "publication title —
   document, p. N — programme year — countries" and ends with the deliverable id, the related project ids and
   the document URL.
+- search_csrs: EU country-specific recommendations (CSRs, European Semester 2016-2025). Each passage starts with
+  "country year CSR n — year — country — section" and ends with the CSR id and the source URL.
 - list_projects: exact counts and lists of projects over the whole corpus, with filters (countries, years,
   programme, policy area, detail page, title words).
 - find_projects: CANDIDATE projects on a free topic, over the whole corpus (best matches in project texts and
@@ -464,6 +470,9 @@ Rules:
     from the reports (figures, methods, recommendations, detailed results), and cite the document and page.
 13. Always write tool queries (search queries, find_projects topic and keywords) in English, naming the country,
     the institution and the topic, whatever the language of the question.
+14. For questions about country-specific recommendations (CSRs) or the European Semester, call search_csrs and
+    cite the CSR id (e.g. csr-FR-2023-1) with its passage number; say that assessments come from the
+    Commission's CSR database. Do not state that a project implements a CSR unless a tool result says so.
 
 Filter values: countries are ISO codes (AT Austria, BE Belgium, BG Bulgaria, HR Croatia, CY Cyprus, CZ Czechia,
 DK Denmark, EE Estonia, FI Finland, FR France, DE Germany, GR Greece, HU Hungary, IE Ireland, IT Italy, LV Latvia,
@@ -485,6 +494,8 @@ Tools:
 - search_deliverables: full text of the projects' deliverables. Each passage starts with "publication title —
   document, p. N — programme year — countries" and ends with the deliverable id, the related project ids and
   the document URL.
+- search_csrs: EU country-specific recommendations (CSRs, European Semester 2016-2025). Each passage starts with
+  "country year CSR n — year — country — section" and ends with the CSR id and the source URL.
 
 Rules:
 1. Answer in the language of the user's question.
@@ -508,7 +519,10 @@ Rules:
 11. Use search_projects to identify projects; use search_deliverables for details from the reports (figures,
     methods, recommendations, detailed results), and cite the document and page.
 12. Always write search queries in English, naming the country, the institution and the topic, whatever the
-    language of the question."""
+    language of the question.
+13. For questions about country-specific recommendations (CSRs) or the European Semester, call search_csrs and
+    cite the CSR id (e.g. csr-FR-2023-1) with its passage number; say that assessments come from the
+    Commission's CSR database. Do not state that a project implements a CSR unless a tool result says so."""
 
 
 def impact_prompt(web_tool: str, limit: str) -> str:
@@ -583,12 +597,14 @@ tools_impact = (search_tool("search_projects", PROJECTS, 8, ["project", "program
                 + search_tool("search_deliverables", DELIVERABLES, 6, "deliverable"))
 (out / "pipeline-tsi-chat.yaml").write_text(
     CHAT_HEADER + agent(4096, 15, CHAT_PROMPT) + search_tool("search_projects", PROJECTS, 10, ["project", "programme"])
-    + search_tool("search_deliverables", DELIVERABLES, 8, "deliverable") + list_projects_tool() + find_projects_tool()
+    + search_tool("search_deliverables", DELIVERABLES, 8, "deliverable")
+    + search_tool("search_csrs", CSRS, 6, "csr") + list_projects_tool() + find_projects_tool()
     + TAIL, encoding="utf-8", newline="\n")
 (out / "pipeline-tsi-chat-ui.yaml").write_text(
     CHAT_UI_HEADER + agent(4096, 12, CHAT_PROMPT_SEARCH_ONLY)
     + search_tool("search_projects", PROJECTS, 10, ["project", "programme"])
-    + search_tool("search_deliverables", DELIVERABLES, 8, "deliverable") + TAIL, encoding="utf-8", newline="\n")
+    + search_tool("search_deliverables", DELIVERABLES, 8, "deliverable")
+    + search_tool("search_csrs", CSRS, 6, "csr") + TAIL, encoding="utf-8", newline="\n")
 (out / "pipeline-tsi-impact.yaml").write_text(
     IMPACT_HEADER + agent(8000, 12, impact_prompt("it returns, for each result, its URL and the page text",
                                                   "At most 4 web searches: you have a strict time limit."))

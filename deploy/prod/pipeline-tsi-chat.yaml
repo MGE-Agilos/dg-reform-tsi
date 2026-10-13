@@ -43,6 +43,8 @@ components:
         - search_deliverables: full text of the projects' deliverables. Each passage starts with "publication title —
           document, p. N — programme year — countries" and ends with the deliverable id, the related project ids and
           the document URL.
+        - search_csrs: EU country-specific recommendations (CSRs, European Semester 2016-2025). Each passage starts with
+          "country year CSR n — year — country — section" and ends with the CSR id and the source URL.
         - list_projects: exact counts and lists of projects over the whole corpus, with filters (countries, years,
           programme, policy area, detail page, title words).
         - find_projects: CANDIDATE projects on a free topic, over the whole corpus (best matches in project texts and
@@ -81,6 +83,9 @@ components:
             from the reports (figures, methods, recommendations, detailed results), and cite the document and page.
         13. Always write tool queries (search queries, find_projects topic and keywords) in English, naming the country,
             the institution and the topic, whatever the language of the question.
+        14. For questions about country-specific recommendations (CSRs) or the European Semester, call search_csrs and
+            cite the CSR id (e.g. csr-FR-2023-1) with its passage number; say that assessments come from the
+            Commission's CSR database. Do not state that a project implements a CSR unless a tool result says so.
 
         Filter values: countries are ISO codes (AT Austria, BE Belgium, BG Bulgaria, HR Croatia, CY Cyprus, CZ Czechia,
         DK Denmark, EE Estonia, FI Finland, FR France, DE Germany, GR Greece, HU Hungary, IE Ireland, IT Italy, LV Latvia,
@@ -226,6 +231,87 @@ components:
                     field: meta.doc_type
                     operator: '=='
                     value: deliverable
+                  embedder:
+                    type: deepset_cloud_custom_nodes.embedders.nvidia.text_embedder.DeepsetNvidiaTextEmbedder
+                    init_parameters:
+                      model: intfloat/multilingual-e5-base
+                      prefix: 'query: '
+                      normalize_embeddings: true
+              builder:
+                type: haystack.components.builders.prompt_builder.PromptBuilder
+                init_parameters:
+                  required_variables:
+                  - existing_documents
+                  - docs
+                  template: |-
+                    {%- if existing_documents is not none -%}
+                    {%- set existing_doc_len = existing_documents|length -%}
+                    {%- else -%}
+                    {%- set existing_doc_len = 0 -%}
+                    {%- endif -%}
+                    {%- for doc in docs %}
+                    <document reference="{{loop.index + existing_doc_len}}">
+                    {{ doc.content }}
+                    </document>
+                    {% endfor -%}
+            connections:
+            - sender: retriever.documents
+              receiver: builder.docs
+            max_runs_per_component: 100
+            metadata: {}
+      - type: haystack.tools.pipeline_tool.PipelineTool
+        data:
+          name: search_csrs
+          description: >-
+            Semantic and keyword search in the country-specific recommendations (CSRs) addressed to EU Member
+            States in the European Semester (2016-2025), with their sub-parts and the Commission's latest assessment of their
+            implementation. Returns numbered passages with the CSR id. Write a precise English query naming the country and
+            the policy topic.
+          input_mapping:
+            query:
+            - retriever.query
+            documents:
+            - builder.existing_documents
+          output_mapping:
+            builder.prompt: formatted_docs
+            retriever.documents: documents
+          inputs_from_state:
+            documents: documents
+          outputs_to_state:
+            documents:
+              source: documents
+          outputs_to_string:
+            source: formatted_docs
+          parameters:
+          is_pipeline_async: false
+          pipeline:
+            components:
+              retriever:
+                type: haystack_integrations.components.retrievers.opensearch.open_search_hybrid_retriever.OpenSearchHybridRetriever
+                init_parameters:
+                  document_store:
+                    type: haystack_integrations.document_stores.opensearch.document_store.OpenSearchDocumentStore
+                    init_parameters:
+                      hosts:
+                      - ${OPENSEARCH_HOST}
+                      http_auth:
+                      - ${OPENSEARCH_USER}
+                      - ${OPENSEARCH_PASSWORD}
+                      use_ssl: true
+                      verify_certs: false
+                      index: tsi-corpus
+                      embedding_dim: 768
+                      similarity: cosine
+                  top_k: 6
+                  fuzziness: 0
+                  filters_bm25:
+                    field: meta.doc_type
+                    operator: '=='
+                    value: csr
+                  filters_embedding:
+                    field: meta.doc_type
+                    operator: '=='
+                    value: csr
                   embedder:
                     type: deepset_cloud_custom_nodes.embedders.nvidia.text_embedder.DeepsetNvidiaTextEmbedder
                     init_parameters:
