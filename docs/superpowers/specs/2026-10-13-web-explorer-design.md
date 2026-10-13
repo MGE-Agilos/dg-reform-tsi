@@ -43,13 +43,14 @@ Les clés étrangères permettent les jointures imbriquées de PostgREST, par ex
 ## Sécurité
 
 - **Lecture des données.** Le RLS est activé sur toutes les tables. Une seule règle `SELECT` par table de données : `using (public.is_tester())`.
-  - `is_tester()` est une fonction `security definer stable`. Elle renvoie vrai si l'e-mail du jeton (`auth.jwt()->>'email'`), mis en minuscules, figure dans `testers`.
+  - `is_tester()` est une fonction `security definer stable`. Elle renvoie vrai si l'utilisateur courant (`auth.uid()`) a, dans `auth.users`, un e-mail **confirmé** (`email_confirmed_at` renseigné) qui, mis en minuscules, figure dans `testers`. Le droit `execute` n'est accordé qu'à `authenticated` (retiré à `public` et à `anon`).
+  - `anon` n'a pas le droit `select` sur les tables de données : un appel anonyme renvoie une erreur de permission (ou `[]`).
   - `testers` n'a aucune règle : elle est illisible pour `anon` comme pour `authenticated`.
 - **Aucune écriture depuis la page.** Ni `anon` ni `authenticated` n'ont de règle d'insertion, de modification ou de suppression. Seule la clé `service_role`, qui contourne le RLS, écrit.
 - **Clé `anon`.** Elle est publique, dans `web/config.js`. Sans session de testeur, elle ne donne accès à rien.
 - **Clé `service_role`.** Elle est lue depuis l'environnement ou `.env` (`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`), jamais écrite dans un fichier suivi par Git, et `.env` est déjà dans `.gitignore`.
-- **Connexion.** Par lien magique (`signInWithOtp`). Un e-mail absent de `testers` peut se connecter, mais ne voit aucune donnée : la page affiche alors « Accès non autorisé », d'après l'appel RPC `is_tester()`.
-- **Configuration côté utilisateur.** Dans *Auth > URL Configuration*, l'utilisateur ajoute l'URL GitHub Pages (`https://mge-agilos.github.io/dg-reform-tsi/`) comme *Site URL* et comme *Redirect URL*.
+- **Connexion.** Par lien magique (`signInWithOtp` avec `shouldCreateUser: false`) : l'inscription se fait **sur invitation seulement** (*Authentication > Users > Invite user*, « Allow new users to sign up » désactivé, « Confirm email » actif). Un e-mail non invité reçoit « This e-mail is not invited ». Un utilisateur invité mais absent de `testers` peut se connecter, mais ne voit aucune donnée : la page affiche alors « Accès non autorisé », d'après l'appel RPC `is_tester()`.
+- **Configuration côté utilisateur.** Dans *Auth > URL Configuration*, l'utilisateur met l'URL GitHub Pages (`https://mge-agilos.github.io/dg-reform-tsi/`) comme *Site URL*, et `https://mge-agilos.github.io/dg-reform-tsi/**` (plus `http://localhost:8000/**` pour les essais) comme *Redirect URLs*.
 
 ## Synchronisation (`supabase-sync`)
 
@@ -83,7 +84,7 @@ Une page unique avec trois onglets. L'état est conservé dans l'URL (`#projects
 3. **Anomalies**
    - Filtres : type, gravité, programme, année, pays.
    - Liste paginée.
-   - Export CSV de la sélection, jusqu'à 5 000 lignes.
+   - Export CSV de la sélection, jusqu'à 5 000 lignes, lues par pages de 1 000 (limite *max-rows* de PostgREST) ; séparateur `;` (Excel en paramètres belges ou français), UTF-8 avec BOM, cellules commençant par `= + - @` neutralisées par une apostrophe.
 
 **Interface :**
 - en-tête avec l'état de connexion ;

@@ -459,14 +459,19 @@ projets qui les soutiennent), les liens projet → CSR évalués par IA et les a
 Mise en place (une fois) :
 
 1. **Schéma :** coller `supabase/migrations/001_explorer.sql` dans *Supabase > SQL Editor* et l'exécuter (rejouable).
-2. **Testeurs :** e-mails en minuscules, dans le *SQL Editor* :
+2. **Inscription sur invitation seulement :** dans *Authentication > Sign In / Providers*, désactiver
+   « Allow new users to sign up » et garder « Confirm email » actif. La page demande le lien sans créer de compte
+   (`shouldCreateUser: false`) : un e-mail non invité reçoit « This e-mail is not invited ».
+3. **Testeurs :** pour chacun, *Authentication > Users > Invite user* (le testeur confirme son e-mail par le lien
+   d'invitation), puis l'ajouter à `testers` (e-mail en minuscules) dans le *SQL Editor* :
    ```sql
    insert into public.testers (email) values ('prenom.nom@example.org') on conflict do nothing;
    ```
-3. **Auth :** *Authentication > URL Configuration* : *Site URL* et *Redirect URLs* = l'URL de la page ci-dessus.
-4. **Clé `anon` :** la reporter dans `web/config.js` (*Project Settings > API*). Sans elle, la page affiche
+4. **Auth :** *Authentication > URL Configuration* : *Site URL* = l'URL de la page ci-dessus ; *Redirect URLs* =
+   `https://mge-agilos.github.io/dg-reform-tsi/**` et, pour les essais en local, `http://localhost:8000/**`.
+5. **Clé `anon` :** la reporter dans `web/config.js` (*Project Settings > API*). Sans elle, la page affiche
    « Configuration required ».
-5. **Pages :** *Settings > Pages* du dépôt GitHub, source « GitHub Actions ». Le workflow
+6. **Pages :** *Settings > Pages* du dépôt GitHub, source « GitHub Actions ». Le workflow
    `.github/workflows/pages.yml` publie `web/` à chaque push sur `main` qui touche `web/` (ou à la main, via
    *Run workflow*).
 
@@ -484,11 +489,14 @@ dans `web/`.
 Liste de contrôle après déploiement :
 
 - un testeur reçoit le lien magique, se connecte et voit les onglets *Projects*, *CSRs* et *Anomalies* ;
-- un e-mail non autorisé voit « Access not authorised for this e-mail » ;
-- un appel REST anonyme renvoie `[]` :
+- un e-mail non invité voit « This e-mail is not invited » ; un utilisateur invité mais absent de `testers` voit
+  « Access not authorised for this e-mail » ;
+- un appel REST anonyme ne renvoie aucune donnée : une erreur 401 / *permission denied* (droits retirés à `anon`)
+  ou `[]`, les deux signifiant « pas de données » :
   ```powershell
   curl.exe "https://vxwmhsgxoomcbiukeinp.supabase.co/rest/v1/projects?select=project_id&limit=1" -H "apikey: <cle anon>"
   ```
+- l'export CSV de l'onglet *Anomalies* s'ouvre dans Excel (séparateur `;`, UTF-8 avec BOM ; 5 000 lignes au plus).
 
 Les résumés et les liens projet → CSR sont générés par IA : la page le signale et ils sont à vérifier avant usage.
 

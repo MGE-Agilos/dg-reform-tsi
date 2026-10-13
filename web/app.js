@@ -5,6 +5,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
 const PAGE_SIZE = 50;
 const CSV_LIMIT = 5000;
+const CSV_PAGE = 1000;
 
 const COUNTRIES = {
   AT: "Austria", BE: "Belgium", BG: "Bulgaria", CY: "Cyprus", CZ: "Czechia", DE: "Germany", DK: "Denmark",
@@ -45,6 +46,9 @@ let sb = null;
 let testerCache = null; // { userId, ok }
 let renderSeq = 0;
 let authError = "";
+let currentUid; // user id of the last rendered session (undefined before the first render)
+let lastViewKey = null; // route + id of the last rendered view: focus moves only when it changes
+let pendingFocus = null; // name of the filter control that triggered the render
 
 // ---------- helpers ----------
 
@@ -95,10 +99,17 @@ function yearOf(p, key) {
   return Number.isFinite(n) && n > 1900 && n < 2100 ? n : null;
 }
 
-/** ilike pattern: escape LIKE wildcards, drop characters with meaning in PostgREST filters. */
+/** ilike pattern: escape LIKE wildcards; PostgREST turns `*` into `%`, so it becomes the one-character `_`. */
 function likePattern(text) {
-  const clean = text.replace(/[\\%_]/g, "\\$&").replace(/[,()*]/g, " ").trim();
+  const clean = text.trim().replace(/[\\%_]/g, "\\$&").replace(/\*/g, "_");
   return `%${clean}%`;
+}
+
+/** Hash filter value kept only if known (allowed: object keys or array). */
+function pick(value, allowed) {
+  if (!value) return "";
+  const ok = Array.isArray(allowed) ? allowed.includes(value) : Object.hasOwn(allowed, value);
+  return ok ? value : "";
 }
 
 function countryName(code) {
@@ -184,17 +195,55 @@ function filterForm(route, fieldsHtml) {
 function bindFilters() {
   const form = $("filters");
   if (!form) return;
-  const apply = () => {
+  const apply = (control) => {
     const values = {};
     for (const [k, v] of new FormData(form)) values[k] = typeof v === "string" ? v.trim() : v;
+    pendingFocus = control?.name || null;
     setParams(form.dataset.route, values);
   };
-  form.addEventListener("submit", (e) => { e.preventDefault(); apply(); });
-  form.querySelectorAll("select, input[type=checkbox]").forEach((el) => el.addEventListener("change", apply));
+  form.addEventListener("submit", (e) => { e.preventDefault(); apply(document.activeElement); });
+  form.querySelectorAll("select, input[type=checkbox]").forEach((el) => el.addEventListener("change", () => apply(el)));
 }
 
 function view(html) {
   $("view").innerHTML = html;
+}
+
+/** After a render: heading focus when the view changed, else back to the filter control that was used. */
+function restoreFocus(viewKey) {
+  const changed = lastViewKey !== null && viewKey !== lastViewKey;
+  lastViewKey = viewKey;
+  const name = pendingFocus;
+  pendingFocus = null;
+  if (changed) {
+    $("view").querySelector("h2")?.focus();
+  } else if (name) {
+    const form = $("filters");
+    const el = form && [...form.elements].find((x) => x.name === name);
+    el?.focus();
+  }
+}
+
+/** One page of a list: build(opts) returns the filtered, ordered query. Past the end, go to the last page. */
+async function fetchPage(build, page) {
+  const res = await build({ count: "exact" }).range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
+  if (res.error && (res.error.code === "PGRST103" || res.status === 416) && page > 1) {
+    const head = await build({ count: "exact", head: true });
+    if (head.error) return head;
+    return { redirectPage: Math.max(1, Math.ceil((head.count || 0) / PAGE_SIZE)) };
+  }
+  return res;
+}
+
+function redirectToPage(route, p, n) {
+  const q = new URLSearchParams(p);
+  if (n > 1) q.set("page", String(n)); else q.delete("page");
+  const query = q.toString();
+  location.replace(`#${route}${query ? "?" + query : ""}`);
+}
+
+function heading(text) {
+  return `<h2 tabindex="-1">${esc(text)}</h2>`;
 }
 
 function loading() {
@@ -221,15 +270,9 @@ function setActiveTab(route) {
 
 // ---------- projects ----------
 
-async function renderProjects(p, seq) {
-  const page = pageOf(p);
-  const f = {
-    q: p.get("q") || "", country: p.get("country") || "", programme: p.get("programme") || "",
-    from: yearOf(p, "from"), to: yearOf(p, "to"), area: p.get("area") || "",
-    linked: p.get("linked") === "1", detail: p.get("detail") === "1",
-  };
-  let q = sb.from("projects").select("project_id,title,programme,year,countries,policy_area,detail_page,csrs", { count: "exact" })
-    .order("year", { ascending: false }).order("title").range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
+function projectsQuery(f, opts) {
+  let q = sb.from("projects").select("project_id,title,programme,year,countries,policy_area,detail_page,csrs", opts)
+    .order("year", { ascending: false }).order("title").order("project_id");
   if (f.q) q = q.ilike("title", likePattern(f.q));
   if (f.country) q = q.contains("countries", [f.country]);
   if (f.programme) q = q.eq("programme", f.programme);
@@ -238,9 +281,20 @@ async function renderProjects(p, seq) {
   if (f.area) q = q.eq("policy_area", f.area);
   if (f.linked) q = q.not("csrs", "eq", "{}");
   if (f.detail) q = q.eq("detail_page", true);
+  return q;
+}
 
-  const { data, error, count } = await q;
+async function renderProjects(p, seq) {
+  const page = pageOf(p);
+  const f = {
+    q: p.get("q") || "", country: pick(p.get("country"), COUNTRIES), programme: pick(p.get("programme"), PROGRAMMES),
+    from: yearOf(p, "from"), to: yearOf(p, "to"), area: pick(p.get("area"), POLICY_AREAS),
+    linked: p.get("linked") === "1", detail: p.get("detail") === "1",
+  };
+  const res = await fetchPage((opts) => projectsQuery(f, opts), page);
   if (stale(seq)) return;
+  if (res.redirectPage) return redirectToPage("projects", p, res.redirectPage);
+  const { data, error, count } = res;
   if (error) return showError(error, "Could not load projects");
 
   const form = filterForm("projects",
@@ -256,7 +310,7 @@ async function renderProjects(p, seq) {
     td(esc(r.programme)), td(esc(r.year), "nowrap"), td(esc(countriesText(r.countries))),
     td(esc(areaLabel(r.policy_area))), td(esc((r.csrs || []).length), "num"),
   ]);
-  view(`<h2>Projects</h2>${form}${pager("projects", p, page, count)}`
+  view(`${heading("Projects")}${form}${pager("projects", p, page, count)}`
     + table(["Title", "Programme", "Year", "Countries", "Policy area", "CSRs"], rows, "No project matches these filters.")
     + (data.length ? pager("projects", p, page, count) : ""));
   bindFilters();
@@ -296,7 +350,7 @@ async function renderProject(id, seq) {
     ? `<div class="card"><h3 class="section-label">Summary <span class="ai-note">AI-generated summary</span></h3><p class="prose">${esc(r.summary)}</p></div>`
     : "";
   const linksHtml = sorted.length ? `<ul class="link-list">${sorted.map(linkItem).join("")}</ul>` : `<p class="empty">No CSR link assessed.</p>`;
-  view(`<a class="back" href="#projects">← Projects</a><div class="card"><h2 class="detail-title">${esc(r.title)}</h2>`
+  view(`<a class="back" href="#projects">← Projects</a><div class="card"><h2 class="detail-title" tabindex="-1">${esc(r.title)}</h2>`
     + `<dl class="facts">${facts}</dl>${page}</div>${summary}`
     + `<div class="card"><h3 class="section-label">Supported CSRs (AI-assessed) <span class="muted small">${sorted.length}</span></h3>${linksHtml}</div>`);
 }
@@ -308,17 +362,22 @@ function compareCsr(a, b) {
     || (parseFloat(a.number) - parseFloat(b.number)) || String(a.number).localeCompare(String(b.number));
 }
 
-async function renderCsrs(p, seq) {
-  const page = pageOf(p);
-  const f = { country: p.get("country") || "", year: yearOf(p, "year"), q: p.get("q") || "" };
-  let q = sb.from("csrs").select("csr_id,country,year,number,title,assessment,assessment_year", { count: "exact" })
-    .order("year", { ascending: false }).order("country").order("number").range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
+function csrsQuery(f, opts) {
+  let q = sb.from("csrs").select("csr_id,country,year,number,title,assessment,assessment_year", opts)
+    .order("year", { ascending: false }).order("country").order("number").order("csr_id");
   if (f.country) q = q.eq("country", f.country);
   if (f.year) q = q.eq("year", f.year);
   if (f.q) q = q.ilike("text", likePattern(f.q));
+  return q;
+}
 
-  const { data, error, count } = await q;
+async function renderCsrs(p, seq) {
+  const page = pageOf(p);
+  const f = { country: pick(p.get("country"), COUNTRIES), year: yearOf(p, "year"), q: p.get("q") || "" };
+  const res = await fetchPage((opts) => csrsQuery(f, opts), page);
   if (stale(seq)) return;
+  if (res.redirectPage) return redirectToPage("csrs", p, res.redirectPage);
+  const { data, error, count } = res;
   if (error) return showError(error, "Could not load CSRs");
 
   const years = Object.fromEntries(CSR_YEARS.map((y) => [String(y), String(y)]));
@@ -332,7 +391,7 @@ async function renderCsrs(p, seq) {
     td(esc(r.number), "num"), td(esc(r.title), "title-cell"),
     td(r.assessment ? `${esc(r.assessment)}${r.assessment_year ? ` <span class="muted">(${esc(r.assessment_year)})</span>` : ""}` : `<span class="muted">—</span>`),
   ]);
-  view(`<h2>Country-specific recommendations</h2>${form}${pager("csrs", p, page, count)}`
+  view(`${heading("Country-specific recommendations")}${form}${pager("csrs", p, page, count)}`
     + table(["CSR", "Country", "Year", "No.", "Title", "Latest assessment"], rows, "No CSR matches these filters.")
     + (data.length ? pager("csrs", p, page, count) : ""));
   bindFilters();
@@ -376,7 +435,7 @@ async function renderCsr(id, seq) {
   const source = safeUrl(r.source_url) ? `<p class="small">${extLink(r.source_url, "ECFIN CSR database")} ↗</p>` : "";
   view(`<a class="back" href="#csrs">← CSRs</a>`
     + `<div class="card"><p class="muted small">${esc(countryName(r.country))} · ${esc(r.year)} · CSR ${esc(r.number)} · <code>${esc(r.csr_id)}</code></p>`
-    + `<h2 class="detail-title">${esc(r.title)}</h2>`
+    + `<h2 class="detail-title" tabindex="-1">${esc(r.title)}</h2>`
     + `<p><strong>${n} project${n === 1 ? "" : "s"} support${n === 1 ? "s" : ""} this CSR</strong> <span class="ai-note">AI-assessed</span></p>`
     + `<p class="prose">${esc(r.text)}</p>`
     + (areas ? `<p class="small"><span class="label">Policy areas:</span> ${esc(areas)}</p>` : "")
@@ -389,8 +448,9 @@ async function renderCsr(id, seq) {
 function anomalyFilters(p) {
   const sev = p.get("severity") || "";
   return {
-    type: p.get("type") || "", severity: Object.hasOwn(SEVERITY_OPTIONS, sev) ? sev : "", programme: p.get("programme") || "",
-    from: yearOf(p, "from"), to: yearOf(p, "to"), country: p.get("country") || "",
+    type: pick(p.get("type"), ANOMALY_TYPES), severity: pick(sev, SEVERITY_OPTIONS),
+    programme: pick(p.get("programme"), PROGRAMMES), from: yearOf(p, "from"), to: yearOf(p, "to"),
+    country: pick(p.get("country"), COUNTRIES),
   };
 }
 
@@ -409,8 +469,10 @@ function anomalyQuery(f, columns = "*", opts = {}) {
 async function renderAnomalies(p, seq) {
   const page = pageOf(p);
   const f = anomalyFilters(p);
-  const { data, error, count } = await anomalyQuery(f, "*", { count: "exact" }).range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
+  const res = await fetchPage((opts) => anomalyQuery(f, "*", opts), page);
   if (stale(seq)) return;
+  if (res.redirectPage) return redirectToPage("anomalies", p, res.redirectPage);
+  const { data, error, count } = res;
   if (error) return showError(error, "Could not load anomalies");
 
   const form = filterForm("anomalies",
@@ -425,9 +487,10 @@ async function renderAnomalies(p, seq) {
     td(esc(r.countries)), td(esc(r.detail)),
   ]);
   const order = f.severity === "all" ? "Sorted by severity (alphabetical: high, info, low, medium), then type." : "Sorted by severity, then type.";
-  view(`<h2>Publication anomalies</h2>${form}`
+  view(`${heading("Publication anomalies")}${form}`
     + `<div class="toolbar"><span class="muted small">${order}</span>`
-    + `<button type="button" class="btn btn-secondary" id="csv"${count ? "" : " disabled"}>Download CSV</button></div>`
+    + `<span class="toolbar-actions"><span id="csv-note" class="muted small" role="status"></span>`
+    + `<button type="button" class="btn btn-secondary" id="csv"${count ? "" : " disabled"}>Download CSV</button></span></div>`
     + `${pager("anomalies", p, page, count)}`
     + table(["Title", "Type", "Severity", "Programme", "Year", "Countries", "Detail"], rows, "No anomaly matches these filters.")
     + (data.length ? pager("anomalies", p, page, count) : ""));
@@ -435,8 +498,26 @@ async function renderAnomalies(p, seq) {
   $("csv").addEventListener("click", () => downloadCsv(f));
 }
 
+/** Quoted CSV cell; a leading = + - @ tab or CR gets a ' so Excel does not run it as a formula. */
 function csvCell(value) {
-  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+  let text = String(value ?? "");
+  if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+/** All matching anomalies up to CSV_LIMIT, in pages of CSV_PAGE (the PostgREST max-rows cap). */
+async function fetchAllAnomalies(f, columns) {
+  const rows = [];
+  let total = null;
+  for (let from = 0; from < CSV_LIMIT; from += CSV_PAGE) {
+    const to = Math.min(from + CSV_PAGE, CSV_LIMIT) - 1;
+    const { data, error, count } = await anomalyQuery(f, columns, from === 0 ? { count: "exact" } : {}).range(from, to);
+    if (error) return { error };
+    if (from === 0) total = count;
+    rows.push(...data);
+    if (data.length < to - from + 1) break;
+  }
+  return { rows, total: total ?? rows.length };
 }
 
 async function downloadCsv(f) {
@@ -444,11 +525,14 @@ async function downloadCsv(f) {
   button.disabled = true;
   button.textContent = "Preparing…";
   const cols = ["project_id", "title", "programme", "year", "countries", "type", "severity", "detail", "url"];
-  const { data, error } = await anomalyQuery(f, cols.join(",")).range(0, CSV_LIMIT - 1);
+  const { rows, total, error } = await fetchAllAnomalies(f, cols.join(","));
   button.disabled = false;
   button.textContent = "Download CSV";
   if (error) return showError(error, "Could not export anomalies");
-  const lines = [cols.map(csvCell).join(","), ...data.map((r) => cols.map((c) => csvCell(r[c])).join(","))];
+  $("csv-note").textContent = total > rows.length
+    ? `Export limited to the first ${rows.length.toLocaleString("en")} of ${total.toLocaleString("en")} rows.` : "";
+  // Separator ";" for Excel with Belgian/French regional settings; UTF-8 BOM and CRLF.
+  const lines = [cols.map(csvCell).join(";"), ...rows.map((r) => cols.map((c) => csvCell(r[c])).join(";"))];
   const blob = new Blob(["\uFEFF" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = Object.assign(document.createElement("a"), { href: url, download: "anomalies.csv" });
@@ -481,6 +565,7 @@ async function isTester(session) {
 
 async function route(seq) {
   const { route: r, id, params: p } = params();
+  const viewKey = ["project", "csr"].includes(r) && id ? `${r}/${id}` : (["csrs", "anomalies"].includes(r) ? r : "projects");
   setActiveTab(r);
   loading();
   try {
@@ -492,6 +577,7 @@ async function route(seq) {
   } catch (e) {
     if (!stale(seq)) showError(e, "Unexpected error");
   }
+  if (!stale(seq)) restoreFocus(viewKey);
 }
 
 async function render() {
@@ -500,6 +586,7 @@ async function render() {
   const { data, error } = await sb.auth.getSession();
   if (stale(seq)) return;
   const session = data?.session;
+  currentUid = session?.user?.id ?? null;
   showSession(session);
   if (error || !session) {
     showScreen("login");
@@ -532,9 +619,14 @@ async function sendMagicLink(event) {
   const button = event.submitter || $("login-form").querySelector("button");
   button.disabled = true;
   setLoginMessage("Sending…", false);
-  const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname } });
+  // Invitation only: no account is created here (testers are invited from the Supabase dashboard).
+  const { error } = await sb.auth.signInWithOtp({
+    email, options: { shouldCreateUser: false, emailRedirectTo: new URL("./", location.href).href },
+  });
   button.disabled = false;
-  if (error) setLoginMessage(`Could not send the link: ${error.message}`, true);
+  if (error && /signups? not allowed|user not found|not invited/i.test(error.message || "")) {
+    setLoginMessage("This e-mail is not invited. Ask the administrator for an invitation.", true);
+  } else if (error) setLoginMessage(`Could not send the link: ${error.message}`, true);
   else setLoginMessage("Check your mailbox: a sign-in link has been sent.", false);
 }
 
@@ -564,18 +656,22 @@ async function init() {
   $("login-form").addEventListener("submit", sendMagicLink);
   $("logout").addEventListener("click", async () => {
     testerCache = null;
-    await sb.auth.signOut();
-    location.hash = "projects";
-    render();
+    await sb.auth.signOut({ scope: "local" }); // SIGNED_OUT re-renders (user id changes)
+    history.replaceState(null, "", location.pathname + location.search + "#projects");
   });
   window.addEventListener("hashchange", () => {
     if (/^#?access_token=/.test(location.hash)) return; // handled by supabase-js
     render();
   });
-  // Callback must not await Supabase calls directly (auth lock): defer the render.
-  sb.auth.onAuthStateChange((event) => {
-    if (event === "SIGNED_OUT" || event === "SIGNED_IN" || event === "USER_UPDATED") testerCache = null;
-    if (event !== "INITIAL_SESSION" && event !== "TOKEN_REFRESHED") setTimeout(render, 0);
+  // Re-render only when the signed-in user changes (or is updated): SIGNED_IN is also emitted when the tab
+  // regains focus, and must not rebuild the view. The callback must not await Supabase calls (auth lock).
+  sb.auth.onAuthStateChange((event, session) => {
+    if (event === "INITIAL_SESSION") return; // covered by the first render() below
+    const uid = session?.user?.id ?? null;
+    if (uid === currentUid && event !== "USER_UPDATED") return;
+    currentUid = uid;
+    testerCache = null;
+    setTimeout(render, 0);
   });
   await render();
 }

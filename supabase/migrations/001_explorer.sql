@@ -79,6 +79,7 @@ grant select on public.projects, public.csrs, public.csr_parts, public.project_c
 revoke insert, update, delete, truncate on public.projects, public.csrs, public.csr_parts,
   public.project_csr_links, public.anomalies, public.testers from anon, authenticated;
 revoke select on public.testers from anon, authenticated;
+revoke select on public.projects, public.csrs, public.csr_parts, public.project_csr_links, public.anomalies from anon;
 
 -- Testeur = utilisateur courant dont l'e-mail CONFIRME (auth.users, pas seulement le jeton) est dans testers.
 create or replace function public.is_tester() returns boolean
@@ -104,7 +105,7 @@ begin
 end $$;
 -- testers : RLS sans regle = illisible et non modifiable par anon/authenticated (service_role seulement).
 
--- Configuration Auth recommandee : garder "Confirm email" actif ; desactiver "Allow new users to sign up" et
--- inviter les testeurs (Authentication > Users > Invite) si l'acces doit etre strictement ferme.
--- Ajouter les testeurs (e-mails en minuscules), par exemple :
+-- Configuration Auth (inscription sur invitation seulement) : garder "Confirm email" actif, desactiver
+-- "Allow new users to sign up", inviter chaque testeur (Authentication > Users > Invite user) ; la page demande le
+-- lien avec shouldCreateUser: false. Puis ajouter les testeurs (e-mails en minuscules), par exemple :
 -- insert into public.testers (email) values ('prenom.nom@example.org') on conflict do nothing;
