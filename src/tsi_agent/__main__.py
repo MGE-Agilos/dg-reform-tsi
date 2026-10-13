@@ -83,6 +83,10 @@ def main(argv: list[str] | None = None) -> int:
                           help="rapport d'anomalies de publication (CSV + Markdown), sans LLM ni réseau")
     anom.add_argument("--out", help="dossier du rapport (défaut : <output_dir>/reports)")
     anom.add_argument("--year", type=int, help="année de référence pour la gravité (défaut : année courante)")
+    sub.add_parser("csr-fetch", help="télécharger la base CSR d'ECFIN (export Qlik complet, xlsx)")
+    csrb = sub.add_parser("csr-build", help="fiches Markdown des CSR (output/csr) depuis l'export ECFIN")
+    csrb.add_argument("--year-from", type=int, default=2016)
+    csrb.add_argument("--year-to", type=int, default=2025)
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
@@ -133,6 +137,20 @@ def main(argv: list[str] | None = None) -> int:
         out = Path(args.out) if args.out else Path(settings.output_dir) / "reports"
         print(json.dumps(run_anomalies(Path(settings.output_dir), out, args.year), indent=2, ensure_ascii=False))
         print(f"Rapport : {out / 'anomalies.csv'} et {out / 'anomalies.md'}")
+        return 0
+    if args.command == "csr-fetch":
+        from tsi_agent.csr_fetch import fetch
+        print(json.dumps(fetch(Path(settings.output_dir) / "csr" / "csr_full.xlsx"), indent=2))
+        return 0
+    if args.command == "csr-build":
+        from tsi_agent.csr import build_csrs, read_rows, write_csrs
+        source = Path(settings.output_dir) / "csr" / "csr_full.xlsx"
+        if not source.exists():
+            print(f"ERREUR : {source} introuvable — lancer d'abord `python -m tsi_agent csr-fetch`", file=sys.stderr)
+            return 1
+        rows = read_rows(source)
+        written = write_csrs(build_csrs(rows, args.year_from, args.year_to), source.parent)
+        print(json.dumps({"rows": len(rows), "csr_files": written, "dir": str(source.parent)}, indent=2))
         return 0
     if args.command == "impact-rescore":
         from tsi_agent.impact import scoring

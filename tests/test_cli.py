@@ -228,3 +228,27 @@ def test_anomalies_command_writes_report(tmp_path):
     code = cli.main(["--settings", str(settings), "anomalies", "--out", str(reports), "--year", "2026"])
     assert code == 0
     assert (reports / "anomalies.csv").exists() and (reports / "anomalies.md").exists()
+
+
+def test_csr_build_command(tmp_path):
+    import openpyxl
+    from tsi_agent.csr import COLUMNS
+
+    out = tmp_path / "output"
+    (out / "csr").mkdir(parents=True)
+    wb = openpyxl.Workbook()
+    wb.active.append(list(COLUMNS))
+    wb.active.append(["France", "2023", "1", "2024 - Semester Cycle (June)", "Do X.", "Healthcare", "-", "No",
+                      "Annual", "Some Progress"])
+    wb.save(out / "csr" / "csr_full.xlsx")
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(f"output_dir: {out.as_posix()}\n", encoding="utf-8")
+    assert cli.main(["--settings", str(settings), "csr-build"]) == 0
+    assert (out / "csr" / "csr-FR-2023-1.md").exists()
+
+
+def test_csr_build_without_export_is_a_clean_error(tmp_path, capsys):
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(f"output_dir: {(tmp_path / 'output').as_posix()}\n", encoding="utf-8")
+    assert cli.main(["--settings", str(settings), "csr-build"]) == 1
+    assert "csr-fetch" in capsys.readouterr().err
