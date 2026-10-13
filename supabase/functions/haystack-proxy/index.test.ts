@@ -46,6 +46,7 @@ test("OPTIONS from an allowed origin: 204 with CORS headers", async () => {
   assert.equal(res.headers.get("Access-Control-Allow-Origin"), ORIGIN);
   assert.match(res.headers.get("Access-Control-Allow-Headers") ?? "", /authorization/);
   assert.match(res.headers.get("Access-Control-Allow-Methods") ?? "", /POST/);
+  assert.equal(res.headers.get("Access-Control-Max-Age"), "86400");
   assert.equal(f.calls.length, 0);
 });
 
@@ -145,14 +146,47 @@ test("impact with HAYSTACK_IMPACT_MODEL: that model is used", async () => {
   assert.equal(JSON.parse(String(gw.init.body)).model, "custom-impact");
 });
 
-test("Gateway 500: 502 with detail", async () => {
-  const f = fakeFetch({ gatewayStatus: 500, gatewayBody: "boom ".repeat(200) });
+test("Gateway 500: 502 without the Gateway's text (kept in the server log only)", async () => {
+  const f = fakeFetch({ gatewayStatus: 500, gatewayBody: "boom internal trace" });
   const res = await handle(post(chatBody), ENV, f.impl);
   assert.equal(res.status, 502);
-  const json = await res.json();
-  assert.equal(json.error, "Analysis service error 500");
-  assert.ok(json.detail.startsWith("boom"));
-  assert.ok(json.detail.length <= 300);
+  assert.deepEqual(await res.json(), { error: "Analysis service error 500" });
+});
+
+test("Gateway 200 with empty or blank content: 502 Empty response", async () => {
+  for (const content of ["", "   \n", null]) {
+    const f = fakeFetch({ gatewayBody: { choices: [{ message: { role: "assistant", content } }] } });
+    const res = await handle(post(chatBody), ENV, f.impl);
+    assert.equal(res.status, 502);
+    assert.deepEqual(await res.json(), { error: "Empty response from the analysis service" });
+  }
+});
+
+test("total content above 40 000 characters: 400", async () => {
+  const messages = Array.from({ length: 6 }, (_, i) => ({ role: i % 2 ? "assistant" : "user", content: "x".repeat(7000) }));
+  messages.push({ role: "user", content: "q" });
+  const f = fakeFetch();
+  const res = await handle(post({ service: "chat", messages }), ENV, f.impl);
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /40000 characters in total/);
+  assert.equal(f.gatewayCalls().length, 0);
+});
+
+test("SUPABASE_ANON_KEY missing: the caller's apikey header is used, else 500", async () => {
+  const env = { ...ENV };
+  delete env.SUPABASE_ANON_KEY;
+  const f = fakeFetch();
+  const req = post(chatBody);
+  req.headers.set("apikey", "anon-from-page");
+  const res = await handle(req, env, f.impl);
+  assert.equal(res.status, 200);
+  assert.equal(new Headers(f.calls[0].init.headers).get("apikey"), "anon-from-page");
+
+  const f2 = fakeFetch();
+  const res2 = await handle(post(chatBody), env, f2.impl);
+  assert.equal(res2.status, 500);
+  assert.deepEqual(await res2.json(), { error: "SUPABASE_ANON_KEY not configured" });
+  assert.equal(f2.calls.length, 0);
 });
 
 test("Gateway 200 with an unexpected shape: 502", async () => {
@@ -184,4 +218,5 @@ test("gatewayRequest and extractAnswer", () => {
   assert.equal(JSON.parse(String(init.body)).model, "tsi-impact");
   assert.equal(extractAnswer({ choices: [{ message: { content: "hi" } }] }), "hi");
   assert.throws(() => extractAnswer({ choices: [] }), (e: unknown) => e instanceof HttpError && e.status === 502);
+  assert.throws(() => extractAnswer({ choices: [{ message: { content: " " } }] }), /Empty response/);
 });

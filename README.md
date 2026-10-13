@@ -514,17 +514,21 @@ Mise en service (une fois) :
    l'endpoint compatible OpenAI (`.../chat/completions`) et, si l'exemple de la page l'indique, la valeur `model`.
 2. **Fonction.** Dans Supabase, *Edge Functions > Deploy a new function > Via Editor* : nommer la fonction
    `haystack-proxy`, coller le contenu de `supabase/functions/haystack-proxy/index.ts` (fichier unique, sans import),
-   garder *Verify JWT* activé, puis *Deploy*.
+   puis *Deploy*. Après le déploiement, vérifier dans les réglages de la fonction (*Edge Functions > haystack-proxy >
+   Settings*) que *Verify JWT* est activé. Sur un projet qui utilise les nouvelles clés de signature JWT, Supabase peut
+   conseiller de désactiver « Verify JWT with legacy secret » : c'est sans risque ici, car la fonction vérifie
+   elle-même l'appelant en appelant `is_tester()` avec son jeton (sans jeton valide de testeur : 403).
 3. **Secrets.** Dans *Edge Functions > Secrets*, renseigner `HAYSTACK_API_KEY` (clé API du workspace `tsi-reform`),
    `HAYSTACK_CHAT_URL`, `HAYSTACK_IMPACT_URL`, et si besoin `HAYSTACK_CHAT_MODEL` et `HAYSTACK_IMPACT_MODEL` (par défaut
    `tsi-chat` et `tsi-impact`). `ALLOWED_ORIGINS` est facultatif (par défaut : `https://mge-agilos.github.io` et
    `http://localhost:8000`, séparés par des virgules). `SUPABASE_URL` et `SUPABASE_ANON_KEY` sont fournies
-   automatiquement.
+   automatiquement (à défaut de `SUPABASE_ANON_KEY`, la fonction reprend l'en-tête `apikey` envoyé par la page, qui est
+   cette même clé publique).
 4. **Test.** Avec le jeton de session d'un testeur (par exemple `access_token` de la session, visible dans les outils de
    développement du navigateur une fois connecté) :
 
    ```bash
-   curl -X POST <SUPABASE_URL>/functions/v1/haystack-proxy -H "Authorization: Bearer <jeton de session testeur>" -H "apikey: <anon>" -H "Content-Type: application/json" -d '{"service":"chat","messages":[{"role":"user","content":"How many TSI projects does Greece have?"}]}'
+   curl -X POST <SUPABASE_URL>/functions/v1/haystack-proxy -H "Authorization: Bearer <jeton de session testeur>" -H "apikey: <cle anon de web/config.js>" -H "Content-Type: application/json" -d '{"service":"chat","messages":[{"role":"user","content":"How many TSI projects does Greece have?"}]}'
    ```
 
    Réponse attendue : `{"answer": "..."}`. Un utilisateur non testeur reçoit 403 `Access not authorised`.
@@ -534,12 +538,20 @@ Mise en service (une fois) :
 
 Comportement de la fonction : 400 si la requête est invalide (service `chat` ou `impact`, 1 à 20 messages, rôles
 `user`/`assistant`, 8 000 caractères au plus par message, dernier message de l'utilisateur), 401 sans jeton, 403 si
-l'appelant n'est pas testeur, 502 si la Gateway répond en erreur (avec un extrait de 300 caractères de sa réponse),
-504 au-delà de 140 s. Elle ne journalise que le service, le statut et la durée, jamais les questions ni les clés.
+l'appelant n'est pas testeur, 400 aussi au-delà de 40 000 caractères au total, 502 si la Gateway répond en erreur
+ou par une réponse vide, 504 au-delà de 130 s (la page abandonne à 160 s). Elle ne journalise que le service, le
+statut et la durée, le statut de `is_tester` en cas d'échec et un extrait (300 caractères) du message d'erreur de la
+Gateway, qui n'est pas renvoyé au navigateur ; jamais les questions ni les clés.
+
+**Pas de limite de débit :** l'accès est réservé aux testeurs, le temps de l'essai ; chaque appel consomme du LLM (et
+SearchApi pour l'impact). Des quotas par testeur seraient à ajouter avant une ouverture plus large.
 
 Côté page : la conversation est gardée dans l'onglet du navigateur (`sessionStorage`, 20 messages au plus) et effacée
-à la déconnexion ; le dernier rapport d'impact de chaque projet aussi. Les réponses Markdown passent par `marked`
-puis `DOMPurify` (versions figées, jsDelivr) ; si ces bibliothèques ne se chargent pas, le texte brut est affiché.
+à la déconnexion ; le dernier rapport d'impact de chaque projet aussi. Ces données portent l'identifiant de
+l'utilisateur et sont ignorées pour un autre compte. Les réponses Markdown passent par `marked` puis `DOMPurify`
+(versions figées, jsDelivr) avec une liste blanche de balises (texte, listes, titres, tableaux, code ; ni image, ni
+style, ni formulaire) et des liens limités à `https:`, `mailto:` et `#` ; si ces bibliothèques ne se chargent pas, le
+texte brut est affiché.
 
 Liste de contrôle après déploiement :
 

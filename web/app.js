@@ -6,7 +6,11 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY, PROXY_URL } from "./config.js";
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
 const MARKED_JS = "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
 const PURIFY_JS = "https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.es.mjs";
-const PROXY_TIMEOUT_MS = 150000;
+const PROXY_TIMEOUT_MS = 160000; // above the proxy's 130 s Gateway timeout, so its 504 arrives first
+const MD_TAGS = ["p", "a", "ul", "ol", "li", "strong", "em", "b", "i", "code", "pre", "blockquote",
+  "h1", "h2", "h3", "h4", "table", "thead", "tbody", "tr", "th", "td", "hr", "br"];
+const MD_ATTRS = ["href", "title", "target", "rel"];
+const MD_URI = /^(?:https:|mailto:|#)/i;
 const MAX_CONTENT = 8000; // per message, as enforced by haystack-proxy
 const CHAT_MAX = 20; // messages kept (and sent), oldest dropped first
 const CHAT_KEY = "tsi-chat-history";
@@ -604,7 +608,7 @@ function loadMarkdown() {
       .then(([m, p]) => {
         const purify = p.default;
         purify.addHook("afterSanitizeAttributes", (node) => {
-          if (node.tagName === "A" && node.hasAttribute("href")) {
+          if (node.tagName === "A" && node.hasAttribute("href") && !node.getAttribute("href").startsWith("#")) {
             node.setAttribute("target", "_blank");
             node.setAttribute("rel", "noopener noreferrer");
           }
@@ -618,12 +622,15 @@ function loadMarkdown() {
   return markdownLoading;
 }
 
-/** Markdown to sanitised HTML; plain escaped text when the libraries are not available. */
+/** Markdown to HTML sanitised against an allow-list (no img/style/form/id/class; links https:, mailto: or #);
+ * plain escaped text when the libraries are not available. */
 function md(text) {
   const plain = `<p class="prose">${esc(text)}</p>`;
   if (!markdown) return plain;
   try {
-    return markdown.purify.sanitize(markdown.marked.parse(String(text ?? ""), { async: false }));
+    return markdown.purify.sanitize(markdown.marked.parse(String(text ?? ""), { async: false }), {
+      ALLOWED_TAGS: MD_TAGS, ALLOWED_ATTR: MD_ATTRS, ALLOWED_URI_REGEXP: MD_URI, ALLOW_DATA_ATTR: false,
+    });
   } catch {
     return plain;
   }
@@ -659,7 +666,7 @@ async function callProxy(service, messages) {
     body = await res.json().catch(() => ({}));
   } catch (e) {
     throw new Error(e?.name === "AbortError"
-      ? "No answer after 150 seconds. Please try again."
+      ? "No answer after 160 seconds. Please try again."
       : "Could not reach the analysis service. Check your connection and try again.");
   } finally {
     clearTimeout(timer);
@@ -670,13 +677,15 @@ async function callProxy(service, messages) {
 
 // ---------- chat ----------
 
+const usable = (m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim();
+
+/** Conversation of the signed-in user: a stored conversation of another user id is ignored. */
 function getChat() {
   if (!chatHistory) {
     try {
-      const saved = JSON.parse(storageGet(CHAT_KEY) || "[]");
-      chatHistory = (Array.isArray(saved) ? saved : [])
-        .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-        .slice(-CHAT_MAX);
+      const saved = JSON.parse(storageGet(CHAT_KEY) || "null");
+      const ok = saved && saved.uid && saved.uid === currentUid && Array.isArray(saved.messages);
+      chatHistory = ok ? saved.messages.filter(usable).slice(-CHAT_MAX) : [];
     } catch {
       chatHistory = [];
     }
@@ -685,8 +694,8 @@ function getChat() {
 }
 
 function setChat(history) {
-  chatHistory = history.slice(-CHAT_MAX);
-  storageSet(CHAT_KEY, JSON.stringify(chatHistory));
+  chatHistory = history.filter(usable).slice(-CHAT_MAX);
+  storageSet(CHAT_KEY, JSON.stringify({ uid: currentUid, messages: chatHistory }));
 }
 
 function bubble(m) {
@@ -732,7 +741,7 @@ async function sendChat(text) {
     const input = $("chat-input");
     if (input) input.value = "";
   }
-  const messages = getChat().map((m) => ({ role: m.role, content: m.content.slice(0, MAX_CONTENT) }));
+  const messages = getChat().filter(usable).map((m) => ({ role: m.role, content: m.content.slice(0, MAX_CONTENT) }));
   if (!messages.length || messages[messages.length - 1].role !== "user") return;
   const epoch = aiEpoch;
   chatError = "";
@@ -797,7 +806,7 @@ function loadReport(id) {
   if (impactReports.has(id)) return impactReports.get(id);
   try {
     const saved = JSON.parse(storageGet(IMPACT_KEY + id) || "null");
-    if (saved && typeof saved.report === "string") {
+    if (saved && saved.uid && saved.uid === currentUid && typeof saved.report === "string" && saved.report.trim()) {
       impactReports.set(id, saved);
       return saved;
     }
@@ -806,7 +815,7 @@ function loadReport(id) {
 }
 
 function saveReport(id, report) {
-  const entry = { report, at: new Date().toISOString() };
+  const entry = { uid: currentUid, report, at: new Date().toISOString() };
   impactReports.set(id, entry);
   storageSet(IMPACT_KEY + id, JSON.stringify(entry));
 }
