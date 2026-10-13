@@ -200,8 +200,8 @@ def main(argv: list[str] | None = None) -> int:
             url, key = credentials()
             rows = build_rows(Path(settings.output_dir))
             summary = push(rows, url, key, backup=Path(settings.output_dir) / "state" / "supabase_rows.json")
-        except (SyncError, httpx.HTTPError) as exc:
-            print(f"ERREUR : {exc}", file=sys.stderr)
+        except (SyncError, httpx.HTTPError, OSError) as exc:
+            print(f"ERREUR : {exc} — relancer supabase-sync (les tables peuvent etre partielles)", file=sys.stderr)
             return 1
         print(json.dumps(summary, indent=2))
         return 0

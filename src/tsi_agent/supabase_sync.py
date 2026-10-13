@@ -41,7 +41,14 @@ def _project_row(fm: dict, body: str) -> dict[str, Any]:
             "countries": list(fm.get("countries") or []), "policy_area": fm.get("policy_area"),
             "results": fm.get("results"), "detail_page": bool(fm.get("detail_page")),
             "url": urls[0] if urls else None, "summary": summary[:SUMMARY_CHARS] if summary else None,
-            "deliverables": int(fm.get("deliverables") or 0), "csrs": list(csrs) if isinstance(csrs, list) else []}
+            "deliverables": _int(fm.get("deliverables")), "csrs": list(csrs) if isinstance(csrs, list) else []}
+
+
+def _int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def build_rows(output_dir: Path, current_year: int | None = None) -> dict[str, list[dict[str, Any]]]:
@@ -68,7 +75,7 @@ def build_rows(output_dir: Path, current_year: int | None = None) -> dict[str, l
                               "assessment": part.assessment})
     project_ids = {p["project_id"] for p in projects}
     part_ids = {p["part_id"] for p in part_rows}
-    links = []
+    links, seen = [], set()
     for path in sorted((output_dir / "csr_links").glob("*.json")):
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
@@ -77,7 +84,9 @@ def build_rows(output_dir: Path, current_year: int | None = None) -> dict[str, l
         if not isinstance(record, dict) or record.get("status") != "ok" or record.get("project_id") not in project_ids:
             continue
         for link in record.get("links") or []:
-            if link.get("csr_id") in part_ids:
+            pair = (record["project_id"], link.get("csr_id"))
+            if link.get("csr_id") in part_ids and link.get("level") in ("direct", "partial") and pair not in seen:
+                seen.add(pair)
                 links.append({"project_id": record["project_id"], "part_id": link["csr_id"],
                               "level": link.get("level"), "rationale": link.get("rationale") or "",
                               "basis": record.get("basis") or "full_text"})
@@ -111,7 +120,8 @@ def credentials(dotenv: Path = Path(".env")) -> tuple[str, str]:
     url = os.environ.get("SUPABASE_URL") or file.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_KEY") or file.get("SUPABASE_SERVICE_KEY")
     if not url or not key:
-        raise SyncError("SUPABASE_URL et SUPABASE_SERVICE_KEY requis (environnement ou .env, jamais dans git)")
+        raise SyncError(f"SUPABASE_URL et SUPABASE_SERVICE_KEY requis (environnement ou {dotenv.resolve()}, "
+                        "jamais dans git)")
     return url.rstrip("/"), key
 
 
@@ -122,12 +132,16 @@ def _check(resp: httpx.Response, table: str, action: str) -> None:
 
 def push(rows: dict[str, list[dict[str, Any]]], url: str, key: str, *, client: httpx.Client | None = None,
          backup: Path | None = None) -> dict[str, int]:
-    """Remplace le contenu des tables (sauf testers) ; sauvegarde JSON des lignes avant toute suppression."""
+    """Remplace le contenu des tables (sauf testers) ; sauvegarde JSON des lignes avant toute suppression.
+
+    Non transactionnel : en cas d'echec, les tables peuvent rester vides ou partielles -> relancer supabase-sync.
+    """
     if backup is not None:
         backup.parent.mkdir(parents=True, exist_ok=True)
         backup.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
-    headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json",
-               "Prefer": "return=minimal"}
+    headers = {"apikey": key, "Content-Type": "application/json", "Prefer": "return=minimal"}
+    if not key.startswith("sb_secret_"):  # cle JWT historique ; les cles sb_secret_ passent par apikey seul
+        headers["Authorization"] = f"Bearer {key}"
     own = client is None
     client = client or httpx.Client(timeout=60)
     try:

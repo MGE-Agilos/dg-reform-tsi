@@ -72,12 +72,24 @@ create index if not exists links_part_idx on public.project_csr_links (part_id);
 create index if not exists csrs_country_year_idx on public.csrs (country, year);
 create index if not exists anomalies_type_idx on public.anomalies (type, severity);
 
+-- Droits explicites (independants des privileges par defaut du projet) : lecture pour authenticated (filtree par
+-- RLS), aucune ecriture pour anon/authenticated ; service_role garde tous les droits.
+grant select on public.projects, public.csrs, public.csr_parts, public.project_csr_links, public.anomalies
+  to authenticated;
+revoke insert, update, delete, truncate on public.projects, public.csrs, public.csr_parts,
+  public.project_csr_links, public.anomalies, public.testers from anon, authenticated;
+revoke select on public.testers from anon, authenticated;
+
+-- Testeur = utilisateur courant dont l'e-mail CONFIRME (auth.users, pas seulement le jeton) est dans testers.
 create or replace function public.is_tester() returns boolean
 language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.testers t where t.email = lower(coalesce(auth.jwt() ->> 'email', '')));
+  select exists (
+    select 1 from auth.users u join public.testers t on t.email = lower(u.email)
+    where u.id = auth.uid() and u.email_confirmed_at is not null);
 $$;
 revoke all on function public.is_tester() from public;
-grant execute on function public.is_tester() to anon, authenticated;
+revoke execute on function public.is_tester() from anon;
+grant execute on function public.is_tester() to authenticated;
 
 do $$
 declare t text;
@@ -87,10 +99,12 @@ begin
   end loop;
   foreach t in array array['projects', 'csrs', 'csr_parts', 'project_csr_links', 'anomalies'] loop
     execute format('drop policy if exists tester_read on public.%I', t);
-    execute format('create policy tester_read on public.%I for select to authenticated using (public.is_tester())', t);
+    execute format('create policy tester_read on public.%I for select to authenticated using ((select public.is_tester()))', t);
   end loop;
 end $$;
 -- testers : RLS sans regle = illisible et non modifiable par anon/authenticated (service_role seulement).
 
+-- Configuration Auth recommandee : garder "Confirm email" actif ; desactiver "Allow new users to sign up" et
+-- inviter les testeurs (Authentication > Users > Invite) si l'acces doit etre strictement ferme.
 -- Ajouter les testeurs (e-mails en minuscules), par exemple :
 -- insert into public.testers (email) values ('prenom.nom@example.org') on conflict do nothing;

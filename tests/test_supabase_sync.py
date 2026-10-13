@@ -156,3 +156,20 @@ def test_credentials_from_env_or_dotenv(tmp_path, monkeypatch):
     assert credentials(tmp_path / ".env") == ("https://abc.supabase.co", "k1")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "k2")
     assert credentials(tmp_path / ".env") == ("https://abc.supabase.co", "k2")
+
+
+def test_links_skip_bad_level_and_duplicates(tmp_path):
+    out = make_output(tmp_path)
+    (out / "csr_links" / "p1.json").write_text(json.dumps({"project_id": "p1", "status": "ok", "basis": "full_text",
+        "links": [{"csr_id": "csr-HR-2022-1.1", "level": "direct", "rationale": "R."},
+                  {"csr_id": "csr-HR-2022-1.1", "level": "partial", "rationale": "dup"},
+                  {"csr_id": "csr-HR-2022-1.2", "level": "weak", "rationale": "bad"}]}), encoding="utf-8")
+    links = build_rows(out, current_year=2026)["project_csr_links"]
+    assert [(l["part_id"], l["level"]) for l in links] == [("csr-HR-2022-1.1", "direct")]
+
+
+def test_new_format_secret_key_uses_apikey_only(tmp_path):
+    calls, client = recorder()
+    push({t: [] for t in ("projects", "csrs", "csr_parts", "project_csr_links", "anomalies")},
+         "https://abc.supabase.co", "sb_secret_xyz", client=client, backup=tmp_path / "r.json")
+    assert calls and all(c[3] == "sb_secret_xyz" and c[4] is None for c in calls)
