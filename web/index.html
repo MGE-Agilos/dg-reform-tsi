@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>TSI × CSR Explorer</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <div class="brand">
+        <h1><a href="#projects">TSI × CSR Explorer</a></h1>
+        <p class="subtitle">DG REFORM technical support projects and EU country-specific recommendations</p>
+      </div>
+      <div class="session" id="session" hidden>
+        <span id="session-email" class="session-email"></span>
+        <button type="button" id="logout" class="btn btn-secondary">Sign out</button>
+      </div>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs" aria-label="Sections" hidden>
+    <div class="wrap tabs-inner">
+      <a href="#projects" data-tab="projects">Projects</a>
+      <a href="#csrs" data-tab="csrs">CSRs</a>
+      <a href="#anomalies" data-tab="anomalies">Anomalies</a>
+    </div>
+  </nav>
+
+  <div class="wrap">
+    <section id="config-error" class="card notice notice-error" hidden>
+      <h2>Configuration required</h2>
+      <p>The Supabase <code>anon</code> key has not been set in <code>config.js</code>. Ask the administrator to configure the explorer.</p>
+    </section>
+
+    <section id="login" class="card login" hidden aria-labelledby="login-title">
+      <h2 id="login-title">Sign in</h2>
+      <p class="muted">Access is restricted to registered testers. Enter your e-mail address to receive a sign-in link.</p>
+      <form id="login-form" class="login-form">
+        <label for="login-email">E-mail address</label>
+        <div class="login-row">
+          <input type="email" id="login-email" name="email" autocomplete="email" required placeholder="name@example.org">
+          <button type="submit" class="btn">Send magic link</button>
+        </div>
+      </form>
+      <p id="login-message" class="message" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="denied" class="card notice notice-error" hidden>
+      <h2>Access not authorised for this e-mail</h2>
+      <p>Your account is signed in but is not on the testers list. Sign out and use an authorised address, or contact the administrator.</p>
+    </section>
+
+    <main id="view" aria-live="polite"></main>
+  </div>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <p>AI-generated summaries and project–CSR links: verify before use. Sources: reforms-investments.ec.europa.eu, ECFIN CSR database.</p>
+    </div>
+  </footer>
+</body>
+</html>
