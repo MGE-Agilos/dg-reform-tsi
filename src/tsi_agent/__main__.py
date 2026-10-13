@@ -139,8 +139,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Rapport : {out / 'anomalies.csv'} et {out / 'anomalies.md'}")
         return 0
     if args.command == "csr-fetch":
+        import httpx
+        import websockets.exceptions
         from tsi_agent.csr_fetch import fetch
-        print(json.dumps(fetch(Path(settings.output_dir) / "csr" / "csr_full.xlsx"), indent=2))
+        try:
+            result = fetch(Path(settings.output_dir) / "csr" / "csr_full.xlsx")
+        except (httpx.HTTPError, websockets.exceptions.WebSocketException, OSError, TimeoutError, RuntimeError,
+                KeyError) as exc:
+            print(f"ERREUR : csr-fetch a échoué : {exc!r}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, indent=2))
         return 0
     if args.command == "csr-build":
         from tsi_agent.csr import build_csrs, read_rows, write_csrs

@@ -228,7 +228,7 @@ class CsrSearch(ProjectSearch):
         t0 = time.monotonic()
         embedding = self.text_embedder.run(text=query)["embedding"]
         filters = build_filters(year_from, year_to, doc_type="csr", countries=countries)
-        docs = self.retriever.run(query_embedding=embedding, filters=filters, top_k=self.top_k * 3)["documents"]
+        docs = self.retriever.run(query_embedding=embedding, filters=filters, top_k=self.top_k * 5)["documents"]
         best: list[Document] = []
         seen: set[str | None] = set()
         for d in docs:  # un passage par CSR (le mieux classe) : introduction et sous-parties ont les memes mots

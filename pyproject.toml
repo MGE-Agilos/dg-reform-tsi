@@ -17,7 +17,7 @@ dependencies = [
     "pyyaml>=6",
     "trafilatura>=1.12",
     "openpyxl>=3.1",
-    "websockets>=13",
+    "websockets>=14",
 ]
 
 [project.optional-dependencies]

@@ -252,3 +252,16 @@ def test_csr_build_without_export_is_a_clean_error(tmp_path, capsys):
     settings.write_text(f"output_dir: {(tmp_path / 'output').as_posix()}\n", encoding="utf-8")
     assert cli.main(["--settings", str(settings), "csr-build"]) == 1
     assert "csr-fetch" in capsys.readouterr().err
+
+
+def test_csr_fetch_failure_is_a_clean_error(tmp_path, capsys, monkeypatch):
+    from tsi_agent import csr_fetch
+
+    def boom(out):
+        raise RuntimeError("Qlik: no qlik-csrf-token header")
+
+    monkeypatch.setattr(csr_fetch, "fetch", boom)
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(f"output_dir: {(tmp_path / 'output').as_posix()}\n", encoding="utf-8")
+    assert cli.main(["--settings", str(settings), "csr-fetch"]) == 1
+    assert "csr-fetch a échoué" in capsys.readouterr().err

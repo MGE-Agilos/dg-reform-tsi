@@ -42,7 +42,7 @@ def _number_key(number: str) -> tuple[int, ...]:
 
 def _latest(assessments: list[tuple[int, str]]) -> tuple[int, str] | None:
     """Derniere evaluation reelle : "Not Assessed" ne masque pas une evaluation anterieure."""
-    real = [e for e in assessments if e[1] != NOT_ASSESSED]
+    real = [e for e in assessments if e[1].lower() != NOT_ASSESSED.lower()]
     return real[-1] if real else (assessments[-1] if assessments else None)
 
 
@@ -150,8 +150,9 @@ def _subpart_line(p: Part) -> str:
     facts = []
     if p.policy_areas:
         facts.append(f"Policy areas: {'; '.join(p.policy_areas)}")
-    if p.assessment:
-        facts.append(f"Assessment: {p.assessment}")
+    if p.latest_assessment:
+        year, value = p.latest_assessment
+        facts.append(f"Assessment ({year}): {value}")
     return f"- {p.part_id}: {p.text}" + (f" ({' · '.join(facts)})" if facts else "")
 
 
@@ -164,6 +165,8 @@ def render_csr(csr: Csr) -> str:
         lines += ["", f"Policy areas: {'; '.join(csr.policy_areas)}."]
     if csr.assessments:
         last_year, last = csr.latest_assessment
+        # dans l'introduction aussi : search_csrs ne garde souvent que ce morceau par CSR
+        lines += ["", f"Latest assessment ({last_year}): {last}."]
         history = "; ".join(f"{y}: {a}" for y, a in csr.assessments)
         lines += ["", "## Assessment", "", f"Latest assessment ({last_year}): {last}. History: {history}."]
     if csr.subparts:

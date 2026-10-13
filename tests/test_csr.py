@@ -59,9 +59,11 @@ def test_render_front_matter_and_sections():
     assert fm["assessment"] == "Some Progress" and fm["policy_areas"] == ["Healthcare", "Long-term care", "Pension systems and active ageing"]
     assert fm["source_url"].startswith("https://")
     assert body.startswith("# France 2023 CSR 1\n\nImprove the sustainability")
+    intro = body.split("## Assessment")[0]
+    assert "Long-term care; Pension systems and active ageing.\n\nLatest assessment (2025): Some Progress.\n" in intro
     assert "## Assessment\n\nLatest assessment (2025): Some Progress. History: 2024: Limited Progress; " \
            "2025: Some Progress." in body
-    assert "- csr-FR-2023-1.2: and of healthcare. (Policy areas: Healthcare · Assessment: Substantial Progress)" in body
+    assert "- csr-FR-2023-1.2: and of healthcare. (Policy areas: Healthcare · Assessment (2025): Substantial Progress)" in body
     assert "- csr-FR-2023-1.1: Improve the sustainability of the pension system (Policy areas: Pension systems " \
            "and active ageing)" in body
 
@@ -76,6 +78,7 @@ def test_write_replaces_old_files_and_chunks_as_csr(tmp_path):
     assert (out / "csr_full.xlsx").read_bytes() == b"keep"
     docs = chunk_file("csr/csr-FR-2023-1.md", (out / "csr-FR-2023-1.md").read_text(encoding="utf-8"))
     assert [d.meta["section"] for d in docs] == ["Introduction", "Assessment", "Sub-parts"]
+    assert "Latest assessment (2025): Some Progress." in docs[0].content
     meta = docs[0].meta
     assert meta["doc_type"] == "csr" and meta["doc_id"] == "csr-FR-2023-1" and meta["countries"] == ["FR"]
     assert meta["year"] == 2023 and meta["policy_area"] is None and meta["programme"] is None
