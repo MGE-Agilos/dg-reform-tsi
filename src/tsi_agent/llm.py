@@ -192,8 +192,8 @@ _INLINE_COMMENT = re.compile(r"\s+#.*$")
 def read_dotenv(path: Path) -> dict[str, str]:
     """Lignes KEY=VALUE d'un fichier .env (BOM tolere, commentaires ignores, prefixe `export` tolere).
 
-    Une valeur entre guillemets identiques est prise telle quelle (sans les guillemets) ; sinon un commentaire
-    ` # ...` en fin de ligne est retire.
+    Une valeur entre guillemets identiques est prise telle quelle (sans les guillemets) ; sinon un guillemet ouvrant
+    isole et un commentaire ` # ...` en fin de ligne sont retires.
     """
     values: dict[str, str] = {}
     if not path.exists():
@@ -208,7 +208,9 @@ def read_dotenv(path: Path) -> dict[str, str]:
         if close > 0:
             value = value[1:close]  # KEY="v" # commentaire -> v
         else:
-            value = _INLINE_COMMENT.sub("", value)
+            if value[:1] in ("'", '"'):
+                value = value[1:]  # guillemet ouvrant sans fermeture : retire (KEY="abc -> abc)
+            value = _INLINE_COMMENT.sub("", value).strip()
         values[key.strip().removeprefix("export ").strip()] = value
     return values
 

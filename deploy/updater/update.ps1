@@ -41,6 +41,9 @@ function Test-KeyAvailable([string]$name) {
 function Invoke-Step([string]$label, [string[]]$stepArgs) {
     Write-Host ""
     Write-Host ("=== " + $label + " : python -m tsi_agent " + ($stepArgs -join " ") + "  (" + (Get-Date -Format "HH:mm:ss") + ")")
+    # Local a la fonction : une ligne sur stderr (journal, avertissement) n'arrete pas le script (ISE notamment) ;
+    # le resultat est juge sur le code de sortie.
+    $ErrorActionPreference = "Continue"
     & $python -m tsi_agent --settings $settingsPath @stepArgs | Out-Host
     return $LASTEXITCODE
 }
@@ -48,8 +51,7 @@ function Invoke-Step([string]$label, [string[]]$stepArgs) {
 function Stop-Update([string]$message, [int]$code) {
     Write-Host ""
     Write-Host ("ARRET : " + $message) -ForegroundColor Red
-    Pop-Location
-    exit $code
+    exit $code   # le bloc finally principal fait Pop-Location
 }
 
 # Etape a LLM en echec. Code 2 : erreur fatale, dont "ERREUR (fournisseur LLM)" (cle, URL ou modele refuses,
@@ -89,63 +91,61 @@ try {
         Write-Host "Conseil : lancer d'abord .venv\Scripts\python.exe -m tsi_agent llm-check (controle de la qualite" -ForegroundColor Yellow
         Write-Host "de l'extraction avec ce fournisseur, quelques centimes) ; la mise a jour continue sans." -ForegroundColor Yellow
     }
-} catch {
-    Pop-Location
-    throw
-}
 
-$start = Get-Date
+    $start = Get-Date
 
-$code = Invoke-Step "1/7 projets" @("run")
-if ($code -eq 1) { Stop-Update "quota du LLM atteint pendant run : relancer plus tard (le run reprend ou il s'etait arrete)" 1 }
-if ($code -ne 0) { Stop-LlmStep "run" $code }
+    $code = Invoke-Step "1/7 projets" @("run")
+    if ($code -eq 1) { Stop-Update "run : quota atteint ou cle/modele refuses en cours de route : voir logs\runs\ (relancer plus tard : le run reprend ou il s'etait arrete)" 1 }
+    if ($code -ne 0) { Stop-LlmStep "run" $code }
 
-if ($SkipDeliverables) {
-    Write-Host "=== 2/7 livrables : ignore (-SkipDeliverables)"
-} else {
-    $code = Invoke-Step "2/7 livrables" @("deliverables")
-    if ($code -eq 1) { Stop-Update "quota du LLM atteint pendant deliverables : relancer plus tard (reprise automatique)" 1 }
-    if ($code -ne 0) { Stop-LlmStep "deliverables" $code }
-}
-
-$csrQuota = $false
-if ($SkipCsr) {
-    Write-Host "=== 3-5/7 CSR : ignore (-SkipCsr)"
-} else {
-    $code = Invoke-Step "3/7 base CSR (ECFIN)" @("csr-fetch")
-    if ($code -ne 0) { Stop-Update "csr-fetch a echoue (code $code) : site ECFIN indisponible ? relancer plus tard, ou -SkipCsr" $code }
-    $code = Invoke-Step "4/7 fiches CSR" @("csr-build")
-    if ($code -ne 0) { Stop-Update "csr-build a echoue (code $code)" $code }
-    $linkArgs = @("csr-link")
-    if ($DetailOnly) { $linkArgs += "--detail-only" }
-    $code = Invoke-Step "5/7 liens projet -> CSR" $linkArgs
-    if ($code -eq 1) {
-        $csrQuota = $true
-        Write-Host "csr-link : quota du LLM atteint, liens partiels. Relancer plus tard (cache et reprise) ; on continue." -ForegroundColor Yellow
-    } elseif ($code -ne 0) {
-        Stop-LlmStep "csr-link" $code
+    if ($SkipDeliverables) {
+        Write-Host "=== 2/7 livrables : ignore (-SkipDeliverables)"
+    } else {
+        $code = Invoke-Step "2/7 livrables" @("deliverables")
+        if ($code -eq 1) { Stop-Update "deliverables : quota atteint ou cle/modele refuses en cours de route : voir logs\runs\ (relancer plus tard : reprise automatique)" 1 }
+        if ($code -ne 0) { Stop-LlmStep "deliverables" $code }
     }
+
+    $csrQuota = $false
+    if ($SkipCsr) {
+        Write-Host "=== 3-5/7 CSR : ignore (-SkipCsr)"
+    } else {
+        $code = Invoke-Step "3/7 base CSR (ECFIN)" @("csr-fetch")
+        if ($code -ne 0) { Stop-Update "csr-fetch a echoue (code $code) : site ECFIN indisponible ? relancer plus tard, ou -SkipCsr" $code }
+        $code = Invoke-Step "4/7 fiches CSR" @("csr-build")
+        if ($code -ne 0) { Stop-Update "csr-build a echoue (code $code)" $code }
+        $linkArgs = @("csr-link")
+        if ($DetailOnly) { $linkArgs += "--detail-only" }
+        $code = Invoke-Step "5/7 liens projet -> CSR" $linkArgs
+        if ($code -eq 1) {
+            $csrQuota = $true
+            Write-Host "csr-link : quota atteint ou cle/modele refuses en cours de route : voir logs\runs\. Liens partiels, relancer plus tard (cache et reprise) ; on continue." -ForegroundColor Yellow
+        } elseif ($code -ne 0) {
+            Stop-LlmStep "csr-link" $code
+        }
+    }
+
+    $code = Invoke-Step "6/7 anomalies" @("anomalies")
+    if ($code -ne 0) { Stop-Update "anomalies a echoue (code $code)" $code }
+
+    $code = Invoke-Step "7/7 export de production" @("prod-export")
+    if ($code -ne 0) { Stop-Update "prod-export a echoue (code $code) : types de metadonnees incoherents ou fichier > 10 Mo, voir le JSON ci-dessus" $code }
+
+    $build = Join-Path $root "deploy\prod\build"
+    $manifestPath = Join-Path $build "manifest.json"
+    $manifest = Get-Content $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json
+    $elapsed = (Get-Date) - $start
+    Write-Host ""
+    Write-Host ("Termine en {0:hh\:mm\:ss}." -f $elapsed) -ForegroundColor Green
+    Write-Host "Fichiers a importer : $(Join-Path $build 'files')"
+    Write-Host "Manifeste           : $manifestPath"
+    Write-Host "  $($manifest.files) fichiers, $($manifest.chunks) morceaux attendus dans l'index"
+    foreach ($p in $manifest.files_by_type.PSObject.Properties) {
+        Write-Host ("  {0,-12} {1,6} fichiers  {2,7} morceaux" -f $p.Name, $p.Value, $manifest.chunks_by_type.($p.Name))
+    }
+    if ($csrQuota) { Write-Host "Attention : liens CSR partiels (quota) ; relancer csr-link puis prod-export plus tard." -ForegroundColor Yellow }
+    Write-Host "Suite : import dans Haystack (deploy\prod\GUIDE.md, ou deploy\prod\upload.ps1)."
+} finally {
+    Pop-Location
 }
-
-$code = Invoke-Step "6/7 anomalies" @("anomalies")
-if ($code -ne 0) { Stop-Update "anomalies a echoue (code $code)" $code }
-
-$code = Invoke-Step "7/7 export de production" @("prod-export")
-if ($code -ne 0) { Stop-Update "prod-export a echoue (code $code) : types de metadonnees incoherents ou fichier > 10 Mo, voir le JSON ci-dessus" $code }
-
-$build = Join-Path $root "deploy\prod\build"
-$manifestPath = Join-Path $build "manifest.json"
-$manifest = Get-Content $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json
-$elapsed = (Get-Date) - $start
-Write-Host ""
-Write-Host ("Termine en {0:hh\:mm\:ss}." -f $elapsed) -ForegroundColor Green
-Write-Host "Fichiers a importer : $(Join-Path $build 'files')"
-Write-Host "Manifeste           : $manifestPath"
-Write-Host "  $($manifest.files) fichiers, $($manifest.chunks) morceaux attendus dans l'index"
-foreach ($p in $manifest.files_by_type.PSObject.Properties) {
-    Write-Host ("  {0,-12} {1,6} fichiers  {2,7} morceaux" -f $p.Name, $p.Value, $manifest.chunks_by_type.($p.Name))
-}
-if ($csrQuota) { Write-Host "Attention : liens CSR partiels (quota) ; relancer csr-link puis prod-export plus tard." -ForegroundColor Yellow }
-Write-Host "Suite : import dans Haystack (deploy\prod\GUIDE.md, ou deploy\prod\upload.ps1)."
-Pop-Location
 exit 0

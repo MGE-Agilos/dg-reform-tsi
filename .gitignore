@@ -12,3 +12,4 @@ deploy/prod/build/
 deploy/release/
 deploy/frontend-local/config.local.js
 deploy/frontend-local/dist/
+deploy/*.zip

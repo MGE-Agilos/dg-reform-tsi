@@ -30,6 +30,8 @@ if ((Test-Path $output) -and (Get-ChildItem $output -Force | Select-Object -Firs
 $temp = Join-Path ([IO.Path]::GetTempPath()) ("tsi-state-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $temp | Out-Null
 try {
+    # gh ecrit sa progression sur stderr : pas d'arret sur stderr (ISE), le resultat est juge sur le code de sortie.
+    $ErrorActionPreference = "Continue"
     if ($Tag) {
         Write-Host "Telechargement de $asset (release $Tag, $Repo)..."
         gh release download $Tag -p $asset -R $Repo -D $temp
@@ -37,7 +39,9 @@ try {
         Write-Host "Telechargement de $asset (derniere release, $Repo)..."
         gh release download -p $asset -R $Repo -D $temp
     }
-    if ($LASTEXITCODE -ne 0) { throw "gh release download a echoue (code $LASTEXITCODE) : tag inconnu, ou gh auth login a faire ?" }
+    $ghCode = $LASTEXITCODE
+    $ErrorActionPreference = "Stop"
+    if ($ghCode -ne 0) { throw "gh release download a echoue (code $ghCode) : tag inconnu, ou gh auth login a faire ?" }
     $zip = Join-Path $temp $asset
     if (-not (Test-Path $zip)) { throw "$asset absent de la release" }
     $mb = [math]::Round((Get-Item $zip).Length / 1MB, 1)

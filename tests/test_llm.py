@@ -194,9 +194,10 @@ def test_load_dotenv_never_overwrites(tmp_path, monkeypatch):
 def test_read_dotenv_bom_quotes_and_inline_comments(tmp_path):
     env = tmp_path / ".env"
     env.write_bytes("﻿KEY_A=abc # commentaire\nKEY_B='x # pas un commentaire'\nKEY_C=\"mixed'\n"
-                    "KEY_D=\"q\"\nKEY_E=a#b\n".encode("utf-8"))
-    assert read_dotenv(env) == {"KEY_A": "abc", "KEY_B": "x # pas un commentaire", "KEY_C": "\"mixed'",
-                                "KEY_D": "q", "KEY_E": "a#b"}
+                    "KEY_D=\"q\"\nKEY_E=a#b\nKEY_F=\"sk-abc\nKEY_G='sk-def # commentaire\n".encode("utf-8"))
+    # guillemet ouvrant sans fermeture : retire (KEY_C, KEY_F, KEY_G)
+    assert read_dotenv(env) == {"KEY_A": "abc", "KEY_B": "x # pas un commentaire", "KEY_C": "mixed'",
+                                "KEY_D": "q", "KEY_E": "a#b", "KEY_F": "sk-abc", "KEY_G": "sk-def"}
 
 
 def test_check_provider(monkeypatch):

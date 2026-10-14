@@ -20,8 +20,8 @@ $web = Join-Path $root "web"
 $dist = Join-Path $here "dist"
 $localConfig = Join-Path $here "config.local.js"
 
-if (-not (Test-Path $localConfig)) {
-    throw "config.local.js introuvable dans $here : copier config.local.example.js vers config.local.js puis l'adapter"
+if (-not (Test-Path $localConfig -PathType Leaf)) {
+    throw "config.local.js introuvable (ou dossier, cree par Docker) dans $here : copier config.local.example.js vers config.local.js puis l'adapter"
 }
 if (-not (Test-Path (Join-Path $web "index.html"))) { throw "dossier web introuvable : $web" }
 

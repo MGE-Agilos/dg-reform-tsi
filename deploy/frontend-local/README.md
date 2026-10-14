@@ -37,7 +37,16 @@ docker compose down         # arrêt
 Pour un autre port, changer `"8080:80"` dans `docker-compose.yml`. Après une modification de `web/` ou de
 `config.local.js`, recharger la page suffit (fichiers montés, `config.js` jamais mis en cache).
 
+Créer `config.local.js` **avant** `docker compose up` : si le fichier manque, Docker crée à sa place un **dossier**
+`config.local.js` vide et la page ne trouve pas sa configuration. Dans ce cas : `docker compose down`, supprimer ce
+dossier, copier l'exemple, relancer.
+
 **Sans Docker** (Python 3 suffit, celui de `.venv` s'il existe) :
+
+Dans la console PowerShell (pas ISE), autoriser d'abord les scripts dans la fenêtre :
+`Set-ExecutionPolicy -Scope Process Bypass` (ou lancer `powershell -ExecutionPolicy Bypass -File
+.\deploy\frontend-local\serve.ps1`). Dépôt récupéré en ZIP : `Get-ChildItem -Recurse -Filter *.ps1 | Unblock-File`
+une fois.
 
 ```powershell
 .\deploy\frontend-local\serve.ps1                    # http://localhost:8000/
@@ -61,6 +70,10 @@ Sans ces réglages, la connexion ou les onglets *Chat* et *Impact* échouent.
    remplace la liste par défaut), par exemple :
    `https://mge-agilos.github.io,http://localhost:8000,http://localhost:8080`. Une origine est le schéma, l'hôte et le
    port, sans chemin ni `/` final.
+
+`http://localhost:8000` et `http://127.0.0.1:8000` sont deux origines différentes pour le navigateur et pour
+Supabase : ouvrir la page à l'adresse affichée par le script (`http://localhost:<port>/`), celle qui est déclarée
+ci-dessus, et pas une autre écriture de la même machine.
 
 ## 4. Sur un vrai serveur
 

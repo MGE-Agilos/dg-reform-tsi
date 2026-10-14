@@ -6,7 +6,8 @@ la passerelle **EC GPT** de la Commission ou l'API **OpenAI**. Le résultat est 
 dans Haystack Enterprise.
 
 Aucune connaissance de Python n'est nécessaire : il suffit de copier les commandes dans **PowerShell**, depuis le
-dossier du dépôt.
+dossier du dépôt. Utiliser la console PowerShell normale (menu Démarrer, « Windows PowerShell » ou « Terminal »), pas
+**PowerShell ISE**, qui traite les messages de progression des outils comme des erreurs.
 
 ## Installation (une fois)
 
@@ -57,8 +58,13 @@ dossier du dépôt.
 6. **Récupérer l'état actuel des données** (projets déjà extraits, publications, CSR, liens) depuis la dernière
    release du dépôt, pour ne pas tout refaire :
    ```powershell
+   Set-ExecutionPolicy -Scope Process Bypass    # autorise les scripts .ps1 dans cette fenêtre seulement
    .\deploy\updater\restore-state.ps1
    ```
+   La première ligne est à refaire dans chaque nouvelle fenêtre PowerShell avant de lancer un script `.ps1` (sinon :
+   « l'exécution de scripts est désactivée sur ce système »). Autre façon, sans changer la politique :
+   `powershell -ExecutionPolicy Bypass -File .\deploy\updater\restore-state.ps1`. Si le dépôt a été récupéré en ZIP
+   plutôt que par `git clone`, débloquer les scripts une fois : `Get-ChildItem -Recurse -Filter *.ps1 | Unblock-File`.
    Option `-Tag data-AAAA-MM-JJ` pour une release précise. Si `output\` existe déjà, le script refuse de continuer
    sans `-Force` (les fichiers du même nom sont alors remplacés, les autres gardés).
 
@@ -95,15 +101,16 @@ dossier du dépôt.
 
 9. **Importer dans Haystack Enterprise**, au choix :
    - par l'interface : suivre [deploy/prod/GUIDE.md](../prod/GUIDE.md), avec les fichiers de
-     `deploy\prod\build\files` à la place du zip de la release ;
+     `deploy\prod\build\files` à la place du zip de la release (4 lots avec leurs métadonnées) ;
    - par le SDK (recommandé : garde les métadonnées de chaque fichier) : `deploy\prod\upload.ps1`. Il lit
      `API_KEY`, `API_URL` et `DEFAULT_WORKSPACE_NAME` dans la session PowerShell. Pour les prendre dans `.env` :
      ```powershell
      Get-Content .env | Where-Object { $_ -match '^\s*(API_KEY|API_URL|DEFAULT_WORKSPACE_NAME)\s*=\s*(.+)$' } | ForEach-Object { Set-Item "env:$($Matches[1])" $Matches[2].Trim() }
      .\deploy\prod\upload.ps1
      ```
-     (`pip install haystack-enterprise-sdk` au préalable, de préférence dans un autre environnement Python ; voir
-     [deploy/prod/README.md](../prod/README.md), étape 2.)
+     Le SDK s'installe dans son propre environnement Python, à activer avant `upload.ps1` (commandes exactes dans
+     [deploy/prod/GUIDE.md](../prod/GUIDE.md), « Poste préparé »). Pour supprimer les documents disparus du corpus :
+     `deploy\prod\obsolete-files.ps1` (GUIDE, étape 2).
 
 10. **Facultatif : publier une release de données**, si vous avez les droits d'écriture sur le dépôt. Les collègues
     récupèrent alors cet état avec `restore-state.ps1`, et le déploiement par l'interface part de cette release :
@@ -168,7 +175,8 @@ tard ») et va jusqu'à `prod-export` : les liens déjà faits sont gardés.
 | `llm-check` : « aucune page detail … dans le cache » | lancer d'abord un `run` (étape 7). |
 | `restore-state.ps1` : `gh` introuvable ou non connecté | installer GitHub CLI et lancer `gh auth login` (étape 1). |
 | `Python du projet introuvable` | l'environnement `.venv` n'est pas créé dans le dossier du dépôt : étape 3. |
-| Scripts bloqués (« l'exécution de scripts est désactivée ») | lancer une fois `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, ou `powershell -ExecutionPolicy Bypass -File .\deploy\updater\update.ps1`. |
+| Scripts bloqués (« l'exécution de scripts est désactivée ») | `Set-ExecutionPolicy -Scope Process Bypass` dans la fenêtre (étape 6), ou `powershell -ExecutionPolicy Bypass -File .\deploy\updater\update.ps1` ; dépôt récupéré en ZIP : `Unblock-File` (étape 6). |
+| Le script s'arrête sur un message de progression en rouge | lancé depuis PowerShell ISE : utiliser la console PowerShell normale. |
 
 Ne jamais lancer deux commandes de mise à jour en même temps sur le même dossier (`run`, `deliverables` et
 `csr-link` écrivent dans `output\`).

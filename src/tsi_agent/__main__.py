@@ -31,6 +31,7 @@ def _uses_llm(args: argparse.Namespace) -> bool:
         return not args.refresh_metadata
     if args.command == "csr-link":
         return not args.sample
+    # run --dry-run garde la verification : l'arbitre du sitemap (SitemapMergeJudge) appelle le LLM meme en dry-run.
     return args.command in ("run", "llm-check")
 
 
