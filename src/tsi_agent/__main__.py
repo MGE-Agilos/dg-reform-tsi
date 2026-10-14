@@ -7,7 +7,7 @@ import sys
 import traceback
 from pathlib import Path
 
-from tsi_agent.config import load_settings, load_sources
+from tsi_agent.config import Settings, load_settings, load_sources
 from tsi_agent.countries import COUNTRIES
 from tsi_agent.deliverables_pipeline import build_deliverables_pipeline
 from tsi_agent.index_pipeline import build_index_pipeline
@@ -23,6 +23,31 @@ def _countries(value: str) -> list[str]:
     if unknown:
         raise argparse.ArgumentTypeError(f"codes pays inconnus : {', '.join(unknown)}")
     return isos
+
+
+def _uses_llm(args: argparse.Namespace) -> bool:
+    """Commandes de mise a jour qui appellent le fournisseur LLM configure (hors modes sans LLM)."""
+    if args.command == "deliverables":
+        return not args.refresh_metadata
+    if args.command == "csr-link":
+        return not args.sample
+    return args.command in ("run", "llm-check")
+
+
+def _check_llm(settings: Settings) -> bool:
+    """Fournisseur verifie avant tout travail (cle ; en mode openai, un appel minimal) : message clair sinon."""
+    from tsi_agent import llm
+    from tsi_agent.components.claude_cli import LLMCallError
+    try:
+        llm.check_provider(settings)
+        if settings.llm_provider == "openai":
+            result = llm.ping(settings)
+            print(f"Fournisseur LLM : {result.get('model')} ({result.get('model_returned') or '-'}) OK",
+                  file=sys.stderr)
+    except (ValueError, LLMCallError) as exc:  # LLMCallError couvre LLMQuotaExceeded et LLMConfigError
+        print(f"ERREUR (fournisseur LLM) : {exc}", file=sys.stderr)
+        return False
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -122,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"fichier introuvable : {args.sources}")
     settings = load_settings(args.settings)
     sources = load_sources(args.sources)
+    if _uses_llm(args) and not _check_llm(settings):
+        return 2
     if args.command == "export-yaml":
         try:
             if args.deliverables:

@@ -27,6 +27,8 @@ EXCLUDED_DIRS = ("vectors", "reports")
 EXCLUDED_SUFFIXES = (".tmp", ".part")
 GUIDE_URL = f"https://github.com/{DEFAULT_REPO}/blob/main/deploy/prod/GUIDE.md"
 _DATED_TAG = re.compile(r"^data-(\d{4}-\d{2}-\d{2})$")
+_VALID_TAG = re.compile(r"^[A-Za-z0-9._-]+$")
+TARGET_BRANCH = "main"
 
 
 class ReleaseError(RuntimeError):
@@ -35,6 +37,12 @@ class ReleaseError(RuntimeError):
 
 def default_tag(today: date | None = None) -> str:
     return f"data-{(today or date.today()).isoformat()}"
+
+
+def _check_tag(tag: str) -> None:
+    if not _VALID_TAG.match(tag or "") or tag.startswith("-"):
+        raise ReleaseError(f"tag invalide : {tag!r} (lettres, chiffres, '.', '_' et '-' seulement, "
+                           "ex. data-2026-10-14)")
 
 
 def _check_manifest(prod_build_dir: Path) -> tuple[dict[str, Any], list[Path]]:
@@ -48,6 +56,9 @@ def _check_manifest(prod_build_dir: Path) -> tuple[dict[str, Any], list[Path]]:
     if manifest.get("meta_type_problems"):
         raise ReleaseError(f"meta_type_problems non vide dans {path} : {manifest['meta_type_problems']} "
                            "(corriger puis relancer prod-export)")
+    if manifest.get("files_over_10mb"):
+        raise ReleaseError(f"fichier de plus de 10 Mo dans l'export ({manifest.get('largest_file')}) : refuse par la "
+                           "plateforme, corriger puis relancer prod-export")
     files = sorted(p for p in (prod_build_dir / "files").glob("tsi-*") if p.is_file())
     md = [p for p in files if p.name.endswith(".md")]
     if len(md) != manifest.get("files"):
@@ -70,10 +81,14 @@ def _state_files(output_dir: Path) -> list[tuple[Path, str]]:
 
 def _zip(target: Path, entries: list[tuple[Path, str]]) -> None:
     tmp = target.with_name(target.name + ".part")
-    with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as z:
-        for path, arcname in entries:
-            z.write(path, arcname)
-    tmp.replace(target)
+    try:
+        with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+            for path, arcname in entries:
+                z.write(path, arcname)
+        tmp.replace(target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _notes(tag: str, day: date, manifest: dict[str, Any]) -> str:
@@ -107,6 +122,7 @@ Détail : deploy/prod/GUIDE.md ({GUIDE_URL}).
 def build_release(output_dir: Path, prod_build_dir: Path, out_root: Path, tag: str, *,
                   today: date | None = None) -> dict[str, Any]:
     """Prepare `out_root/<tag>/` (zips, manifeste, NOTES.md) ; erreur claire si l'export de prod est incoherent."""
+    _check_tag(tag)
     output_dir, prod_build_dir = Path(output_dir), Path(prod_build_dir)
     manifest, prod_files = _check_manifest(prod_build_dir)
     if not output_dir.is_dir():
@@ -134,6 +150,7 @@ def _gh(cmd: list[str]) -> subprocess.CompletedProcess:
 
 def publish(tag: str, release_dir: Path, repo: str | None = None, *, title_date: str | None = None) -> dict[str, Any]:
     """`gh release create <tag> <fichiers> --title ... --notes-file NOTES.md` ; refuse un tag existant."""
+    _check_tag(tag)
     release_dir = Path(release_dir)
     missing = [n for n in (*ASSETS, NOTES) if not (release_dir / n).exists()]
     if missing:
@@ -146,7 +163,8 @@ def publish(tag: str, release_dir: Path, repo: str | None = None, *, title_date:
     match = _DATED_TAG.match(tag)
     label = title_date or (match.group(1) if match else date.today().isoformat())
     cmd = ["gh", "release", "create", tag, *(str(release_dir / n) for n in ASSETS),
-           "--title", f"Données TSI {label}", "--notes-file", str(release_dir / NOTES), *repo_args]
+           "--title", f"Données TSI {label}", "--notes-file", str(release_dir / NOTES),
+           "--target", TARGET_BRANCH, *repo_args]
     proc = _gh(cmd)
     if proc.returncode != 0:
         raise ReleaseError(f"gh release create a échoué (code {proc.returncode}) : "

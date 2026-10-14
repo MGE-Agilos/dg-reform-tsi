@@ -112,7 +112,7 @@ def test_publish_calls_gh_release_create(tree, monkeypatch):
     assert create == ["gh", "release", "create", "data-2026-10-14", str(rel / "tsi-prod-files.zip"),
                       str(rel / "manifest.json"), str(rel / "tsi-output-state.zip"),
                       "--title", "Données TSI 2026-10-14", "--notes-file", str(rel / "NOTES.md"),
-                      "-R", "MGE-Agilos/dg-reform-tsi"]
+                      "--target", "main", "-R", "MGE-Agilos/dg-reform-tsi"]
     assert result["url"] == "https://github.com/o/r/releases/tag/x"
 
 
@@ -166,6 +166,37 @@ def test_cli_release_data(tree, tmp_path, monkeypatch, capsys):
     (build / "manifest.json").unlink()
     assert cli.main([*base, "--tag", "data-y"]) == 1
     assert "prod-export" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("tag", ["", "data 2026", "../x", "a;b", "--draft", "-x"])
+def test_invalid_tags_are_refused(tree, tag, monkeypatch):
+    out, build, root = tree
+    with pytest.raises(release.ReleaseError, match="tag"):
+        release.build_release(out, build, root, tag)
+    fake = FakeRun()
+    monkeypatch.setattr(release.subprocess, "run", fake)
+    with pytest.raises(release.ReleaseError, match="tag"):
+        release.publish(tag, root / "whatever")
+    assert fake.calls == []
+
+
+def test_files_over_10mb_are_an_error(tree):
+    out, build, root = tree
+    (build / "manifest.json").write_text(json.dumps({**MANIFEST, "files_over_10mb": True}), encoding="utf-8")
+    with pytest.raises(release.ReleaseError, match="10"):
+        release.build_release(out, build, root, "t")
+
+
+def test_failed_zip_leaves_no_part_file(tree, monkeypatch):
+    out, build, root = tree
+
+    def boom(self, *a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(release.zipfile.ZipFile, "write", boom)
+    with pytest.raises(OSError, match="disk full"):
+        release.build_release(out, build, root, "t")
+    assert list((root / "t").glob("*.part")) == []
 
 
 def test_default_tag():

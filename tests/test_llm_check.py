@@ -124,6 +124,8 @@ def test_cli_llm_check_passes_the_settings_and_n(setup, monkeypatch, tmp_path, c
     monkeypatch.setattr(llm_check, "run_check", fake_run_check)
     settings_file = tmp_path / "settings.yaml"
     settings_file.write_text(f"output_dir: {out.as_posix()}\nllm_provider: openai\n", encoding="utf-8")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setattr("tsi_agent.llm.ping", lambda s: {"model": "openai/gpt-5.1"})
     assert cli.main(["--settings", str(settings_file), "llm-check", "--n", "5"]) == 0
     assert seen == {"n": 5, "provider": "openai"}
     assert "r.md" in capsys.readouterr().out

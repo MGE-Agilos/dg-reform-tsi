@@ -42,6 +42,9 @@ dossier du dépôt.
    Ils choisissent `llm_provider: openai`, la passerelle EC GPT (`openai_base_url`) et le modèle `gpt-5.1`. Pour
    l'API OpenAI publique, vider la ligne `openai_base_url:`. Variante sans copie : ajouter
    `--settings deploy\updater\settings.updater.yaml` à chaque commande, et `-Settings ...` à `update.ps1`.
+   Deux réglages facultatifs : `openai_max_retries` (nouvelles tentatives du client en cas d'erreur réseau, de 429
+   ou de 5xx, 2 par défaut) et `openai_max_completion_tokens` (plafond des tokens de sortie, raisonnement compris ;
+   vide par défaut, sans plafond).
 
 5. **Clé du LLM.** Copier le modèle de fichier de clés, puis l'ouvrir dans le Bloc-notes :
    ```powershell
@@ -122,7 +125,14 @@ dossier du dépôt.
 | 7 | `prod-export` | écrit un fichier par projet, programme, publication et CSR, avec ses métadonnées, dans `deploy\prod\build\files`, et le manifeste | non |
 
 Codes de sortie : `0` terminé ; `1` quota du LLM atteint (le run suivant reprend où il s'était arrêté) ; `2` erreur
-inattendue (détail dans `logs\runs\`). Pour `csr-link` seulement, le script continue sur un quota (« relancer plus
+fatale (détail dans le message `ERREUR` et dans `logs\runs\`).
+
+**Vérification du LLM avant tout travail.** `run`, `deliverables`, `csr-link` et `llm-check` vérifient d'abord le
+fournisseur : réglage `llm_provider` connu, clé présente et, en mode `openai`, un tout petit appel de test. Une clé,
+une URL (`openai_base_url`) ou un modèle (`openai_model`) refusés arrêtent donc la commande **tout de suite**, avec
+le message `ERREUR (fournisseur LLM) : ...` et le code `2`, sans rien traiter ; `update.ps1` s'arrête alors et
+rappelle quoi corriger. Si la clé ou le modèle sont refusés en cours de route (401, 403, 404), le lot s'arrête
+comme sur un quota (code `1`) et le journal précise qu'il s'agit d'une erreur de configuration. Pour `csr-link` seulement, le script continue sur un quota (« relancer plus
 tard ») et va jusqu'à `prod-export` : les liens déjà faits sont gardés.
 
 ## Durées et coûts
@@ -147,8 +157,10 @@ tard ») et va jusqu'à `prod-export` : les liens déjà faits sont gardés.
 | Message | Cause et solution |
 |---|---|
 | `cle OPENAI_API_KEY absente` (update.ps1) | `.env` absent de la racine du dépôt, ou ligne `OPENAI_API_KEY=` vide : étape 5. |
-| Erreurs d'authentification (401) dans le journal | clé invalide ou expirée, ou clé OpenAI utilisée avec l'URL EC GPT (et inversement) : vérifier `.env` et `openai_base_url`. |
-| Arrêt avec le code 1, « quota » | limite de débit ou de budget de la clé atteinte : relancer plus tard, la reprise est automatique. |
+| `ERREUR (fournisseur LLM) : cle API absente` (code 2) | `.env` absent de la racine du dépôt, ou ligne `OPENAI_API_KEY=` vide : étape 5. |
+| `ERREUR (fournisseur LLM) : erreur de configuration ...` (code 2), ou 401, 403, 404 dans le journal | clé invalide ou expirée, clé OpenAI utilisée avec l'URL EC GPT (et inversement), URL ou nom de modèle erronés : vérifier `.env`, `openai_base_url` et `openai_model`. |
+| `reponse tronquee (finish_reason=length)` | la réponse a atteint `openai_max_completion_tokens` : augmenter ce réglage (par exemple 16000) ou le vider. |
+| Arrêt avec le code 1, « quota » | limite de débit ou de budget de la clé atteinte : relancer plus tard, la reprise est automatique (`openai_max_retries` règle les nouvelles tentatives immédiates). |
 | Délai dépassé (timeout) sur des publications | passerelle lente : augmenter `openai_timeout_s` (ou `deliverables_llm_timeout_s`) dans les réglages, puis relancer. |
 | HTTP 429 du site de la Commission | normal : l'agent ralentit tout seul. Ne pas lancer deux mises à jour en même temps. |
 | `csr-fetch a echoue` | site ECFIN indisponible : relancer plus tard, ou `update.ps1 -SkipCsr`. |

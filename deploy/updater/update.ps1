@@ -52,6 +52,16 @@ function Stop-Update([string]$message, [int]$code) {
     exit $code
 }
 
+# Etape a LLM en echec. Code 2 : erreur fatale, dont "ERREUR (fournisseur LLM)" (cle, URL ou modele refuses,
+# verifies avant tout travail) : rien n'a ete traite, corriger .env ou les reglages openai_* puis relancer.
+function Stop-LlmStep([string]$step, [int]$code) {
+    if ($code -eq 2) {
+        Stop-Update ($step + " a echoue (code 2) : voir le message ERREUR ci-dessus. Si c'est 'ERREUR (fournisseur LLM)', " +
+                     "corriger la cle (.env) ou openai_base_url / openai_model dans les reglages, puis relancer") 2
+    }
+    Stop-Update ($step + " a echoue (code " + $code + ") : voir logs\runs\") $code
+}
+
 # Chemin des reglages : relatif au dossier courant s'il y existe, sinon a la racine du depot.
 if (Test-Path $Settings) { $settingsPath = (Resolve-Path $Settings).Path } else { $settingsPath = Join-Path $root $Settings }
 if (-not (Test-Path $python)) {
@@ -88,14 +98,14 @@ $start = Get-Date
 
 $code = Invoke-Step "1/7 projets" @("run")
 if ($code -eq 1) { Stop-Update "quota du LLM atteint pendant run : relancer plus tard (le run reprend ou il s'etait arrete)" 1 }
-if ($code -ne 0) { Stop-Update "run a echoue (code $code) : voir logs\runs\" $code }
+if ($code -ne 0) { Stop-LlmStep "run" $code }
 
 if ($SkipDeliverables) {
     Write-Host "=== 2/7 livrables : ignore (-SkipDeliverables)"
 } else {
     $code = Invoke-Step "2/7 livrables" @("deliverables")
     if ($code -eq 1) { Stop-Update "quota du LLM atteint pendant deliverables : relancer plus tard (reprise automatique)" 1 }
-    if ($code -ne 0) { Stop-Update "deliverables a echoue (code $code) : voir logs\runs\" $code }
+    if ($code -ne 0) { Stop-LlmStep "deliverables" $code }
 }
 
 $csrQuota = $false
@@ -113,7 +123,7 @@ if ($SkipCsr) {
         $csrQuota = $true
         Write-Host "csr-link : quota du LLM atteint, liens partiels. Relancer plus tard (cache et reprise) ; on continue." -ForegroundColor Yellow
     } elseif ($code -ne 0) {
-        Stop-Update "csr-link a echoue (code $code)" $code
+        Stop-LlmStep "csr-link" $code
     }
 }
 

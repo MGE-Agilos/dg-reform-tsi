@@ -17,6 +17,7 @@ import httpx
 from tsi_agent.anomalies import detect, load_csr_links, load_projects, load_publications
 from tsi_agent.chunking import INTRO, SUMMARY, split_sections
 from tsi_agent.csr import build_csrs, read_rows
+from tsi_agent.llm import read_dotenv
 from tsi_agent.render import parse_front_matter
 
 TABLES = ("projects", "csrs", "csr_parts", "project_csr_links", "anomalies")
@@ -101,22 +102,9 @@ class SyncError(RuntimeError):
     pass
 
 
-def _dotenv(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if not path.exists():
-        return values
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip().removeprefix("export ").strip()] = value.strip().strip("'\"")
-    return values
-
-
 def credentials(dotenv: Path = Path(".env")) -> tuple[str, str]:
     """(url, cle service_role) : variables d'environnement, sinon `.env` ; erreur claire si absentes."""
-    file = _dotenv(dotenv)
+    file = read_dotenv(dotenv)
     url = os.environ.get("SUPABASE_URL") or file.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_KEY") or file.get("SUPABASE_SERVICE_KEY")
     if not url or not key:

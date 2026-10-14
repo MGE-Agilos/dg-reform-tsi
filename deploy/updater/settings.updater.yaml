@@ -18,6 +18,9 @@ openai_base_url: https://api.tech.ec.europa.eu/ecgpt/v1   # passerelle EC GPT ; 
 openai_api_key_env: OPENAI_API_KEY   # variable d'environnement (ou ligne de .env) qui contient la cle
 openai_model: gpt-5.1        # modele de la passerelle (ou d'OpenAI) ; --model des commandes est ignore dans ce mode
 openai_timeout_s: 300        # delai minimal d'un appel en mode openai
+openai_max_retries: 2        # nouvelles tentatives du client OpenAI (erreurs reseau, 429, 5xx)
+openai_max_completion_tokens:   # plafond de tokens de sortie (raisonnement compris) ; vide = aucun.
+                                # Si un appel echoue avec "reponse tronquee", mettre par ex. 16000.
 
 # Couts affiches dans les journaux ($ par million de tokens, par prefixe du modele `openai/<openai_model>`).
 # Prix public OpenAI de gpt-5.1 : 1,25 $ en entree, 10 $ en sortie. Avec EC GPT la facturation est interne
