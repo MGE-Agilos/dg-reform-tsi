@@ -6,7 +6,6 @@ from haystack import Pipeline
 
 from tsi_agent.components import ProjectChunker, ProjectFileLoader, VectorLayerWriter
 from tsi_agent.config import Settings
-from tsi_agent.qdrant_local import open_store
 
 
 def default_embedder(settings: Settings) -> Any:
@@ -28,6 +27,7 @@ def embedder_id(embedder: Any) -> str:
 def build_index_pipeline(settings: Settings, embedder: Any = None) -> Pipeline:
     embedder = embedder if embedder is not None else default_embedder(settings)
     eid = embedder_id(embedder)
+    from tsi_agent.qdrant_local import open_store  # qdrant : extra [local], importe a l'usage (run, deliverables sans)
     store = open_store(settings.vectors_dir, settings.embedding_dim)
     p = Pipeline()
     p.add_component("loader", ProjectFileLoader(output_dir=settings.output_dir, vectors_dir=settings.vectors_dir,
