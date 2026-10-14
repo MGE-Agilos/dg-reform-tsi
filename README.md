@@ -7,6 +7,20 @@ régulièrement : il ne traite que les projets nouveaux ou modifiés.
 
 Design : [docs/superpowers/specs/2026-09-30-tsi-extraction-agent-design.md](docs/superpowers/specs/2026-09-30-tsi-extraction-agent-design.md)
 
+## Démarrer
+
+| Parcours | Guide |
+|---|---|
+| **Déployer en PROD sur Haystack Enterprise** (fichiers de données, index, pipelines) | [deploy/prod/GUIDE.md](deploy/prod/GUIDE.md) (ordre des opérations) et [deploy/prod/README.md](deploy/prod/README.md) (détail) |
+| **Mettre à jour les données (PC)** : nouveaux projets, publications, CSR et liens, avec EC GPT ou OpenAI | [deploy/updater/README.md](deploy/updater/README.md) |
+| **Explorateur web** : GitHub Pages ou serveur local | <https://mge-agilos.github.io/dg-reform-tsi/> et [deploy/frontend-local/README.md](deploy/frontend-local/README.md) |
+
+**Dernières données :** [Releases du dépôt](https://github.com/MGE-Agilos/dg-reform-tsi/releases) (tags
+`data-AAAA-MM-JJ` : fichiers à téléverser, manifeste et état de `output/`, publiés par
+`python -m tsi_agent release-data --publish`).
+
+La suite de ce document décrit l'agent lui-même (installation pour le développement, sources, sorties, chatbot local).
+
 ## Installation
 
 ```powershell
@@ -15,7 +29,9 @@ python -m venv .venv
 ```
 
 Pour l'exécution locale, le CLI `claude` doit être installé et connecté à une souscription Claude
-(`claude --version`). Aucune clé API n'est nécessaire.
+(`claude --version`). Aucune clé API n'est nécessaire. Variante sans CLI Claude pour les étapes de mise à jour
+(`run`, `deliverables`, `csr-link`) : `llm_provider: openai` dans `config/settings.yaml`, avec une clé EC GPT ou
+OpenAI dans `.env` (voir [deploy/updater/README.md](deploy/updater/README.md) et `llm-check`).
 
 ## Utilisation
 

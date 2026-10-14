@@ -11,6 +11,15 @@ from tsi_agent.http import FetchError, FetchResult
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _no_dotenv(monkeypatch):
+    """La CLI charge `.env` au demarrage : pas dans les tests (le .env du depot fuirait dans os.environ)."""
+    import tsi_agent.__main__ as cli
+    import tsi_agent.llm as llm
+    monkeypatch.setattr(cli, "load_dotenv", lambda *a, **k: {})
+    monkeypatch.setattr(llm, "load_dotenv", lambda *a, **k: {})
+
+
 def fixture_bytes(name: str) -> bytes:
     return (FIXTURES / name).read_bytes()
 

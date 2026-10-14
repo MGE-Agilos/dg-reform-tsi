@@ -1,0 +1,15 @@
+# Explorateur web (web/) servi par nginx, avec la configuration locale a la place de web/config.js.
+#   cd deploy\frontend-local
+#   Copy-Item config.local.example.js config.local.js     # puis l'adapter
+#   docker compose up -d                                  # http://localhost:8080/
+#   docker compose down
+services:
+  explorer:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ../../web:/usr/share/nginx/html:ro
+      - ./config.local.js:/usr/share/nginx/html/config.js:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    restart: unless-stopped

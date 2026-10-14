@@ -4,16 +4,16 @@ from typing import Any
 
 from haystack import Pipeline
 
-from tsi_agent.components.claude_cli import ClaudeCliChatGenerator
 from tsi_agent.components.deliverables import (DeliverableSummarizer, DeliverableTextExtractor, DeliverableWriter,
                                                PublicationDiscoverer, PublicationFetcher)
 from tsi_agent.config import Settings
+from tsi_agent.llm import make_json_generator
 from tsi_agent.models import DeliverableContent
 
 
 def default_deliverables_generator(settings: Settings, model: str | None = None) -> Any:
-    return ClaudeCliChatGenerator(model=model or settings.model, timeout_s=settings.deliverables_llm_timeout_s,
-                                  json_schema=DeliverableContent.model_json_schema())
+    return make_json_generator(settings, DeliverableContent.model_json_schema(),
+                               timeout_s=settings.deliverables_llm_timeout_s, model=model)
 
 
 def build_deliverables_pipeline(settings: Settings, *, chat_generator: Any = None, model: str | None = None) -> Pipeline:

@@ -13,7 +13,6 @@ from haystack.dataclasses import ByteStream
 
 from tsi_agent import runlog
 from tsi_agent.chunking import CHUNKER_VERSION
-from tsi_agent.qdrant_local import collection_exists
 from tsi_agent.vector_state import VectorState, load_state
 
 FOLDERS = ("projects", "programme", "deliverables", "csr")
@@ -33,6 +32,7 @@ class ProjectFileLoader:
             return "requested"
         if state is None:
             return "no_state"
+        from tsi_agent.qdrant_local import collection_exists  # qdrant : extra [local], importe a l'usage
         if not collection_exists(self.vectors_dir):
             return "no_store"
         if state.embedder_id != self.embedder_id:

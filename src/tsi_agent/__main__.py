@@ -7,10 +7,11 @@ import sys
 import traceback
 from pathlib import Path
 
-from tsi_agent.config import load_settings, load_sources
+from tsi_agent.config import Settings, load_settings, load_sources
 from tsi_agent.countries import COUNTRIES
 from tsi_agent.deliverables_pipeline import build_deliverables_pipeline
 from tsi_agent.index_pipeline import build_index_pipeline
+from tsi_agent.llm import load_dotenv
 from tsi_agent.pipeline import build_pipeline
 from tsi_agent.runner import (format_discovery, refresh_deliverables_metadata, run_deliverables, run_extraction,
                               run_index)
@@ -24,7 +25,34 @@ def _countries(value: str) -> list[str]:
     return isos
 
 
+def _uses_llm(args: argparse.Namespace) -> bool:
+    """Commandes de mise a jour qui appellent le fournisseur LLM configure (hors modes sans LLM)."""
+    if args.command == "deliverables":
+        return not args.refresh_metadata
+    if args.command == "csr-link":
+        return not args.sample
+    # run --dry-run garde la verification : l'arbitre du sitemap (SitemapMergeJudge) appelle le LLM meme en dry-run.
+    return args.command in ("run", "llm-check")
+
+
+def _check_llm(settings: Settings) -> bool:
+    """Fournisseur verifie avant tout travail (cle ; en mode openai, un appel minimal) : message clair sinon."""
+    from tsi_agent import llm
+    from tsi_agent.components.claude_cli import LLMCallError
+    try:
+        llm.check_provider(settings)
+        if settings.llm_provider == "openai":
+            result = llm.ping(settings)
+            print(f"Fournisseur LLM : {result.get('model')} ({result.get('model_returned') or '-'}) OK",
+                  file=sys.stderr)
+    except (ValueError, LLMCallError) as exc:  # LLMCallError couvre LLMQuotaExceeded et LLMConfigError
+        print(f"ERREUR (fournisseur LLM) : {exc}", file=sys.stderr)
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()  # cles (OPENAI_API_KEY...) depuis .env, sans ecraser l'environnement
     parser = argparse.ArgumentParser(prog="tsi_agent")
     parser.add_argument("--settings", default="config/settings.yaml")
     parser.add_argument("--sources", default="config/sources.yaml")
@@ -79,6 +107,13 @@ def main(argv: list[str] | None = None) -> int:
                           help="un fichier par projet, programme et livrable + métadonnées (production Haystack Enterprise)")
     prod.add_argument("--out", default="deploy/prod/build/files",
                       help="dossier à téléverser (vidé des tsi-* d'abord) ; manifest.json écrit dans le dossier parent")
+    rel = sub.add_parser("release-data", help="préparer les données de production pour une release GitHub "
+                                              "(zips dans deploy/release/<tag>), et la publier avec --publish")
+    rel.add_argument("--tag", help="tag de la release (défaut : data-AAAA-MM-JJ du jour)")
+    rel.add_argument("--publish", action="store_true", help="publier la release avec `gh release create`")
+    rel.add_argument("--repo", default="MGE-Agilos/dg-reform-tsi", help="dépôt GitHub (owner/nom)")
+    rel.add_argument("--build", default="deploy/prod/build", help="dossier de prod-export (manifest.json et files/)")
+    rel.add_argument("--out", default="deploy/release", help="dossier racine des releases préparées")
     anom = sub.add_parser("anomalies",
                           help="rapport d'anomalies de publication (CSV + Markdown), sans LLM ni réseau")
     anom.add_argument("--out", help="dossier du rapport (défaut : <output_dir>/reports)")
@@ -87,13 +122,16 @@ def main(argv: list[str] | None = None) -> int:
     csrb = sub.add_parser("csr-build", help="fiches Markdown des CSR (output/csr) depuis l'export ECFIN")
     csrb.add_argument("--year-from", type=int, default=2016)
     csrb.add_argument("--year-to", type=int, default=2025)
-    link = sub.add_parser("csr-link", help="lier les projets aux CSR (LLM, CLI Claude ; cache, reprise sur quota)")
+    link = sub.add_parser("csr-link", help="lier les projets aux CSR (LLM du fournisseur configuré ; cache, reprise sur quota)")
     link.add_argument("--limit", type=int, help="nombre maximal de projets envoyés au LLM")
     link.add_argument("--project", action="append", dest="projects", help="id de projet (répétable)")
     link.add_argument("--detail-only", action="store_true",
                       help="n'envoyer au LLM que les projets avec page détail (les autres plus tard)")
     link.add_argument("--sample", type=int, help="écrire un échantillon de N projets liés (relecture métier)")
-    link.add_argument("--model", help="modèle du CLI Claude (défaut : réglage model)")
+    link.add_argument("--model", help="modèle du CLI Claude (défaut : réglage model ; ignoré en mode openai)")
+    check = sub.add_parser("llm-check", help="refaire l'extraction de N projets en cache avec le fournisseur "
+                                            "configuré et comparer (output/reports/llm_check.md)")
+    check.add_argument("--n", type=int, default=3, help="nombre de projets (défaut : 3)")
     sub.add_parser("supabase-sync", help="publier projets, CSR, liens et anomalies dans Supabase (explorateur web)")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
@@ -110,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"fichier introuvable : {args.sources}")
     settings = load_settings(args.settings)
     sources = load_sources(args.sources)
+    if _uses_llm(args) and not _check_llm(settings):
+        return 2
     if args.command == "export-yaml":
         try:
             if args.deliverables:
@@ -140,6 +180,19 @@ def main(argv: list[str] | None = None) -> int:
         manifest = export(Path(settings.output_dir), Path(args.out))
         print(json.dumps(manifest, indent=2, ensure_ascii=False))
         return 1 if manifest["meta_type_problems"] or manifest["files_over_10mb"] else 0
+    if args.command == "release-data":
+        from tsi_agent import release
+        tag = args.tag or release.default_tag()
+        try:
+            summary = release.build_release(Path(settings.output_dir), Path(args.build), Path(args.out), tag)
+            print(json.dumps(summary, indent=2, ensure_ascii=False))
+            if args.publish:
+                print(json.dumps(release.publish(tag, Path(summary["dir"]), repo=args.repo), indent=2,
+                                 ensure_ascii=False))
+        except (release.ReleaseError, OSError) as exc:
+            print(f"ERREUR : {exc}", file=sys.stderr)
+            return 1
+        return 0
     if args.command == "anomalies":
         from tsi_agent.anomalies import run as run_anomalies
         out = Path(args.out) if args.out else Path(settings.output_dir) / "reports"
@@ -171,9 +224,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "csr-link":
         from tsi_agent import runlog
         from tsi_agent.chat.generator import LoggedChatGenerator
-        from tsi_agent.components.claude_cli import ClaudeCliChatGenerator
         from tsi_agent.csr import build_csrs, read_rows
         from tsi_agent.csr_link import LINK_SCHEMA, run_linking, write_sample
+        from tsi_agent.llm import make_json_generator
         source = Path(settings.output_dir) / "csr" / "csr_full.xlsx"
         if not source.exists():
             print(f"ERREUR : {source} introuvable — lancer d'abord `python -m tsi_agent csr-fetch`", file=sys.stderr)
@@ -183,8 +236,12 @@ def main(argv: list[str] | None = None) -> int:
             out = Path(settings.output_dir) / "reports" / "csr_links_sample.csv"
             print(f"Échantillon : {write_sample(settings, csrs, args.sample, out)}")
             return 0
-        generator = LoggedChatGenerator(chat_generator=ClaudeCliChatGenerator(
-            model=args.model or settings.model, json_schema=LINK_SCHEMA, timeout_s=settings.llm_timeout_s))
+        try:
+            generator = LoggedChatGenerator(chat_generator=make_json_generator(
+                settings, LINK_SCHEMA, timeout_s=settings.llm_timeout_s, model=args.model), pricing=settings.pricing)
+        except ValueError as exc:
+            print(f"ERREUR : {exc}", file=sys.stderr)
+            return 2
         with runlog.open_run(settings.logs_dir) as run:
             summary = run_linking(settings, csrs, generator, limit=args.limit, project_ids=args.projects,
                                   detail_only=args.detail_only)
@@ -193,6 +250,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({**summary, "run": run.final_summary.get("run_id") if run.final_summary else None,
                           "cost_usd": (run.final_summary or {}).get("cost_usd")}, indent=2, ensure_ascii=False))
         return 1 if summary["quota_exceeded"] else 0
+    if args.command == "llm-check":
+        from tsi_agent import llm_check
+        try:
+            result = llm_check.run_check(settings, n=args.n)
+        except (llm_check.LLMCheckError, ValueError) as exc:
+            print(f"ERREUR : {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"Rapport : {result['report']}")
+        ok = any(p["error"] is None for p in result["projects"])
+        return 0 if ok and not result["quota_exceeded"] else 1
     if args.command == "supabase-sync":
         import httpx
         from tsi_agent.supabase_sync import SyncError, build_rows, credentials, push

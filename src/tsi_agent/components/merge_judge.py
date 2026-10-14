@@ -36,6 +36,8 @@ JACCARD_FLOOR = 0.25
 BATCH_SIZE = 10
 SNIPPET_CHARS = 400
 ACCEPTED = ("high", "medium")
+JUDGE_MODEL = "sonnet"
+JUDGE_TIMEOUT_S = 300
 
 JUDGE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -124,7 +126,7 @@ class SitemapMergeJudge:
         """:param chat_generator: chat generator a sortie structuree (defaut : CLI claude, sonnet, JUDGE_SCHEMA,
         journalise : chaque appel compte dans les couts du run)."""
         self.chat_generator = chat_generator or LoggedChatGenerator(
-            chat_generator=ClaudeCliChatGenerator(model="sonnet", json_schema=JUDGE_SCHEMA, timeout_s=300))
+            chat_generator=ClaudeCliChatGenerator(model=JUDGE_MODEL, json_schema=JUDGE_SCHEMA, timeout_s=JUDGE_TIMEOUT_S))
         self.output_dir = output_dir
         self.cache_dir = cache_dir
         self.min_interval_s = min_interval_s
