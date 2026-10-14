@@ -9,6 +9,13 @@ llm_timeout_s: 180
 max_concurrency: 2
 chunk_size: 25
 
+# Fournisseur LLM des etapes de mise a jour (run, deliverables, arbitrage du sitemap, csr-link)
+llm_provider: claude_cli     # claude_cli (CLI Claude, souscription) ou openai (API compatible OpenAI)
+openai_base_url:             # mode openai : ex. https://api.tech.ec.europa.eu/ecgpt/v1 (EC GPT) ; vide = API OpenAI
+openai_api_key_env: OPENAI_API_KEY   # variable d'environnement (ou ligne de .env) qui contient la cle
+openai_model: gpt-5.1
+openai_timeout_s: 300        # delai minimal d'un appel en mode openai
+
 # Couche vectorisée (python -m tsi_agent index)
 vectors_dir: ~/tsi-vectors   # hors OneDrive : base Qdrant locale
 embedding_dim: 384

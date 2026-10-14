@@ -11,6 +11,7 @@ from tsi_agent.config import load_settings, load_sources
 from tsi_agent.countries import COUNTRIES
 from tsi_agent.deliverables_pipeline import build_deliverables_pipeline
 from tsi_agent.index_pipeline import build_index_pipeline
+from tsi_agent.llm import load_dotenv
 from tsi_agent.pipeline import build_pipeline
 from tsi_agent.runner import (format_discovery, refresh_deliverables_metadata, run_deliverables, run_extraction,
                               run_index)
@@ -25,6 +26,7 @@ def _countries(value: str) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()  # cles (OPENAI_API_KEY...) depuis .env, sans ecraser l'environnement
     parser = argparse.ArgumentParser(prog="tsi_agent")
     parser.add_argument("--settings", default="config/settings.yaml")
     parser.add_argument("--sources", default="config/sources.yaml")
@@ -87,13 +89,13 @@ def main(argv: list[str] | None = None) -> int:
     csrb = sub.add_parser("csr-build", help="fiches Markdown des CSR (output/csr) depuis l'export ECFIN")
     csrb.add_argument("--year-from", type=int, default=2016)
     csrb.add_argument("--year-to", type=int, default=2025)
-    link = sub.add_parser("csr-link", help="lier les projets aux CSR (LLM, CLI Claude ; cache, reprise sur quota)")
+    link = sub.add_parser("csr-link", help="lier les projets aux CSR (LLM du fournisseur configuré ; cache, reprise sur quota)")
     link.add_argument("--limit", type=int, help="nombre maximal de projets envoyés au LLM")
     link.add_argument("--project", action="append", dest="projects", help="id de projet (répétable)")
     link.add_argument("--detail-only", action="store_true",
                       help="n'envoyer au LLM que les projets avec page détail (les autres plus tard)")
     link.add_argument("--sample", type=int, help="écrire un échantillon de N projets liés (relecture métier)")
-    link.add_argument("--model", help="modèle du CLI Claude (défaut : réglage model)")
+    link.add_argument("--model", help="modèle du CLI Claude (défaut : réglage model ; ignoré en mode openai)")
     sub.add_parser("supabase-sync", help="publier projets, CSR, liens et anomalies dans Supabase (explorateur web)")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
@@ -171,9 +173,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "csr-link":
         from tsi_agent import runlog
         from tsi_agent.chat.generator import LoggedChatGenerator
-        from tsi_agent.components.claude_cli import ClaudeCliChatGenerator
         from tsi_agent.csr import build_csrs, read_rows
         from tsi_agent.csr_link import LINK_SCHEMA, run_linking, write_sample
+        from tsi_agent.llm import make_json_generator
         source = Path(settings.output_dir) / "csr" / "csr_full.xlsx"
         if not source.exists():
             print(f"ERREUR : {source} introuvable — lancer d'abord `python -m tsi_agent csr-fetch`", file=sys.stderr)
@@ -183,8 +185,12 @@ def main(argv: list[str] | None = None) -> int:
             out = Path(settings.output_dir) / "reports" / "csr_links_sample.csv"
             print(f"Échantillon : {write_sample(settings, csrs, args.sample, out)}")
             return 0
-        generator = LoggedChatGenerator(chat_generator=ClaudeCliChatGenerator(
-            model=args.model or settings.model, json_schema=LINK_SCHEMA, timeout_s=settings.llm_timeout_s))
+        try:
+            generator = LoggedChatGenerator(chat_generator=make_json_generator(
+                settings, LINK_SCHEMA, timeout_s=settings.llm_timeout_s, model=args.model), pricing=settings.pricing)
+        except ValueError as exc:
+            print(f"ERREUR : {exc}", file=sys.stderr)
+            return 2
         with runlog.open_run(settings.logs_dir) as run:
             summary = run_linking(settings, csrs, generator, limit=args.limit, project_ids=args.projects,
                                   detail_only=args.detail_only)
