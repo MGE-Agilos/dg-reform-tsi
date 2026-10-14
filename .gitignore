@@ -10,3 +10,5 @@ __pycache__/
 deploy/trial/build/
 deploy/prod/build/
 deploy/release/
+deploy/frontend-local/config.local.js
+deploy/frontend-local/dist/
