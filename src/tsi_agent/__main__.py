@@ -96,6 +96,9 @@ def main(argv: list[str] | None = None) -> int:
                       help="n'envoyer au LLM que les projets avec page détail (les autres plus tard)")
     link.add_argument("--sample", type=int, help="écrire un échantillon de N projets liés (relecture métier)")
     link.add_argument("--model", help="modèle du CLI Claude (défaut : réglage model ; ignoré en mode openai)")
+    check = sub.add_parser("llm-check", help="refaire l'extraction de N projets en cache avec le fournisseur "
+                                            "configuré et comparer (output/reports/llm_check.md)")
+    check.add_argument("--n", type=int, default=3, help="nombre de projets (défaut : 3)")
     sub.add_parser("supabase-sync", help="publier projets, CSR, liens et anomalies dans Supabase (explorateur web)")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
@@ -199,6 +202,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({**summary, "run": run.final_summary.get("run_id") if run.final_summary else None,
                           "cost_usd": (run.final_summary or {}).get("cost_usd")}, indent=2, ensure_ascii=False))
         return 1 if summary["quota_exceeded"] else 0
+    if args.command == "llm-check":
+        from tsi_agent import llm_check
+        try:
+            result = llm_check.run_check(settings, n=args.n)
+        except (llm_check.LLMCheckError, ValueError) as exc:
+            print(f"ERREUR : {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(f"Rapport : {result['report']}")
+        ok = any(p["error"] is None for p in result["projects"])
+        return 0 if ok and not result["quota_exceeded"] else 1
     if args.command == "supabase-sync":
         import httpx
         from tsi_agent.supabase_sync import SyncError, build_rows, credentials, push
