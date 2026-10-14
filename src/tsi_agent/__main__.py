@@ -81,6 +81,13 @@ def main(argv: list[str] | None = None) -> int:
                           help="un fichier par projet, programme et livrable + métadonnées (production Haystack Enterprise)")
     prod.add_argument("--out", default="deploy/prod/build/files",
                       help="dossier à téléverser (vidé des tsi-* d'abord) ; manifest.json écrit dans le dossier parent")
+    rel = sub.add_parser("release-data", help="préparer les données de production pour une release GitHub "
+                                              "(zips dans deploy/release/<tag>), et la publier avec --publish")
+    rel.add_argument("--tag", help="tag de la release (défaut : data-AAAA-MM-JJ du jour)")
+    rel.add_argument("--publish", action="store_true", help="publier la release avec `gh release create`")
+    rel.add_argument("--repo", default="MGE-Agilos/dg-reform-tsi", help="dépôt GitHub (owner/nom)")
+    rel.add_argument("--build", default="deploy/prod/build", help="dossier de prod-export (manifest.json et files/)")
+    rel.add_argument("--out", default="deploy/release", help="dossier racine des releases préparées")
     anom = sub.add_parser("anomalies",
                           help="rapport d'anomalies de publication (CSV + Markdown), sans LLM ni réseau")
     anom.add_argument("--out", help="dossier du rapport (défaut : <output_dir>/reports)")
@@ -145,6 +152,19 @@ def main(argv: list[str] | None = None) -> int:
         manifest = export(Path(settings.output_dir), Path(args.out))
         print(json.dumps(manifest, indent=2, ensure_ascii=False))
         return 1 if manifest["meta_type_problems"] or manifest["files_over_10mb"] else 0
+    if args.command == "release-data":
+        from tsi_agent import release
+        tag = args.tag or release.default_tag()
+        try:
+            summary = release.build_release(Path(settings.output_dir), Path(args.build), Path(args.out), tag)
+            print(json.dumps(summary, indent=2, ensure_ascii=False))
+            if args.publish:
+                print(json.dumps(release.publish(tag, Path(summary["dir"]), repo=args.repo), indent=2,
+                                 ensure_ascii=False))
+        except (release.ReleaseError, OSError) as exc:
+            print(f"ERREUR : {exc}", file=sys.stderr)
+            return 1
+        return 0
     if args.command == "anomalies":
         from tsi_agent.anomalies import run as run_anomalies
         out = Path(args.out) if args.out else Path(settings.output_dir) / "reports"

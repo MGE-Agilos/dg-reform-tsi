@@ -9,3 +9,4 @@ __pycache__/
 *.egg-info/
 deploy/trial/build/
 deploy/prod/build/
+deploy/release/
