@@ -1,65 +1,65 @@
-# Reglages pour la mise a jour des donnees sur un PC (deploy/updater/README.md), en mode API compatible OpenAI.
-# Copier ce fichier vers config/settings.yaml (ou passer --settings deploy/updater/settings.updater.yaml).
-# La cle n'est jamais ici : elle est lue dans la variable OPENAI_API_KEY (ou la ligne OPENAI_API_KEY= de .env).
-# Chemins relatifs à la racine du dépôt (lancer les commandes depuis la racine).
+# Settings for the data update on a PC (deploy/updater/README.md), in OpenAI-compatible API mode.
+# Copy this file to config/settings.yaml (or pass --settings deploy/updater/settings.updater.yaml).
+# The key is never here: it is read from the OPENAI_API_KEY variable (or the OPENAI_API_KEY= line of .env).
+# Paths relative to the root of the repository (run the commands from the root).
 output_dir: output
 logs_dir: logs
 cache_dir: .cache/http
 user_agent: "TSI-Extraction-Agent/0.1 (DG REFORM project; polite crawler)"
-min_interval_s: 2.0   # le site renvoie des 429 au-delà d'environ 1 req/s soutenue
-model: sonnet          # CLI Claude seulement (mode claude_cli)
+min_interval_s: 2.0   # the site returns 429s above about 1 sustained req/s
+model: sonnet          # Claude CLI only (claude_cli mode)
 llm_timeout_s: 180
 max_concurrency: 2
 chunk_size: 25
 
-# Fournisseur LLM des etapes de mise a jour (run, deliverables, arbitrage du sitemap, csr-link)
-llm_provider: openai         # openai : API compatible OpenAI (EC GPT ou OpenAI) ; claude_cli : CLI Claude (souscription)
-openai_base_url: https://api.tech.ec.europa.eu/ecgpt/v1   # passerelle EC GPT ; laisser vide pour l'API OpenAI publique
-openai_api_key_env: OPENAI_API_KEY   # variable d'environnement (ou ligne de .env) qui contient la cle
-openai_model: gpt-5.1        # modele de la passerelle (ou d'OpenAI) ; --model des commandes est ignore dans ce mode
-openai_timeout_s: 300        # delai minimal d'un appel en mode openai
-openai_max_retries: 2        # nouvelles tentatives du client OpenAI (erreurs reseau, 429, 5xx)
-openai_max_completion_tokens:   # plafond de tokens de sortie (raisonnement compris) ; vide = aucun.
-                                # Si un appel echoue avec "reponse tronquee", mettre par ex. 16000.
+# LLM provider of the update steps (run, deliverables, sitemap arbitration, csr-link)
+llm_provider: openai         # openai: OpenAI-compatible API (EC GPT or OpenAI); claude_cli: Claude CLI (subscription)
+openai_base_url: https://api.tech.ec.europa.eu/ecgpt/v1   # EC GPT gateway; leave empty for the public OpenAI API
+openai_api_key_env: OPENAI_API_KEY   # environment variable (or .env line) that holds the key
+openai_model: gpt-5.1        # model of the gateway (or of OpenAI); the commands' --model is ignored in this mode
+openai_timeout_s: 300        # minimum timeout of a call in openai mode
+openai_max_retries: 2        # retries by the OpenAI client (network errors, 429, 5xx)
+openai_max_completion_tokens:   # cap on output tokens (reasoning included); empty = none.
+                                # If a call fails with "reponse tronquee" (truncated response), set e.g. 16000.
 
-# Couts affiches dans les journaux ($ par million de tokens, par prefixe du modele `openai/<openai_model>`).
-# Prix public OpenAI de gpt-5.1 : 1,25 $ en entree, 10 $ en sortie. Avec EC GPT la facturation est interne
-# a la Commission : ces chiffres ne donnent qu'un ordre de grandeur (mettre 0 pour ne pas afficher de cout).
+# Costs shown in the logs ($ per million tokens, by prefix of the model `openai/<openai_model>`).
+# OpenAI public price for gpt-5.1: $1.25 input, $10 output. With EC GPT, billing is internal to the
+# Commission: these figures only give an order of magnitude (set 0 to show no cost).
 pricing:
   openai/gpt-5.1: {input: 1.25, output: 10.0}
 
-# Couche vectorisée (python -m tsi_agent index)
-vectors_dir: ~/tsi-vectors   # hors OneDrive : base Qdrant locale
+# Vector layer (python -m tsi_agent index)
+vectors_dir: ~/tsi-vectors   # outside OneDrive: local Qdrant database
 embedding_dim: 384
-embedding_model: intfloat/multilingual-e5-small   # local, multilingue ; OpenAI text-embedding-3-small dans deepset
+embedding_model: intfloat/multilingual-e5-small   # local, multilingual; OpenAI text-embedding-3-small in deepset
 embedding_batch_size: 32
 
 # Chatbot (python -m tsi_agent chat)
 chat_model: sonnet
-chat_max_steps: 6     # appels LLM maximum par question
+chat_max_steps: 6     # maximum LLM calls per question
 chat_port: 8765
-finder_project_pool: 60          # find_projects : projets gardes depuis les textes projet
-finder_project_chunks: 400       # morceaux projet lus avant regroupement par projet
-finder_deliverable_pool: 30      # projets gardes depuis les livrables
-finder_deliverable_chunks: 300   # morceaux livrable lus avant regroupement par projet
-finder_max_candidates: 150       # lignes de candidats listees au plus
+finder_project_pool: 60          # find_projects: projects kept from the project texts
+finder_project_chunks: 400       # project chunks read before grouping by project
+finder_deliverable_pool: 30      # projects kept from the deliverables
+finder_deliverable_chunks: 300   # deliverable chunks read before grouping by project
+finder_max_candidates: 150       # maximum number of candidate lines listed
 
-# Livrables des projets (python -m tsi_agent deliverables)
+# Project deliverables (python -m tsi_agent deliverables)
 deliverables_dir: output/deliverables
-deliverables_max_words: 15000   # debut des documents envoye au LLM pour le resume
+deliverables_max_words: 15000   # beginning of the documents sent to the LLM for the summary
 deliverables_max_pdf_mb: 50
-deliverables_llm_timeout_s: 600   # prompts longs, jusqu'a 15 000 mots
-deliverables_recheck_days: 7   # publications traitees depuis moins de N jours : page non reverifiee (sauf --full)
+deliverables_llm_timeout_s: 600   # long prompts, up to 15,000 words
+deliverables_recheck_days: 7   # publications processed less than N days ago: page not checked again (except with --full)
 
-# Analyse d'impact (onglet "Impact analysis" de la page web)
+# Impact analysis ("Impact analysis" tab of the web page)
 impact_dir: output/impact
-impact_model: opus          # Opus : modele le plus capable pour l'analyse
-impact_score_model: opus    # score de 0 a 10 calcule a partir du rapport
-impact_max_steps: 20        # appels LLM maximum par analyse
-impact_max_searches: 10     # recherches web maximum par analyse
-impact_page_words: 3000     # texte d'une page web transmis a l'agent
-impact_page_max_mb: 20      # taille maximale d'une page ou d'un document telecharge (Mo)
+impact_model: opus          # Opus: the most capable model for the analysis
+impact_score_model: opus    # score from 0 to 10 computed from the report
+impact_max_steps: 20        # maximum LLM calls per analysis
+impact_max_searches: 10     # maximum web searches per analysis
+impact_page_words: 3000     # text of a web page passed to the agent
+impact_page_max_mb: 20      # maximum size of a downloaded page or document (MB)
 impact_project_chars: 20000
 impact_llm_timeout_s: 600
-web_search_model: haiku     # la recherche web elle-meme (CLI claude, outil WebSearch)
+web_search_model: haiku     # the web search itself (claude CLI, WebSearch tool)
 web_search_timeout_s: 180

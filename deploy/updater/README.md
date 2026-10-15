@@ -1,182 +1,188 @@
-# Mettre à jour les données TSI sur un PC Windows
+# Updating the TSI data on a Windows PC
 
-Ce guide installe sur un PC la recherche des nouveaux documents publiés par la Commission (projets TSI et SRSP,
-publications des projets, recommandations par pays (CSR) et liens projet → CSR), avec un LLM compatible OpenAI :
-la passerelle **EC GPT** de la Commission ou l'API **OpenAI**. Le résultat est un dossier de fichiers prêt à importer
-dans Haystack Enterprise.
+This guide sets up, on a PC, the search for new documents published by the Commission (TSI and SRSP projects,
+project publications, country-specific recommendations (CSRs) and project -> CSR links), with an
+OpenAI-compatible LLM: the Commission's **EC GPT** gateway or the **OpenAI** API. The result is a folder of files
+ready to import into Haystack Enterprise.
 
-Aucune connaissance de Python n'est nécessaire : il suffit de copier les commandes dans **PowerShell**, depuis le
-dossier du dépôt. Utiliser la console PowerShell normale (menu Démarrer, « Windows PowerShell » ou « Terminal »), pas
-**PowerShell ISE**, qui traite les messages de progression des outils comme des erreurs.
+No knowledge of Python is needed: you only copy the commands into **PowerShell**, from the repository folder. Use
+the normal PowerShell console (Start menu, "Windows PowerShell" or "Terminal"), not **PowerShell ISE**, which
+treats the tools' progress messages as errors.
 
-## Installation (une fois)
+The commands of the agent (`python -m tsi_agent ...`) print their messages in French. Where this guide quotes
+one, the English meaning is given in parentheses.
 
-1. **Prérequis.** Installer :
-   - **Python 3.12** (<https://www.python.org/downloads/windows/>), en cochant « Add python.exe to PATH » ;
-   - **Git** (<https://git-scm.com/download/win>) ;
-   - **GitHub CLI** (<https://cli.github.com>), puis se connecter une fois :
+## Installation (once)
+
+1. **Prerequisites.** Install:
+   - **Python 3.12** (<https://www.python.org/downloads/windows/>), ticking "Add python.exe to PATH";
+   - **Git** (<https://git-scm.com/download/win>);
+   - **GitHub CLI** (<https://cli.github.com>), then sign in once:
      ```powershell
      gh auth login
      ```
-     (choisir *GitHub.com*, *HTTPS*, puis la connexion par le navigateur).
+     (choose *GitHub.com*, *HTTPS*, then sign-in with the browser).
 
-2. **Cloner le dépôt** dans un dossier de travail, de préférence hors OneDrive (les mises à jour écrivent des
-   milliers de petits fichiers) :
+2. **Clone the repository** into a working folder, preferably outside OneDrive (updates write thousands of small
+   files):
    ```powershell
    cd C:\
    git clone https://github.com/MGE-Agilos/dg-reform-tsi.git tsi
    cd C:\tsi
    ```
-   Toutes les commandes suivantes se lancent depuis ce dossier.
+   All the following commands are run from this folder.
 
-3. **Créer l'environnement Python** :
+3. **Create the Python environment**:
    ```powershell
    python -m venv .venv
    .venv\Scripts\pip install -e .
    ```
-   Les commandes de mise à jour n'ont pas besoin des dépendances du chatbot local (`.[local]` : PyTorch, Qdrant).
+   The update commands do not need the dependencies of the local chatbot (`.[local]`: PyTorch, Qdrant).
 
-4. **Réglages.** Copier les réglages prévus pour ce mode :
+4. **Settings.** Copy the settings prepared for this mode:
    ```powershell
    Copy-Item deploy\updater\settings.updater.yaml config\settings.yaml
    ```
-   Ils choisissent `llm_provider: openai`, la passerelle EC GPT (`openai_base_url`) et le modèle `gpt-5.1`. Pour
-   l'API OpenAI publique, vider la ligne `openai_base_url:`. Variante sans copie : ajouter
-   `--settings deploy\updater\settings.updater.yaml` à chaque commande, et `-Settings ...` à `update.ps1`.
-   Deux réglages facultatifs : `openai_max_retries` (nouvelles tentatives du client en cas d'erreur réseau, de 429
-   ou de 5xx, 2 par défaut) et `openai_max_completion_tokens` (plafond des tokens de sortie, raisonnement compris ;
-   vide par défaut, sans plafond).
+   They select `llm_provider: openai`, the EC GPT gateway (`openai_base_url`) and the `gpt-5.1` model. For the
+   public OpenAI API, empty the `openai_base_url:` line. Alternative without copying: add
+   `--settings deploy\updater\settings.updater.yaml` to each command, and `-Settings ...` to `update.ps1`.
+   Two optional settings: `openai_max_retries` (retries by the client after a network error, a 429 or a 5xx; 2 by
+   default) and `openai_max_completion_tokens` (cap on output tokens, reasoning included; empty by default, no
+   cap).
 
-5. **Clé du LLM.** Copier le modèle de fichier de clés, puis l'ouvrir dans le Bloc-notes :
+5. **LLM key.** Copy the key file template, then open it in Notepad:
    ```powershell
    Copy-Item deploy\updater\.env.example .env
    notepad .env
    ```
-   Renseigner `OPENAI_API_KEY=` avec la clé EC GPT (ou la clé OpenAI). **Ne jamais commiter `.env`** (il est
-   ignoré par Git) et ne jamais copier la clé dans un autre fichier.
+   Fill in `OPENAI_API_KEY=` with the EC GPT key (or the OpenAI key). **Never commit `.env`** (Git ignores it) and
+   never copy the key into another file.
 
-6. **Récupérer l'état actuel des données** (projets déjà extraits, publications, CSR, liens) depuis la dernière
-   release du dépôt, pour ne pas tout refaire :
+6. **Get the current state of the data** (projects already extracted, publications, CSRs, links) from the latest
+   release of the repository, so as not to redo everything:
    ```powershell
-   Set-ExecutionPolicy -Scope Process Bypass    # autorise les scripts .ps1 dans cette fenêtre seulement
+   Set-ExecutionPolicy -Scope Process Bypass    # allows .ps1 scripts in this window only
    .\deploy\updater\restore-state.ps1
    ```
-   La première ligne est à refaire dans chaque nouvelle fenêtre PowerShell avant de lancer un script `.ps1` (sinon :
-   « l'exécution de scripts est désactivée sur ce système »). Autre façon, sans changer la politique :
-   `powershell -ExecutionPolicy Bypass -File .\deploy\updater\restore-state.ps1`. Si le dépôt a été récupéré en ZIP
-   plutôt que par `git clone`, débloquer les scripts une fois : `Get-ChildItem -Recurse -Filter *.ps1 | Unblock-File`.
-   Option `-Tag data-AAAA-MM-JJ` pour une release précise. Si `output\` existe déjà, le script refuse de continuer
-   sans `-Force` (les fichiers du même nom sont alors remplacés, les autres gardés).
+   Repeat the first line in each new PowerShell window before running a `.ps1` script (otherwise: "running scripts
+   is disabled on this system"). Another way, without changing the policy:
+   `powershell -ExecutionPolicy Bypass -File .\deploy\updater\restore-state.ps1`. If you got the repository as a
+   ZIP rather than with `git clone`, unblock the scripts once: `Get-ChildItem -Recurse -Filter *.ps1 | Unblock-File`.
+   Option `-Tag data-YYYY-MM-DD` for a specific release. If `output\` already exists, the script refuses to
+   continue without `-Force` (files with the same name are then replaced, the others kept).
 
-7. **Contrôler la qualité avec ce LLM** avant le premier gros lot. `llm-check` refait l'extraction de quelques
-   projets déjà traités et met côte à côte l'ancien et le nouveau résultat :
+7. **Check the quality with this LLM** before the first large batch. `llm-check` redoes the extraction of a few
+   projects that were already processed and puts the old and new results side by side:
    ```powershell
    .venv\Scripts\python.exe -m tsi_agent run --limit 3
    .venv\Scripts\python.exe -m tsi_agent llm-check --n 3
    ```
-   `llm-check` lit les pages dans le cache HTTP (`.cache\http`), qui n'est pas dans la release : sur un PC neuf il
-   répond « aucune page detail … dans le cache » (code 1) tant qu'un `run` n'a pas rechargé des pages. Le premier
-   `run` recharge **toutes** les pages détail du site (voir *Durées*) : on peut l'interrompre avec Ctrl+C après
-   quelques minutes, `llm-check` a alors assez de pages, et le run reprend plus tard où il s'était arrêté. Lire
-   ensuite `output\reports\llm_check.md` : résumés, sections et résultats doivent être comparables.
+   `llm-check` reads the pages from the HTTP cache (`.cache\http`), which is not in the release: on a new PC it
+   answers « aucune page detail … dans le cache » (no detail page … in the cache, exit code 1) until a `run` has
+   reloaded some pages. The first `run` reloads **all** the detail pages of the site (see *Durations*): you can
+   stop it with Ctrl+C after a few minutes, `llm-check` then has enough pages, and the run later resumes where it
+   stopped. Then read `output\reports\llm_check.md`: summaries, sections and results should be comparable.
 
-## Mise à jour (à chaque fois)
+## Update (each time)
 
-8. **Lancer la mise à jour complète** :
+8. **Run the full update**:
    ```powershell
    .\deploy\updater\update.ps1
    ```
-   Le script vérifie les réglages et la clé, enchaîne les sept étapes ci-dessous et s'arrête à la première erreur.
-   À la fin, il affiche le dossier à importer (`deploy\prod\build\files`) et les chiffres du manifeste
+   The script checks the settings and the key, runs the seven steps below and stops at the first error. At the
+   end, it shows the folder to import (`deploy\prod\build\files`) and the figures of the manifest
    (`deploy\prod\build\manifest.json`).
 
-   Options :
-   - `-SkipDeliverables` : ne pas traiter les publications (le plus long et le plus cher) ;
-   - `-SkipCsr` : ne pas mettre à jour les CSR ni les liens projet → CSR ;
-   - `-DetailOnly` : `csr-link` n'envoie au LLM que les projets avec page détail (les autres plus tard) ;
-   - `-Settings <fichier>` : autres réglages que `config\settings.yaml`.
+   Options:
+   - `-SkipDeliverables`: do not process the publications (the longest and most expensive step);
+   - `-SkipCsr`: do not update the CSRs or the project -> CSR links;
+   - `-DetailOnly`: `csr-link` only sends the projects with a detail page to the LLM (the others later);
+   - `-Settings <file>`: settings other than `config\settings.yaml`.
 
-   Les étapes peuvent aussi être lancées une par une, dans le même ordre, avec
-   `.venv\Scripts\python.exe -m tsi_agent <commande>`.
+   The steps can also be run one by one, in the same order, with
+   `.venv\Scripts\python.exe -m tsi_agent <command>`.
 
-9. **Importer dans Haystack Enterprise**, au choix :
-   - par l'interface : suivre [deploy/prod/GUIDE.md](../prod/GUIDE.md), avec les fichiers de
-     `deploy\prod\build\files` à la place du zip de la release (4 lots avec leurs métadonnées) ;
-   - par le SDK (recommandé : garde les métadonnées de chaque fichier) : `deploy\prod\upload.ps1`. Il lit
-     `API_KEY`, `API_URL` et `DEFAULT_WORKSPACE_NAME` dans la session PowerShell. Pour les prendre dans `.env` :
+9. **Import into Haystack Enterprise**, either:
+   - through the web interface: follow [deploy/prod/GUIDE.md](../prod/GUIDE.md), with the files of
+     `deploy\prod\build\files` instead of the release zip (4 batches with their metadata);
+   - with the SDK (recommended: keeps the metadata of each file): `deploy\prod\upload.ps1`. It reads
+     `API_KEY`, `API_URL` and `DEFAULT_WORKSPACE_NAME` from the PowerShell session. To take them from `.env`:
      ```powershell
      Get-Content .env | Where-Object { $_ -match '^\s*(API_KEY|API_URL|DEFAULT_WORKSPACE_NAME)\s*=\s*(.+)$' } | ForEach-Object { Set-Item "env:$($Matches[1])" $Matches[2].Trim() }
      .\deploy\prod\upload.ps1
      ```
-     Le SDK s'installe dans son propre environnement Python, à activer avant `upload.ps1` (commandes exactes dans
-     [deploy/prod/GUIDE.md](../prod/GUIDE.md), « Poste préparé »). Pour supprimer les documents disparus du corpus :
-     `deploy\prod\obsolete-files.ps1` (GUIDE, étape 2).
+     The SDK is installed in its own Python environment, to activate before `upload.ps1` (exact commands in
+     [deploy/prod/GUIDE.md](../prod/GUIDE.md#sdk-only-prepare-the-computer-once), "SDK only: prepare the
+     computer"). To delete the documents that have left the corpus: `deploy\prod\obsolete-files.ps1` (GUIDE,
+     step 2).
 
-10. **Facultatif : publier une release de données**, si vous avez les droits d'écriture sur le dépôt. Les collègues
-    récupèrent alors cet état avec `restore-state.ps1`, et le déploiement par l'interface part de cette release :
+10. **Optional: publish a data release**, if you have write access to the repository. Colleagues then get this
+    state with `restore-state.ps1`, and the deployment through the web interface starts from this release:
     ```powershell
     .venv\Scripts\python.exe -m tsi_agent release-data --publish
     ```
-    Tag par défaut `data-AAAA-MM-JJ` (option `--tag` si une release du jour existe déjà ; rien n'est écrasé).
+    Default tag `data-YYYY-MM-DD` (option `--tag` if a release of the day already exists; nothing is
+    overwritten).
 
-## Ce que fait chaque étape
+## What each step does
 
-| Étape | Commande | Ce qu'elle fait | LLM |
+| Step | Command | What it does | LLM |
 |---|---|---|---|
-| 1 | `run` | relit les pages pays, les domaines, le PDF SRSP et le sitemap ; extrait les projets nouveaux ou modifiés dans `output\projects` | oui, un appel par page modifiée (et un arbitrage du sitemap si besoin) |
-| 2 | `deliverables` | télécharge les publications des projets (PDF), extrait leur texte et en fait un résumé dans `output\deliverables` | oui, un appel par nouvelle publication |
-| 3 | `csr-fetch` | télécharge la base des CSR d'ECFIN (export complet, `output\csr\csr_full.xlsx`) | non |
-| 4 | `csr-build` | écrit une fiche par CSR (2016-2025) dans `output\csr` | non |
-| 5 | `csr-link` | évalue quels CSR chaque projet soutient (`output\csr_links`), avec cache : seuls les projets nouveaux ou modifiés sont envoyés | oui |
-| 6 | `anomalies` | rapport des anomalies de publication (`output\reports\anomalies.csv` et `.md`) | non |
-| 7 | `prod-export` | écrit un fichier par projet, programme, publication et CSR, avec ses métadonnées, dans `deploy\prod\build\files`, et le manifeste | non |
+| 1 | `run` | reads the country pages, the policy areas, the SRSP PDF and the sitemap again; extracts new or changed projects into `output\projects` | yes, one call per changed page (and one sitemap arbitration if needed) |
+| 2 | `deliverables` | downloads the project publications (PDF), extracts their text and summarises it into `output\deliverables` | yes, one call per new publication |
+| 3 | `csr-fetch` | downloads the ECFIN CSR database (full export, `output\csr\csr_full.xlsx`) | no |
+| 4 | `csr-build` | writes one file per CSR (2016-2025) into `output\csr` | no |
+| 5 | `csr-link` | assesses which CSRs each project supports (`output\csr_links`), with a cache: only new or changed projects are sent | yes |
+| 6 | `anomalies` | report of publication anomalies (`output\reports\anomalies.csv` and `.md`) | no |
+| 7 | `prod-export` | writes one file per project, programme, publication and CSR, with its metadata, into `deploy\prod\build\files`, and the manifest | no |
 
-Codes de sortie : `0` terminé ; `1` quota du LLM atteint (le run suivant reprend où il s'était arrêté) ; `2` erreur
-fatale (détail dans le message `ERREUR` et dans `logs\runs\`).
+Exit codes: `0` done; `1` LLM quota reached (the next run resumes where it stopped); `2` fatal error (details in
+the `ERREUR` (error) message and in `logs\runs\`).
 
-**Vérification du LLM avant tout travail.** `run`, `deliverables`, `csr-link` et `llm-check` vérifient d'abord le
-fournisseur : réglage `llm_provider` connu, clé présente et, en mode `openai`, un tout petit appel de test. Une clé,
-une URL (`openai_base_url`) ou un modèle (`openai_model`) refusés arrêtent donc la commande **tout de suite**, avec
-le message `ERREUR (fournisseur LLM) : ...` et le code `2`, sans rien traiter ; `update.ps1` s'arrête alors et
-rappelle quoi corriger. Si la clé ou le modèle sont refusés en cours de route (401, 403, 404), le lot s'arrête
-comme sur un quota (code `1`) et le journal précise qu'il s'agit d'une erreur de configuration. Pour `csr-link` seulement, le script continue sur un quota (« relancer plus
-tard ») et va jusqu'à `prod-export` : les liens déjà faits sont gardés.
+**LLM check before any work.** `run`, `deliverables`, `csr-link` and `llm-check` first check the provider: known
+`llm_provider` setting, key present and, in `openai` mode, a very small test call. A refused key, URL
+(`openai_base_url`) or model (`openai_model`) therefore stops the command **straight away**, with the message
+`ERREUR (fournisseur LLM) : ...` (LLM provider error) and exit code `2`, without processing anything; `update.ps1`
+then stops and reminds you what to fix. If the key or the model is refused along the way (401, 403, 404), the
+batch stops as on a quota (exit code `1`) and the log says it is a configuration error. For `csr-link` only, the
+script continues after a quota ("run again later") and goes on to `prod-export`: the links already made are
+kept.
 
-## Durées et coûts
+## Durations and costs
 
-- **Politesse envers le site de la Commission.** Au moins 2 s entre deux requêtes ; après une réponse « trop de
-  requêtes » (HTTP 429), l'agent ralentit jusqu'à 15 s entre deux requêtes et ne réaccélère que progressivement.
-  C'est la première cause de durée.
-- **Premier `run` sur un PC** : le cache HTTP est vide (il n'est pas dans la release), donc toutes les pages détail
-  sont rechargées, environ **2 heures**. Les runs suivants ne rechargent que les listings et les pages modifiées :
-  quelques minutes à une demi-heure.
-- **Publications** : téléchargement des PDF (jusqu'à 50 Mo) et un appel LLM long par publication ; compter plusieurs
-  minutes par dizaine de nouvelles publications.
-- **Coûts** (ordre de grandeur, prix public OpenAI de gpt-5.1 : 1,25 $ par million de tokens en entrée, 10 $ en
-  sortie) : environ 1 centime par projet extrait, 5 à 10 centimes par publication résumée, 4 centimes par projet
-  lié aux CSR. Une mise à jour hebdomadaire courante coûte moins de quelques dollars ; tout refaire (`run --full`,
-  toutes les publications, tous les liens) de l'ordre de 100 $. Avec EC GPT, la facturation est interne à la
-  Commission. Le coût de chaque run est dans `logs\runs\<run>.summary.json` (`cost_usd`), calculé avec la section
-  `pricing` des réglages.
+- **Politeness towards the Commission's website.** At least 2 s between two requests; after a "too many
+  requests" response (HTTP 429), the agent slows down to up to 15 s between two requests and only speeds up again
+  gradually. This is the main reason for the duration.
+- **First `run` on a PC**: the HTTP cache is empty (it is not in the release), so all the detail pages are
+  reloaded, about **2 hours**. Later runs only reload the listings and the changed pages: a few minutes to half an
+  hour.
+- **Publications**: download of the PDFs (up to 50 MB) and one long LLM call per publication; allow several
+  minutes per ten new publications.
+- **Costs** (order of magnitude, OpenAI public price for gpt-5.1: $1.25 per million input tokens, $10 per million
+  output tokens): about 1 cent per extracted project, 5 to 10 cents per summarised publication, 4 cents per
+  project linked to the CSRs. A usual weekly update costs less than a few dollars; redoing everything
+  (`run --full`, all the publications, all the links) about $100. With EC GPT, billing is internal to the
+  Commission. The cost of each run is in `logs\runs\<run>.summary.json` (`cost_usd`), computed with the `pricing`
+  section of the settings.
 
-## Dépannage
+## Troubleshooting
 
-| Message | Cause et solution |
+| Message | Cause and solution |
 |---|---|
-| `cle OPENAI_API_KEY absente` (update.ps1) | `.env` absent de la racine du dépôt, ou ligne `OPENAI_API_KEY=` vide : étape 5. |
-| `ERREUR (fournisseur LLM) : cle API absente` (code 2) | `.env` absent de la racine du dépôt, ou ligne `OPENAI_API_KEY=` vide : étape 5. |
-| `ERREUR (fournisseur LLM) : erreur de configuration ...` (code 2), ou 401, 403, 404 dans le journal | clé invalide ou expirée, clé OpenAI utilisée avec l'URL EC GPT (et inversement), URL ou nom de modèle erronés : vérifier `.env`, `openai_base_url` et `openai_model`. |
-| `reponse tronquee (finish_reason=length)` | la réponse a atteint `openai_max_completion_tokens` : augmenter ce réglage (par exemple 16000) ou le vider. |
-| Arrêt avec le code 1, « quota » | limite de débit ou de budget de la clé atteinte : relancer plus tard, la reprise est automatique (`openai_max_retries` règle les nouvelles tentatives immédiates). |
-| Délai dépassé (timeout) sur des publications | passerelle lente : augmenter `openai_timeout_s` (ou `deliverables_llm_timeout_s`) dans les réglages, puis relancer. |
-| HTTP 429 du site de la Commission | normal : l'agent ralentit tout seul. Ne pas lancer deux mises à jour en même temps. |
-| `csr-fetch a echoue` | site ECFIN indisponible : relancer plus tard, ou `update.ps1 -SkipCsr`. |
-| `prod-export a echoue` | types de métadonnées incohérents ou fichier de plus de 10 Mo : le JSON affiché donne les fichiers en cause. |
-| `llm-check` : « aucune page detail … dans le cache » | lancer d'abord un `run` (étape 7). |
-| `restore-state.ps1` : `gh` introuvable ou non connecté | installer GitHub CLI et lancer `gh auth login` (étape 1). |
-| `Python du projet introuvable` | l'environnement `.venv` n'est pas créé dans le dossier du dépôt : étape 3. |
-| Scripts bloqués (« l'exécution de scripts est désactivée ») | `Set-ExecutionPolicy -Scope Process Bypass` dans la fenêtre (étape 6), ou `powershell -ExecutionPolicy Bypass -File .\deploy\updater\update.ps1` ; dépôt récupéré en ZIP : `Unblock-File` (étape 6). |
-| Le script s'arrête sur un message de progression en rouge | lancé depuis PowerShell ISE : utiliser la console PowerShell normale. |
+| `key OPENAI_API_KEY is missing` (update.ps1) | `.env` missing from the root of the repository, or empty `OPENAI_API_KEY=` line: step 5. |
+| `ERREUR (fournisseur LLM) : cle API absente` (LLM provider error: API key missing; exit code 2) | `.env` missing from the root of the repository, or empty `OPENAI_API_KEY=` line: step 5. |
+| `ERREUR (fournisseur LLM) : erreur de configuration ...` (LLM provider error: configuration error; exit code 2), or 401, 403, 404 in the log | invalid or expired key, OpenAI key used with the EC GPT URL (or the other way round), wrong URL or model name: check `.env`, `openai_base_url` and `openai_model`. |
+| `reponse tronquee (finish_reason=length)` (truncated response) | the response reached `openai_max_completion_tokens`: increase this setting (for example 16000) or empty it. |
+| Stop with exit code 1, "quota" | rate or budget limit of the key reached: run again later, it resumes automatically (`openai_max_retries` sets the immediate retries). |
+| Timeout on publications | slow gateway: increase `openai_timeout_s` (or `deliverables_llm_timeout_s`) in the settings, then run again. |
+| HTTP 429 from the Commission's website | normal: the agent slows down by itself. Do not run two updates at the same time. |
+| `csr-fetch failed` | ECFIN site unavailable: run again later, or `update.ps1 -SkipCsr`. |
+| `prod-export failed` | inconsistent metadata types or a file over 10 MB: the JSON shown gives the files concerned. |
+| `llm-check`: « aucune page detail … dans le cache » (no detail page … in the cache) | run a `run` first (step 7). |
+| `restore-state.ps1`: `gh` not found or not signed in | install GitHub CLI and run `gh auth login` (step 1). |
+| `project Python not found` | the `.venv` environment has not been created in the repository folder: step 3. |
+| Scripts blocked ("running scripts is disabled on this system") | `Set-ExecutionPolicy -Scope Process Bypass` in the window (step 6), or `powershell -ExecutionPolicy Bypass -File .\deploy\updater\update.ps1`; repository downloaded as a ZIP: `Unblock-File` (step 6). |
+| The script stops on a progress message in red | started from PowerShell ISE: use the normal PowerShell console. |
 
-Ne jamais lancer deux commandes de mise à jour en même temps sur le même dossier (`run`, `deliverables` et
-`csr-link` écrivent dans `output\`).
+Never run two update commands at the same time on the same folder (`run`, `deliverables` and `csr-link` write
+into `output\`).

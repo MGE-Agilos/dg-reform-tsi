@@ -7,16 +7,18 @@ régulièrement : il ne traite que les projets nouveaux ou modifiés.
 
 Design : [docs/superpowers/specs/2026-09-30-tsi-extraction-agent-design.md](docs/superpowers/specs/2026-09-30-tsi-extraction-agent-design.md)
 
-## Démarrer
+## Getting started
 
-| Parcours | Guide |
+The deployment guides below are in English; the rest of this document is in French.
+
+| Task | Guide |
 |---|---|
-| **Déployer en PROD sur Haystack Enterprise** (fichiers de données, index, pipelines) | [deploy/prod/GUIDE.md](deploy/prod/GUIDE.md) (ordre des opérations) et [deploy/prod/README.md](deploy/prod/README.md) (détail) |
-| **Mettre à jour les données (PC)** : nouveaux projets, publications, CSR et liens, avec EC GPT ou OpenAI | [deploy/updater/README.md](deploy/updater/README.md) |
-| **Explorateur web** : GitHub Pages ou serveur local | <https://mge-agilos.github.io/dg-reform-tsi/> et [deploy/frontend-local/README.md](deploy/frontend-local/README.md) |
+| **Deploy to PROD on Haystack Enterprise** (data files, index, pipelines) | [deploy/prod/GUIDE.md](deploy/prod/GUIDE.md) (order of operations) and [deploy/prod/README.md](deploy/prod/README.md) (details) |
+| **Update the data (PC)**: new projects, publications, CSRs and links, with EC GPT or OpenAI | [deploy/updater/README.md](deploy/updater/README.md) |
+| **Web explorer**: GitHub Pages or local server | <https://mge-agilos.github.io/dg-reform-tsi/> and [deploy/frontend-local/README.md](deploy/frontend-local/README.md) |
 
-**Dernières données :** [Releases du dépôt](https://github.com/MGE-Agilos/dg-reform-tsi/releases) (tags
-`data-AAAA-MM-JJ` : fichiers à téléverser, manifeste et état de `output/`, publiés par
+**Latest data:** [repository Releases](https://github.com/MGE-Agilos/dg-reform-tsi/releases) (tags
+`data-YYYY-MM-DD`: files to upload, manifest and state of `output/`, published by
 `python -m tsi_agent release-data --publish`).
 
 La suite de ce document décrit l'agent lui-même (installation pour le développement, sources, sorties, chatbot local).

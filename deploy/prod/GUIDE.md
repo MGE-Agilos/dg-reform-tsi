@@ -1,8 +1,8 @@
 # Updating PROD on Haystack Enterprise Platform
 
-This guide gives the order of operations to replace the corpus of the `tsi-reform` workspace with a new data release, then republish the pipelines. It does not repeat the details, which are in [README.md](README.md), written in French: the role of each file, workspace isolation, secrets and the full acceptance tests.
+This guide gives the order of operations to replace the corpus of the `tsi-reform` workspace with a new data release, then republish the pipelines. It does not repeat the details, which are in [README.md](README.md): the role of each file, workspace isolation, secrets and the full acceptance tests.
 
-**First installation.** Before anything else, follow steps 1 and 3 of the [README](README.md#étapes): workspace, `GPT_EC` secret, SearchApi, API key and index creation.
+**First installation.** Before anything else, follow steps 1 and 3 of the [README](README.md#steps): workspace, `GPT_EC` secret, SearchApi, API key and index creation.
 
 ## Before you start
 
@@ -136,7 +136,7 @@ If the YAML files have not changed since the last deployment and you used the sa
 ## 6. Acceptance tests
 
 In each service's Playground, start a new conversation for each question:
-1. Use the questions from the [README acceptance tests](README.md#5-recette): chat, aggregation, CSR and impact analysis.
+1. Use the questions from the [README acceptance tests](README.md#5-acceptance-tests): chat, aggregation, CSR and impact analysis.
 2. Compare the answers with the expected ones.
 3. Note the duration and the tokens in *Analytics*.
 
@@ -147,7 +147,7 @@ After a web interface upload (`pipeline-tsi-chat-ui.yaml`), aggregation and link
 - **Indexed files = 0, or far fewer than expected.** Metadata is missing on the batch (`Topic` = `TSI-BDG`, `corpus` = `dg-reform-tsi`). Delete those files and redo the batch with its metadata. Also check the index filters (prefix `tsi-` and `corpus`).
 - **Failed files > 0.** Open the failed file in *Files* and upload it again.
 - **`.meta.json` files show up as documents in *Files*.** They were uploaded through the web interface: delete them.
-- **`upload.ps1` errors** (the script's messages are in French):
-  - « variable d'environnement … absente » (environment variable … missing): set `API_KEY`, `API_URL` and `DEFAULT_WORKSPACE_NAME` in the same PowerShell window.
+- **`upload.ps1` errors:**
+  - "environment variable … is missing": set `API_KEY`, `API_URL` and `DEFAULT_WORKSPACE_NAME` in the same PowerShell window.
   - "haystack-enterprise is not recognized": activate the SDK environment.
-- **"Model (custom) is not connected".** The pasted YAML is not the repository version. See the README section *À fournir ou vérifier côté client* (to provide or check on the client side).
+- **"Model (custom) is not connected".** The pasted YAML is not the repository version. See the README section [To provide or check on the client side](README.md#to-provide-or-check-on-the-client-side).

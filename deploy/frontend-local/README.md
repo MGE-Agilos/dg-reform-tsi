@@ -1,14 +1,14 @@
-# Explorateur web sur un serveur local
+# Web explorer on a local server
 
-L'explorateur (`web/` : projets, CSR, anomalies, onglets *Chat* et *Impact*) est publié sur GitHub Pages
-(<https://mge-agilos.github.io/dg-reform-tsi/>). Ce dossier permet de le servir aussi depuis un PC ou un serveur
-interne, avec sa propre configuration. Les données restent dans Supabase : seule la page est servie en local.
+The explorer (`web/`: projects, CSRs, anomalies, *Chat* and *Impact* tabs) is published on GitHub Pages
+(<https://mge-agilos.github.io/dg-reform-tsi/>). This folder lets you also serve it from a PC or an internal
+server, with its own configuration. The data stays in Supabase: only the page is served locally.
 
-| Fichier | Rôle |
+| File | Role |
 |---|---|
-| `config.local.example.js` | modèle de configuration, à copier vers `config.local.js` (non versionné) |
-| `docker-compose.yml`, `nginx.conf` | mode Docker : nginx sert `web/`, avec `config.local.js` à la place de `config.js` |
-| `serve.ps1` | mode sans Docker : serveur HTTP de Python sur une copie de `web/` (`dist/`, non versionné) |
+| `config.local.example.js` | configuration template, to copy to `config.local.js` (not in Git) |
+| `docker-compose.yml`, `nginx.conf` | Docker mode: nginx serves `web/`, with `config.local.js` instead of `config.js` |
+| `serve.ps1` | mode without Docker: Python's HTTP server on a copy of `web/` (`dist/`, not in Git) |
 
 ## 1. Configuration
 
@@ -17,73 +17,73 @@ Copy-Item deploy\frontend-local\config.local.example.js deploy\frontend-local\co
 notepad deploy\frontend-local\config.local.js
 ```
 
-- `SUPABASE_URL` et `SUPABASE_ANON_KEY` : projet Supabase (par défaut le même que GitHub Pages). La clé `anon` est
-  publique par nature ; **ne jamais** y mettre la clé `service_role`.
-- `PROXY_URL` : service des onglets *Chat* et *Impact*. Garder une seule des deux lignes :
-  - `tsi-assistant` : Claude (Anthropic), sur les données Supabase, comme sur GitHub Pages ;
-  - `haystack-proxy` : services `tsi-chat` et `tsi-impact` de Haystack Enterprise (LLM du client). La fonction doit
-    être déployée avec ses secrets (README racine, « Chat et impact (lot 2) »).
+- `SUPABASE_URL` and `SUPABASE_ANON_KEY`: Supabase project (by default the same as GitHub Pages). The `anon` key
+  is public by nature; **never** put the `service_role` key there.
+- `PROXY_URL`: service behind the *Chat* and *Impact* tabs. Keep only one of the two lines:
+  - `tsi-assistant`: Claude (Anthropic), on the Supabase data, as on GitHub Pages;
+  - `haystack-proxy`: the `tsi-chat` and `tsi-impact` services of Haystack Enterprise (the client's LLM). The
+    function must be deployed with its secrets (root README, section « Chat et impact (lot 2) », in French).
 
-## 2. Lancer
+## 2. Start
 
-**Avec Docker** (Docker Desktop ou Docker Engine) :
+**With Docker** (Docker Desktop or Docker Engine):
 
 ```powershell
 cd deploy\frontend-local
 docker compose up -d        # http://localhost:8080/
-docker compose down         # arrêt
+docker compose down         # stop
 ```
 
-Pour un autre port, changer `"8080:80"` dans `docker-compose.yml`. Après une modification de `web/` ou de
-`config.local.js`, recharger la page suffit (fichiers montés, `config.js` jamais mis en cache).
+For another port, change `"8080:80"` in `docker-compose.yml`. After a change to `web/` or to `config.local.js`,
+reloading the page is enough (the files are mounted, and `config.js` is never cached).
 
-Créer `config.local.js` **avant** `docker compose up` : si le fichier manque, Docker crée à sa place un **dossier**
-`config.local.js` vide et la page ne trouve pas sa configuration. Dans ce cas : `docker compose down`, supprimer ce
-dossier, copier l'exemple, relancer.
+Create `config.local.js` **before** `docker compose up`: if the file is missing, Docker creates an empty
+**folder** named `config.local.js` instead, and the page does not find its configuration. In that case: run
+`docker compose down`, delete this folder, copy the example, and start again.
 
-**Sans Docker** (Python 3 suffit, celui de `.venv` s'il existe) :
+**Without Docker** (Python 3 is enough, the one in `.venv` if it exists):
 
-Dans la console PowerShell (pas ISE), autoriser d'abord les scripts dans la fenêtre :
-`Set-ExecutionPolicy -Scope Process Bypass` (ou lancer `powershell -ExecutionPolicy Bypass -File
-.\deploy\frontend-local\serve.ps1`). Dépôt récupéré en ZIP : `Get-ChildItem -Recurse -Filter *.ps1 | Unblock-File`
-une fois.
+In the PowerShell console (not ISE), first allow scripts in the window:
+`Set-ExecutionPolicy -Scope Process Bypass` (or run `powershell -ExecutionPolicy Bypass -File
+.\deploy\frontend-local\serve.ps1`). If you got the repository as a ZIP: run
+`Get-ChildItem -Recurse -Filter *.ps1 | Unblock-File` once.
 
 ```powershell
 .\deploy\frontend-local\serve.ps1                    # http://localhost:8000/
 .\deploy\frontend-local\serve.ps1 -Port 8001
-.\deploy\frontend-local\serve.ps1 -Bind 0.0.0.0      # accessible depuis les autres postes du réseau
+.\deploy\frontend-local\serve.ps1 -Bind 0.0.0.0      # reachable from the other computers of the network
 ```
 
-Le script recopie `web/` dans `dist/` à chaque lancement : relancer après une modification. Ctrl+C pour arrêter. Le
-serveur de Python convient pour des essais et quelques testeurs ; pour un service permanent, préférer Docker.
+The script copies `web/` to `dist/` each time it starts: start it again after a change. Ctrl+C to stop. Python's
+server is fine for trials and a few testers; for a permanent service, prefer Docker.
 
-## 3. Supabase : autoriser l'adresse locale
+## 3. Supabase: allow the local address
 
-Sans ces réglages, la connexion ou les onglets *Chat* et *Impact* échouent.
+Without these settings, sign-in or the *Chat* and *Impact* tabs fail.
 
-1. **Redirect URLs.** *Authentication > URL Configuration > Redirect URLs* : ajouter l'adresse de la page suivie de
-   `/**`, par exemple `http://localhost:8080/**` (Docker), `http://localhost:8000/**` (`serve.ps1`) ou
-   `https://<serveur>:<port>/**`. Le lien magique ramène l'utilisateur à l'adresse depuis laquelle il l'a demandé.
-2. **Origines autorisées des Edge Functions.** Les fonctions `tsi-assistant` et `haystack-proxy` n'acceptent par
-   défaut que `https://mge-agilos.github.io` et `http://localhost:8000`. Pour une autre adresse, renseigner le secret
-   `ALLOWED_ORIGINS` (*Edge Functions > Secrets*) avec **toutes** les origines, séparées par des virgules (la valeur
-   remplace la liste par défaut), par exemple :
-   `https://mge-agilos.github.io,http://localhost:8000,http://localhost:8080`. Une origine est le schéma, l'hôte et le
-   port, sans chemin ni `/` final.
+1. **Redirect URLs.** *Authentication > URL Configuration > Redirect URLs*: add the address of the page followed by
+   `/**`, for example `http://localhost:8080/**` (Docker), `http://localhost:8000/**` (`serve.ps1`) or
+   `https://<server>:<port>/**`. The magic link takes the user back to the address from which they requested it.
+2. **Allowed origins of the Edge Functions.** By default, the `tsi-assistant` and `haystack-proxy` functions only
+   accept `https://mge-agilos.github.io` and `http://localhost:8000`. For another address, set the
+   `ALLOWED_ORIGINS` secret (*Edge Functions > Secrets*) with **all** the origins, separated by commas (the value
+   replaces the default list), for example:
+   `https://mge-agilos.github.io,http://localhost:8000,http://localhost:8080`. An origin is the scheme, the host and
+   the port, without a path or a trailing `/`.
 
-`http://localhost:8000` et `http://127.0.0.1:8000` sont deux origines différentes pour le navigateur et pour
-Supabase : ouvrir la page à l'adresse affichée par le script (`http://localhost:<port>/`), celle qui est déclarée
-ci-dessus, et pas une autre écriture de la même machine.
+`http://localhost:8000` and `http://127.0.0.1:8000` are two different origins for the browser and for Supabase:
+open the page at the address shown by the script (`http://localhost:<port>/`), the one declared above, and not
+another way of writing the same machine.
 
-## 4. Sur un vrai serveur
+## 4. On a real server
 
-- Mettre **HTTPS** devant (reverse proxy : IIS, nginx, Caddy, Traefik… avec un certificat). En HTTP sur une autre
-  adresse que `localhost`, le navigateur bloque certaines fonctions (copie dans le presse-papiers du rapport
-  d'impact) et le lien magique arrive sur une page non sécurisée.
-- Ouvrir le port choisi dans le pare-feu du serveur seulement si la page doit être vue depuis d'autres postes.
+- Put **HTTPS** in front of it (reverse proxy: IIS, nginx, Caddy, Traefik… with a certificate). Over HTTP on an
+  address other than `localhost`, the browser blocks some features (copying the impact report to the clipboard)
+  and the magic link lands on an insecure page.
+- Open the chosen port in the server's firewall only if the page must be reachable from other computers.
 
-## Testeurs
+## Testers
 
-L'accès reste géré dans Supabase, comme pour GitHub Pages : invitation dans *Authentication > Users*, puis ajout de
-l'e-mail à la table `testers` (README racine, « Explorateur web »). Un serveur local ne donne accès à aucune donnée
-sans connexion d'un testeur.
+Access is still managed in Supabase, as for GitHub Pages: invitation in *Authentication > Users*, then the e-mail
+added to the `testers` table (root README, section « Explorateur web », in French). A local server gives access to
+no data unless a tester signs in.

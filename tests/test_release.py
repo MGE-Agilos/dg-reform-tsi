@@ -52,6 +52,7 @@ def test_build_release_writes_the_three_assets_and_notes(tree):
     assert json.loads((rel / "manifest.json").read_text(encoding="utf-8")) == MANIFEST
     notes = (rel / "NOTES.md").read_text(encoding="utf-8")
     assert "2026-10-14" in notes and "deploy/prod/GUIDE.md" in notes
+    assert notes.startswith("# TSI data 2026-10-14") and "chunks expected" in notes
     assert "project" in notes and "csr" in notes and "2" in notes and "7" in notes
     assert summary["prod_files"] == 4 and summary["state_files"] == 4
 
@@ -111,7 +112,7 @@ def test_publish_calls_gh_release_create(tree, monkeypatch):
     assert view == ["gh", "release", "view", "data-2026-10-14", "-R", "MGE-Agilos/dg-reform-tsi"]
     assert create == ["gh", "release", "create", "data-2026-10-14", str(rel / "tsi-prod-files.zip"),
                       str(rel / "manifest.json"), str(rel / "tsi-output-state.zip"),
-                      "--title", "Données TSI 2026-10-14", "--notes-file", str(rel / "NOTES.md"),
+                      "--title", "TSI data 2026-10-14", "--notes-file", str(rel / "NOTES.md"),
                       "--target", "main", "-R", "MGE-Agilos/dg-reform-tsi"]
     assert result["url"] == "https://github.com/o/r/releases/tag/x"
 

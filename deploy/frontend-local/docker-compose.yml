@@ -1,6 +1,6 @@
-# Explorateur web (web/) servi par nginx, avec la configuration locale a la place de web/config.js.
+# Web explorer (web/) served by nginx, with the local configuration instead of web/config.js.
 #   cd deploy\frontend-local
-#   Copy-Item config.local.example.js config.local.js     # puis l'adapter
+#   Copy-Item config.local.example.js config.local.js     # then adapt it
 #   docker compose up -d                                  # http://localhost:8080/
 #   docker compose down
 services:

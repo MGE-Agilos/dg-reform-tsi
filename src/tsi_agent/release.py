@@ -95,27 +95,28 @@ def _notes(tag: str, day: date, manifest: dict[str, Any]) -> str:
     def by_type(key: str) -> str:
         return ", ".join(f"{k} {v}" for k, v in (manifest.get(key) or {}).items()) or "-"
 
-    return f"""# Données TSI {day.isoformat()} (`{tag}`)
+    return f"""# TSI data {day.isoformat()} (`{tag}`)
 
-Corpus `{manifest.get('corpus', '-')}` : {manifest.get('files')} fichiers, {manifest.get('chunks')} morceaux attendus.
+Corpus `{manifest.get('corpus', '-')}`: {manifest.get('files')} files, {manifest.get('chunks')} chunks expected.
 
-- Fichiers par type : {by_type('files_by_type')}
-- Morceaux par type : {by_type('chunks_by_type')}
+- Files by type: {by_type('files_by_type')}
+- Chunks by type: {by_type('chunks_by_type')}
 
-## Fichiers joints
+## Attached files
 
-- `{PROD_ZIP}` : fichiers à téléverser dans le workspace Haystack Enterprise (`tsi-*.md` et leurs `.meta.json`).
-- `{MANIFEST}` : chiffres attendus après indexation (fichiers et morceaux par type).
-- `{STATE_ZIP}` : état de `output/` (sans `vectors/` ni `reports/`), pour une mise à jour sur un autre PC
+- `{PROD_ZIP}`: files to upload to the Haystack Enterprise workspace (`tsi-*.md` and their `.meta.json`).
+- `{MANIFEST}`: figures expected after indexing (files and chunks by type).
+- `{STATE_ZIP}`: state of `output/` (without `vectors/` or `reports/`), for an update on another PC
   (`deploy/updater/restore-state.ps1`).
 
-## Procédure courte
+## Short procedure
 
-1. Télécharger `{PROD_ZIP}` et `{MANIFEST}`.
-2. Dans le workspace, supprimer les fichiers `tsi-*`, puis téléverser le contenu du zip.
-3. Contrôler l'indexation avec les chiffres du manifeste, puis republier les pipelines.
+1. Download `{PROD_ZIP}` and `{MANIFEST}`.
+2. In the workspace, delete the `tsi-*` files that are no longer needed (SDK upload; `deploy/prod/obsolete-files.ps1`
+   lists them) or all `tsi-*` files (web interface upload), then upload the content of the zip.
+3. Check the indexing against the figures of the manifest, then republish the pipelines.
 
-Détail : deploy/prod/GUIDE.md ({GUIDE_URL}).
+Details: deploy/prod/GUIDE.md ({GUIDE_URL}).
 """
 
 
@@ -163,7 +164,7 @@ def publish(tag: str, release_dir: Path, repo: str | None = None, *, title_date:
     match = _DATED_TAG.match(tag)
     label = title_date or (match.group(1) if match else date.today().isoformat())
     cmd = ["gh", "release", "create", tag, *(str(release_dir / n) for n in ASSETS),
-           "--title", f"Données TSI {label}", "--notes-file", str(release_dir / NOTES),
+           "--title", f"TSI data {label}", "--notes-file", str(release_dir / NOTES),
            "--target", TARGET_BRANCH, *repo_args]
     proc = _gh(cmd)
     if proc.returncode != 0:
