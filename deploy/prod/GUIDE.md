@@ -1,162 +1,153 @@
-# Mettre à jour la PROD Haystack Enterprise par l'interface
+# Updating PROD on Haystack Enterprise Platform
 
-Ordre des opérations pour remplacer le corpus du workspace `tsi-reform` par une nouvelle release de données, puis
-republier les pipelines. Le détail (rôle de chaque fichier, isolation du workspace, secrets, recette complète) est dans
-[README.md](README.md) : ce guide ne le répète pas, il donne l'ordre à suivre.
+This guide gives the order of operations to replace the corpus of the `tsi-reform` workspace with a new data release, then republish the pipelines. It does not repeat the details, which are in [README.md](README.md), written in French: the role of each file, workspace isolation, secrets and the full acceptance tests.
 
-Première installation (workspace, secret `GPT_EC`, SearchApi, clé API, création de l'index) : suivre d'abord les
-étapes 1 et 3 du [README](README.md#étapes).
+**First installation.** Before anything else, follow steps 1 and 3 of the [README](README.md#étapes): workspace, `GPT_EC` secret, SearchApi, API key and index creation.
 
-## Avant de commencer
+## Before you start
 
-- Accès au workspace **`tsi-reform`** de la plateforme du client.
-- La release de données à déployer : page *Releases* du dépôt
-  (<https://github.com/MGE-Agilos/dg-reform-tsi/releases>), tag `data-AAAA-MM-JJ`. Sa description (`NOTES.md`) donne
-  les chiffres attendus.
-- Choisir la méthode de téléversement (étape 3) : **SDK** (recommandé, chatbot complet) ou **interface** (sans
-  installation, chatbot réduit).
+- **Access:** you need access to the **`tsi-reform`** workspace on the client's platform.
+- **Data release:** pick the release to deploy from the repository's *Releases* page (<https://github.com/MGE-Agilos/dg-reform-tsi/releases>). Its tag looks like `data-YYYY-MM-DD`, and its description (`NOTES.md`) gives the expected figures.
+- **Upload method (step 3):** choose either the **SDK** (recommended, full chatbot) or the **web interface** (nothing to install, reduced chatbot).
 
-### Pour le SDK seulement : poste préparé (une fois)
+### SDK only: prepare the computer (once)
 
-Python 3.12 et Git installés. Dans **PowerShell** (la console normale, pas PowerShell ISE) :
+Python 3.12 and Git must be installed. Open **PowerShell** (the normal console, not PowerShell ISE):
 
 ```powershell
-# Scripts du dépôt (upload.ps1, obsolete-files.ps1) et YAML des pipelines
+# Repository scripts (upload.ps1, obsolete-files.ps1) and pipeline YAMLs
 cd C:\
 git clone https://github.com/MGE-Agilos/dg-reform-tsi.git tsi
-# SDK Haystack Enterprise, dans son propre environnement Python
+# Haystack Enterprise SDK, in its own Python environment
 python -m venv C:\tsi-sdk
 C:\tsi-sdk\Scripts\pip install haystack-enterprise-sdk
 ```
 
-À chaque session, avant d'utiliser le SDK :
+In each session, before using the SDK:
 
 ```powershell
-Set-ExecutionPolicy -Scope Process Bypass      # autorise les scripts .ps1 dans cette fenêtre seulement
-C:\tsi-sdk\Scripts\Activate.ps1                # active l'environnement du SDK (commande haystack-enterprise)
+Set-ExecutionPolicy -Scope Process Bypass      # allows .ps1 scripts in this window only
+C:\tsi-sdk\Scripts\Activate.ps1                # activates the SDK environment (haystack-enterprise command)
 cd C:\tsi
 git pull
 ```
 
-Si Windows refuse encore un script téléchargé (dépôt récupéré en ZIP plutôt que par `git clone`) :
-`Get-ChildItem C:\tsi -Recurse -Filter *.ps1 | Unblock-File`. Autre façon de lancer un script sans changer la
-politique : `powershell -ExecutionPolicy Bypass -File .\deploy\prod\upload.ps1 ...`.
+Windows may still block a downloaded script, for example if you got the repository as a ZIP rather than with `git clone`. In that case, run `Get-ChildItem C:\tsi -Recurse -Filter *.ps1 | Unblock-File`. You can also run a script without changing the policy: `powershell -ExecutionPolicy Bypass -File .\deploy\prod\upload.ps1 ...`.
 
-## 1. Télécharger
+## 1. Download
 
-Depuis la release, télécharger **`tsi-prod-files.zip`** et **`manifest.json`**, puis décompresser le zip dans un
-**dossier vide**, par exemple `C:\tsi-release\files` (et `manifest.json` dans `C:\tsi-release`). Le zip contient les
-fichiers `tsi-*.md` et leurs `.meta.json`, à plat. Un dossier qui contient déjà d'anciens fichiers fausse les contrôles.
+1. From the release, download **`tsi-prod-files.zip`** and **`manifest.json`**.
+2. Unzip the archive into an **empty folder**, for example `C:\tsi-release\files`, and put `manifest.json` in `C:\tsi-release`.
 
-En ligne de commande (facultatif, GitHub CLI connecté) :
+The zip contains the `tsi-*.md` files and their `.meta.json`, all at the same level. A folder that already holds old files makes the checks fail.
+
+From the command line (optional, with GitHub CLI signed in):
 
 ```powershell
-gh release download data-AAAA-MM-JJ -p tsi-prod-files.zip -p manifest.json -R MGE-Agilos/dg-reform-tsi -D C:\tsi-release
+gh release download data-YYYY-MM-DD -p tsi-prod-files.zip -p manifest.json -R MGE-Agilos/dg-reform-tsi -D C:\tsi-release
 Expand-Archive C:\tsi-release\tsi-prod-files.zip -DestinationPath C:\tsi-release\files
 ```
 
-## 2. Préparer le workspace
+## 2. Prepare the workspace
 
-Pendant l'indexation (étapes 3 et 4), le chatbot et l'analyse d'impact répondent avec un corpus partiel, ou sans
-résultat juste après une suppression : prévenir les testeurs, ou faire la mise à jour en dehors des heures d'usage.
+While indexing runs (steps 3 and 4), the chatbot and the impact analysis answer from a partial corpus, or return nothing right after a deletion. Warn the testers, or update outside working hours.
 
-- **SDK : ne pas tout supprimer.** Le téléversement en `OVERWRITE` remplace les fichiers modifiés et la plateforme ne
-  réindexe que ceux-là. Il reste à supprimer les documents qui ont disparu du corpus. Pour obtenir leurs noms :
+- **SDK: do not delete everything.** An `OVERWRITE` upload replaces the changed files, and the platform re-indexes only those. You only need to delete the documents that have left the corpus. To get their names:
   ```powershell
-  # Dossier des fichiers de la release précédente (celle en ligne), décompressée à part :
-  .\deploy\prod\obsolete-files.ps1 -Current C:\tsi-release-precedente\files -New C:\tsi-release\files
-  # ou liste des noms copiée depuis Files (un nom par ligne) :
-  .\deploy\prod\obsolete-files.ps1 -Current noms-workspace.txt -New C:\tsi-release\files -Out a-supprimer.txt
+  # Files of the previous release (the one currently online), unzipped separately:
+  .\deploy\prod\obsolete-files.ps1 -Current C:\tsi-release-previous\files -New C:\tsi-release\files
+  # or a list of names copied from Files (one name per line):
+  .\deploy\prod\obsolete-files.ps1 -Current workspace-names.txt -New C:\tsi-release\files -Out to-delete.txt
   ```
-  Supprimer ces fichiers dans *Files* (avant ou après le téléversement). Le script ne supprime rien lui-même.
-- **Interface : supprimer d'abord tous les fichiers `tsi-*`.** Dans *Files*, filtrer sur `tsi-` et tout supprimer.
-  Ne pas toucher aux fichiers qui ne commencent pas par `tsi-` : ils appartiennent à d'autres corpus.
+  Delete these files in *Files*, before or after the upload. The script only prints the names: it deletes nothing itself.
+- **Web interface: first delete all `tsi-*` files.** In *Files*, filter on `tsi-` and delete everything. Leave files that do not start with `tsi-` alone: they belong to other corpora.
 
-## 3. Téléverser
+## 3. Upload
 
-Les deux méthodes ne donnent pas le même chatbot :
+The two methods do not give the same chatbot:
 
-| Méthode | Métadonnées | Pipeline de chat à utiliser |
+| Method | Metadata | Chat pipeline to use |
 |---|---|---|
-| **SDK** : `deploy\prod\upload.ps1` (recommandé) | complètes : chaque `.meta.json` est rattaché à son fichier (pays, programme, année, CSR liés…) | `pipeline-tsi-chat.yaml` (avec `list_projects`, `find_projects` et le filtre `csr`) |
-| **Interface** : *Files > Upload*, en 4 lots | communes à chaque lot seulement (`Topic`, `corpus`, `doc_type`) | `pipeline-tsi-chat-ui.yaml` (recherche seulement : ni `list_projects`, ni `find_projects`, ni filtre `csr`) |
+| **SDK**: `deploy\prod\upload.ps1` (recommended) | Complete: each `.meta.json` is attached to its file (countries, programme, year, linked CSRs…). | `pipeline-tsi-chat.yaml` (with `list_projects`, `find_projects` and the `csr` filter) |
+| **Web interface**: *Files > Upload*, in 4 batches | Only what is common to each batch (`Topic`, `corpus`, `doc_type`). | `pipeline-tsi-chat-ui.yaml` (search only: no `list_projects`, no `find_projects`, no `csr` filter) |
 
-### Par le SDK
+### With the SDK
 
-Dans la session préparée plus haut (environnement du SDK activé, dossier `C:\tsi`) :
+In the session prepared above (SDK environment activated, folder `C:\tsi`):
 
 ```powershell
-$s = Read-Host -AsSecureString "Clé API du workspace"
+$s = Read-Host -AsSecureString "Workspace API key"
 $env:API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))
-$env:API_URL = "<URL de l'API de la plateforme du client>"
+$env:API_URL = "<API URL of the client's platform>"
 $env:DEFAULT_WORKSPACE_NAME = "tsi-reform"
 .\deploy\prod\upload.ps1 -Files C:\tsi-release\files -Manifest C:\tsi-release\manifest.json
 ```
 
-Le script vérifie les variables, le manifeste et le nombre de fichiers, affiche l'URL et le workspace visés, puis
-téléverse. Sans `-Files` ni `-Manifest`, il prend `deploy\prod\build\files` et `deploy\prod\build\manifest.json`
-(sortie de `prod-export` sur le PC de mise à jour) : ce dossier doit alors ne contenir que l'export courant.
+The script checks the variables, the manifest and the number of files. It then shows the target URL and workspace, and uploads.
 
-### Par l'interface
+Without `-Files` and `-Manifest`, the script uses `deploy\prod\build\files` and `deploy\prod\build\manifest.json`, which is the output of `prod-export` on the update PC. That folder must then hold only the current export.
 
-L'interface n'attache pas les `.meta.json` : ils deviendraient des documents ordinaires. On téléverse donc **seulement
-les `.md`**, en **4 lots**, chacun avec ses métadonnées communes saisies dans la fenêtre de téléversement :
+### With the web interface
 
-| Lot | Fichiers (filtre du nom dans l'explorateur Windows) | Métadonnées du lot |
+The interface does not attach the `.meta.json` files: they would become ordinary documents. So upload **only the `.md` files**, in **4 batches**, and type each batch's common metadata in the upload window:
+
+| Batch | Files (name filter in Windows Explorer) | Batch metadata |
 |---|---|---|
 | 1 | `tsi-project-*.md` | `Topic` = `TSI-BDG`, `corpus` = `dg-reform-tsi`, `doc_type` = `project` |
 | 2 | `tsi-programme-*.md` | `Topic` = `TSI-BDG`, `corpus` = `dg-reform-tsi`, `doc_type` = `programme` |
 | 3 | `tsi-deliverable-*.md` | `Topic` = `TSI-BDG`, `corpus` = `dg-reform-tsi`, `doc_type` = `deliverable` |
 | 4 | `tsi-csr-*.md` | `Topic` = `TSI-BDG`, `corpus` = `dg-reform-tsi`, `doc_type` = `csr` |
 
-Dans l'explorateur Windows, taper le filtre (par exemple `tsi-project-*.md`) dans la zone de recherche du dossier,
-tout sélectionner (Ctrl+A) et glisser dans la fenêtre de téléversement. Vérifier qu'aucun `.meta.json` n'est
-sélectionné. `Topic` et `corpus` sont indispensables : sans eux, le routeur et les filtres de l'index écartent les
-fichiers. `doc_type` sert aux outils `search_projects`, `search_deliverables` et `search_csrs`.
+For each batch:
+1. In Windows Explorer, type the filter (for example `tsi-project-*.md`) in the folder's search box.
+2. Select everything (Ctrl+A) and drag it into the upload window.
+3. Check that no `.meta.json` file is selected.
 
-Contrôle dans *Files* : autant de fichiers `tsi-*.md` que `files` dans `manifest.json` (détail par type dans
-`files_by_type`), et les métadonnées visibles sur un fichier de chaque lot.
+`Topic` and `corpus` are required: without them, the index router and filters discard the files. `doc_type` is used by the `search_projects`, `search_deliverables` and `search_csrs` tools.
 
-## 4. Contrôler l'index
+Check in *Files*:
+- the number of `tsi-*.md` files equals `files` in `manifest.json`, with the breakdown by type in `files_by_type`;
+- the metadata shows on one file from each batch.
 
-*Indexes > tsi-corpus* : la plateforme indexe les nouveaux fichiers. Quand l'état est *Indexed* :
+## 4. Check the index
 
-- *Indexed files* = `files` du manifeste ;
-- *Documents in index* = `chunks` du manifeste (le détail par type est dans `chunks_by_type`) ;
+In *Indexes > tsi-corpus*, the platform indexes the new files. When the status is *Indexed*, check:
+
+- *Indexed files* = `files` in the manifest;
+- *Documents in index* = `chunks` in the manifest, with the breakdown by type in `chunks_by_type`;
 - *Failed files* = 0.
 
-Si l'index n'existe pas encore, le créer avec `index-tsi-corpus.yaml` et ses filtres (préfixe `tsi-`, `corpus` =
-`dg-reform-tsi`) avant *Enable* : étape 3 du [README](README.md#3-index).
+If the index does not exist yet, create it from `index-tsi-corpus.yaml`, with its filters (prefix `tsi-`, `corpus` = `dg-reform-tsi`), before clicking *Enable*. See step 3 of the [README](README.md#3-index).
 
 ## 5. Pipelines
 
-Prendre les YAML **au tag de la release**, pour qu'ils correspondent aux données :
-`https://github.com/MGE-Agilos/dg-reform-tsi/tree/data-AAAA-MM-JJ/deploy/prod` (ou, dans le dépôt cloné,
-`git checkout data-AAAA-MM-JJ`, puis `git checkout main` après).
+Take the YAML files **at the release tag**, so that they match the data: `https://github.com/MGE-Agilos/dg-reform-tsi/tree/data-YYYY-MM-DD/deploy/prod`. In the cloned repository, you can instead run `git checkout data-YYYY-MM-DD`, then `git checkout main` when done.
 
-- `tsi-chat` : `pipeline-tsi-chat.yaml` (téléversement par le SDK) ou `pipeline-tsi-chat-ui.yaml` (par l'interface) ;
-- `tsi-impact` : `pipeline-tsi-impact.yaml`.
+- `tsi-chat`: `pipeline-tsi-chat.yaml` (SDK upload) or `pipeline-tsi-chat-ui.yaml` (web interface upload);
+- `tsi-impact`: `pipeline-tsi-impact.yaml`.
 
-Pour chacun : ouvrir le pipeline, vue YAML, remplacer tout le contenu par le fichier, *Save*, puis **Publish >
-Publish through Gateway** sur le service existant (ou *Publish to new service* la première fois, voir l'étape 4 du
-[README](README.md#4-pipelines)). Si les YAML n'ont pas changé depuis le dernier déploiement et que la méthode de
-téléversement est la même, une nouvelle publication n'est pas nécessaire : l'index suffit.
+For each pipeline:
+1. Open the pipeline, switch to the YAML view and replace its whole content with the file.
+2. Click *Save*.
+3. Click **Publish > Publish through Gateway** on the existing service. The first time, use *Publish to new service* instead (see step 4 of the [README](README.md#4-pipelines)).
 
-## 6. Recette
+If the YAML files have not changed since the last deployment and you used the same upload method, you don't need to publish again: the new index is enough.
 
-Dans le Playground de chaque service, une nouvelle conversation par question : reprendre les questions de la section
-[Recette du README](README.md#5-recette) (chat, agrégation, CSR, analyse d'impact) et comparer avec les réponses
-attendues. Avec l'interface (`pipeline-tsi-chat-ui.yaml`), les questions d'agrégation et de CSR liés donnent des
-listes non exhaustives : c'est attendu. Relever la durée et les tokens dans *Analytics*.
+## 6. Acceptance tests
 
-## En cas de problème
+In each service's Playground, start a new conversation for each question:
+1. Use the questions from the [README acceptance tests](README.md#5-recette): chat, aggregation, CSR and impact analysis.
+2. Compare the answers with the expected ones.
+3. Note the duration and the tokens in *Analytics*.
 
-- *Indexed files* = 0 (ou bien moins que prévu) : métadonnées manquantes sur le lot (`Topic` = `TSI-BDG`, `corpus` =
-  `dg-reform-tsi`) ; supprimer ces fichiers et refaire le lot avec ses métadonnées. Vérifier aussi les filtres de
-  l'index (préfixe `tsi-` et `corpus`).
-- *Failed files* > 0 : ouvrir le fichier en échec dans *Files* et le téléverser de nouveau.
-- Des `.meta.json` apparaissent comme documents dans *Files* : ils ont été téléversés par l'interface ; les supprimer.
-- `upload.ps1` : « variable d'environnement … absente » : définir `API_KEY`, `API_URL` et `DEFAULT_WORKSPACE_NAME`
-  dans la même fenêtre PowerShell ; « haystack-enterprise n'est pas reconnu » : activer l'environnement du SDK.
-- « Model (custom) is not connected » : le YAML collé n'est pas la version du dépôt (voir le README, *À fournir ou
-  vérifier côté client*).
+After a web interface upload (`pipeline-tsi-chat-ui.yaml`), aggregation and linked-CSR questions return non-exhaustive lists. This is expected.
+
+## Troubleshooting
+
+- **Indexed files = 0, or far fewer than expected.** Metadata is missing on the batch (`Topic` = `TSI-BDG`, `corpus` = `dg-reform-tsi`). Delete those files and redo the batch with its metadata. Also check the index filters (prefix `tsi-` and `corpus`).
+- **Failed files > 0.** Open the failed file in *Files* and upload it again.
+- **`.meta.json` files show up as documents in *Files*.** They were uploaded through the web interface: delete them.
+- **`upload.ps1` errors** (the script's messages are in French):
+  - « variable d'environnement … absente » (environment variable … missing): set `API_KEY`, `API_URL` and `DEFAULT_WORKSPACE_NAME` in the same PowerShell window.
+  - "haystack-enterprise is not recognized": activate the SDK environment.
+- **"Model (custom) is not connected".** The pasted YAML is not the repository version. See the README section *À fournir ou vérifier côté client* (to provide or check on the client side).
