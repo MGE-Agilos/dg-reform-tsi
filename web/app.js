@@ -916,7 +916,7 @@ async function renderImpact(id, p, seq) {
 // ---------- auth and routing ----------
 
 function showScreen(name) {
-  for (const id of ["config-error", "login", "denied"]) $(id).hidden = id !== name;
+  for (const id of ["config-error", "login", "change-password", "denied"]) $(id).hidden = id !== name;
   $("tabs").hidden = name !== "app";
   $("view").hidden = name !== "app";
 }
@@ -978,8 +978,46 @@ async function render() {
     return showError(tester.error, "Could not check access rights");
   }
   if (!tester.ok) return showScreen("denied");
+  // Temporary password set by the administrator (user_metadata.must_change_password): change it before anything else.
+  const mustChange = session.user.user_metadata?.must_change_password === true;
+  if (mustChange || wantsPasswordChange) {
+    $("change-password-intro").textContent = mustChange
+      ? "For your first sign-in, replace the temporary password with your own (at least 12 characters)."
+      : "Choose a new password (at least 12 characters).";
+    $("change-password-cancel-row").hidden = mustChange;
+    showScreen("change-password");
+    $("change-password-title").focus();
+    return;
+  }
   showScreen("app");
   await route(seq);
+}
+
+let wantsPasswordChange = false;
+
+async function changePassword(event) {
+  event.preventDefault();
+  const password = $("new-password").value;
+  const confirm = $("new-password-confirm").value;
+  const msg = (text, isError) => {
+    const el = $("change-password-message");
+    el.textContent = text;
+    el.className = `message ${isError ? "err" : "ok"}`;
+  };
+  if (password.length < 12) return msg("The password must have at least 12 characters.", true);
+  if (password !== confirm) return msg("The two passwords do not match.", true);
+  const button = event.submitter || $("change-password-form").querySelector("button[type=submit]");
+  button.disabled = true;
+  msg("Saving…", false);
+  const { error } = await sb.auth.updateUser({ password, data: { must_change_password: false } });
+  button.disabled = false;
+  if (error) return msg(`Could not change the password: ${error.message}`, true);
+  $("new-password").value = "";
+  $("new-password-confirm").value = "";
+  msg("", false);
+  wantsPasswordChange = false;
+  await sb.auth.refreshSession(); // reload the user metadata, then show the explorer
+  render();
 }
 
 function setLoginMessage(text, isError) {
@@ -988,11 +1026,40 @@ function setLoginMessage(text, isError) {
   el.className = `message ${isError ? "err" : "ok"}`;
 }
 
+async function signInWithPassword(event) {
+  event.preventDefault();
+  const email = $("login-email").value.trim().toLowerCase();
+  const password = $("login-password").value;
+  if (!email) return;
+  if (!password) {
+    setLoginMessage("Enter your password, or use the sign-in link below.", true);
+    $("login-password").focus();
+    return;
+  }
+  const button = event.submitter || $("login-form").querySelector("button[type=submit]");
+  button.disabled = true;
+  setLoginMessage("Signing in…", false);
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  button.disabled = false;
+  if (error) {
+    // Same message for unknown e-mail and wrong password (no account enumeration).
+    setLoginMessage(/invalid login credentials/i.test(error.message || "")
+      ? "Wrong e-mail or password." : `Could not sign in: ${error.message}`, true);
+    return;
+  }
+  $("login-password").value = "";
+  setLoginMessage("", false); // onAuthStateChange (new user id) renders the explorer
+}
+
 async function sendMagicLink(event) {
   event.preventDefault();
   const email = $("login-email").value.trim().toLowerCase();
-  if (!email) return;
-  const button = event.submitter || $("login-form").querySelector("button");
+  if (!email) {
+    setLoginMessage("Enter your e-mail address first.", true);
+    $("login-email").focus();
+    return;
+  }
+  const button = event.currentTarget || $("login-magic");
   button.disabled = true;
   setLoginMessage("Sending…", false);
   // Invitation only: no account is created here (testers are invited from the Supabase dashboard).
@@ -1029,9 +1096,14 @@ async function init() {
     $("config-error").innerHTML = `<h2>Could not load the Supabase client</h2><p>${esc(e.message || e)}. Check your network connection and reload the page.</p>`;
     return;
   }
-  $("login-form").addEventListener("submit", sendMagicLink);
+  $("login-form").addEventListener("submit", signInWithPassword);
+  $("login-magic").addEventListener("click", sendMagicLink);
+  $("change-password-form").addEventListener("submit", changePassword);
+  $("change-password-open").addEventListener("click", () => { wantsPasswordChange = true; render(); });
+  $("change-password-cancel").addEventListener("click", () => { wantsPasswordChange = false; render(); });
   $("logout").addEventListener("click", async () => {
     testerCache = null;
+    wantsPasswordChange = false;
     await sb.auth.signOut({ scope: "local" }); // SIGNED_OUT re-renders (user id changes)
     history.replaceState(null, "", location.pathname + location.search + "#projects");
   });

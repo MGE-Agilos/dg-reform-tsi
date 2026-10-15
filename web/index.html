@@ -17,6 +17,7 @@
       </div>
       <div class="session" id="session" hidden>
         <span id="session-email" class="session-email"></span>
+        <button type="button" id="change-password-open" class="btn btn-secondary">Change password</button>
         <button type="button" id="logout" class="btn btn-secondary">Sign out</button>
       </div>
     </div>
@@ -40,15 +41,34 @@
 
     <section id="login" class="card login" hidden aria-labelledby="login-title">
       <h2 id="login-title">Sign in</h2>
-      <p class="muted">Access is restricted to registered testers. Enter your e-mail address to receive a sign-in link.</p>
+      <p class="muted">Access is restricted to registered testers. Sign in with your e-mail address and password, or receive a sign-in link by e-mail.</p>
       <form id="login-form" class="login-form">
         <label for="login-email">E-mail address</label>
+        <input type="email" id="login-email" name="email" autocomplete="username" required placeholder="name@example.org">
+        <label for="login-password">Password</label>
         <div class="login-row">
-          <input type="email" id="login-email" name="email" autocomplete="email" required placeholder="name@example.org">
-          <button type="submit" class="btn">Send magic link</button>
+          <input type="password" id="login-password" name="password" autocomplete="current-password">
+          <button type="submit" class="btn">Sign in</button>
         </div>
+        <p class="muted">No password, or forgotten it? <button type="button" id="login-magic" class="btn btn-link">Send me a sign-in link instead</button></p>
       </form>
       <p id="login-message" class="message" role="status" aria-live="polite"></p>
+    </section>
+
+    <section id="change-password" class="card login" hidden aria-labelledby="change-password-title">
+      <h2 id="change-password-title" tabindex="-1">Choose your password</h2>
+      <p class="muted" id="change-password-intro">For your first sign-in, replace the temporary password with your own (at least 12 characters).</p>
+      <form id="change-password-form" class="login-form">
+        <label for="new-password">New password</label>
+        <input type="password" id="new-password" name="new-password" autocomplete="new-password" required minlength="12">
+        <label for="new-password-confirm">Confirm the new password</label>
+        <div class="login-row">
+          <input type="password" id="new-password-confirm" name="new-password-confirm" autocomplete="new-password" required minlength="12">
+          <button type="submit" class="btn">Save password</button>
+        </div>
+        <p class="muted" id="change-password-cancel-row" hidden><button type="button" id="change-password-cancel" class="btn btn-link">Cancel</button></p>
+      </form>
+      <p id="change-password-message" class="message" role="status" aria-live="polite"></p>
     </section>
 
     <section id="denied" class="card notice notice-error" hidden>
