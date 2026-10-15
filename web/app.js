@@ -928,9 +928,13 @@ function showSession(session) {
 
 async function isTester(session) {
   if (testerCache && testerCache.userId === session.user.id) return testerCache;
+  // getUser() asks the server: detects a session revoked server-side and gives fresh user metadata.
+  const { data: userData, error: userError } = await sb.auth.getUser();
+  if (userError || !userData?.user) return { expired: true };
   const { data, error } = await sb.rpc("is_tester");
   if (error) return { error };
-  testerCache = { userId: session.user.id, ok: data === true };
+  testerCache = { userId: session.user.id, ok: data === true,
+                  mustChange: userData.user.user_metadata?.must_change_password === true };
   return testerCache;
 }
 
@@ -972,6 +976,12 @@ async function render() {
   }
   const tester = await isTester(session);
   if (stale(seq)) return;
+  if (tester.expired) {
+    testerCache = null;
+    await sb.auth.signOut({ scope: "local" });
+    authError = "Your session has expired. Please sign in again.";
+    return render();
+  }
   if (tester.error) {
     showScreen("app");
     $("tabs").hidden = true;
@@ -979,7 +989,7 @@ async function render() {
   }
   if (!tester.ok) return showScreen("denied");
   // Temporary password set by the administrator (user_metadata.must_change_password): change it before anything else.
-  const mustChange = session.user.user_metadata?.must_change_password === true;
+  const mustChange = tester.mustChange === true;
   if (mustChange || wantsPasswordChange) {
     $("change-password-intro").textContent = mustChange
       ? "For your first sign-in, replace the temporary password with your own (at least 12 characters)."
@@ -1011,12 +1021,22 @@ async function changePassword(event) {
   msg("Saving…", false);
   const { error } = await sb.auth.updateUser({ password, data: { must_change_password: false } });
   button.disabled = false;
+  if (error && (error.name === "AuthSessionMissingError" || /session (missing|not found|expired)|refresh token/i.test(error.message || ""))) {
+    // Session stored in the browser but no longer valid on the server: sign in again.
+    msg("", false);
+    wantsPasswordChange = false;
+    testerCache = null;
+    await sb.auth.signOut({ scope: "local" });
+    authError = "Your session has expired. Please sign in again.";
+    return render();
+  }
   if (error) return msg(`Could not change the password: ${error.message}`, true);
   $("new-password").value = "";
   $("new-password-confirm").value = "";
   msg("", false);
   wantsPasswordChange = false;
-  await sb.auth.refreshSession(); // reload the user metadata, then show the explorer
+  testerCache = null; // re-read the user metadata (must_change_password is now false)
+  await sb.auth.refreshSession();
   render();
 }
 
@@ -1048,6 +1068,7 @@ async function signInWithPassword(event) {
     return;
   }
   $("login-password").value = "";
+  authError = null;
   setLoginMessage("", false); // onAuthStateChange (new user id) renders the explorer
 }
 
