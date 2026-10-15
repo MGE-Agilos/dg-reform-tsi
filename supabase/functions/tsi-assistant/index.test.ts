@@ -404,6 +404,15 @@ test("Anthropic timeout: 504; empty final text: 502", async () => {
   assert.deepEqual(await res.json(), { error: "Empty response from the model" });
 });
 
+test("TSI_ANTHROPIC_API_KEY takes precedence over the shared ANTHROPIC_API_KEY", async () => {
+  const env = { ...ENV, TSI_ANTHROPIC_API_KEY: "sk-ant-tsi-own" };
+  const f = fakeFetch();
+  const res = await handle(post(chatBody), env, f.impl);
+  const first = f.modelCalls()[0];
+  assert.ok(first, `no model call (status ${res.status})`);
+  assert.equal(new Headers(first.init.headers).get("x-api-key"), "sk-ant-tsi-own");
+});
+
 test("ANTHROPIC_API_KEY missing: 500", async () => {
   const env = { ...ENV };
   delete env.ANTHROPIC_API_KEY;

@@ -3,7 +3,7 @@
 // Claude's client tools query the Supabase tables through PostgREST WITH THE TESTER'S TOKEN (RLS applies); the impact
 // analysis also uses Anthropic's server web search tool.
 // Single self-contained file, no imports: paste it into Supabase (Edge Functions > Via Editor), keep "Verify JWT" on.
-// Secrets (Edge Functions > Secrets): ANTHROPIC_API_KEY; optional TSI_MODEL (default claude-sonnet-5-5), ALLOWED_ORIGINS.
+// Secrets (Edge Functions > Secrets): TSI_ANTHROPIC_API_KEY (preferred) or ANTHROPIC_API_KEY; optional TSI_MODEL (default claude-sonnet-5-5), ALLOWED_ORIGINS.
 // SUPABASE_URL and SUPABASE_ANON_KEY are provided (if SUPABASE_ANON_KEY is missing, the caller's apikey header, i.e. the
 // public anon key, is used). Needs supabase/migrations/002_search.sql (tsi_search_projects, tsi_search_csrs).
 // The pure logic is exported and tested with Node: node --experimental-strip-types --test supabase/functions/tsi-assistant/index.test.ts
@@ -585,7 +585,8 @@ export async function agentLoop(
   service: ServiceName, messages: Message[], env: Env, fetchImpl: FetchImpl, now: () => number = Date.now,
   ctx?: { supabaseUrl: string; apikey: string; userAuth: string }, stats: RunStats = emptyStats(),
 ): Promise<{ answer: string; steps: number; stats: RunStats }> {
-  const key = env.ANTHROPIC_API_KEY;
+  // Cle propre au projet TSI d'abord (le secret ANTHROPIC_API_KEY est partage avec une autre application).
+  const key = env.TSI_ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY;
   if (!key) throw new HttpError(500, "ANTHROPIC_API_KEY not configured");
   const cfg = SERVICES[service];
   const started = now();
