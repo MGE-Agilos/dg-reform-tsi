@@ -270,8 +270,28 @@ def test_csr_fetch_failure_is_a_clean_error(tmp_path, capsys, monkeypatch):
 def test_csr_link_without_export_is_a_clean_error(tmp_path, capsys):
     settings = tmp_path / "settings.yaml"
     settings.write_text(f"output_dir: {(tmp_path / 'output').as_posix()}\n", encoding="utf-8")
-    assert cli.main(["--settings", str(settings), "csr-link"]) == 1
+    assert cli.main(["--settings", str(settings), "csr-link"]) == 2  # 1 = quota seulement
     assert "csr-fetch" in capsys.readouterr().err
+
+
+def test_csr_link_unexpected_error_is_exit_code_2(tmp_path, capsys, monkeypatch):
+    import tsi_agent.csr as csr
+    import tsi_agent.csr_link as csr_link
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(f"output_dir: {(tmp_path / 'output').as_posix()}\n", encoding="utf-8")
+    source = tmp_path / "output" / "csr" / "csr_full.xlsx"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"x")
+    monkeypatch.setattr(cli, "_check_llm", lambda s: True)
+    monkeypatch.setattr(csr, "read_rows", lambda path: [])
+    monkeypatch.setattr(csr, "build_csrs", lambda rows, *a: [])
+
+    def boom(*a, **k):
+        raise RuntimeError("kaput")
+
+    monkeypatch.setattr(csr_link, "run_linking", boom)
+    assert cli.main(["--settings", str(settings), "csr-link"]) == 2
+    assert "kaput" in capsys.readouterr().err
 
 
 def test_supabase_sync_without_credentials_is_a_clean_error(tmp_path, capsys, monkeypatch):

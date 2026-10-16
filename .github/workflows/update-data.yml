@@ -1,0 +1,295 @@
+# Monthly update of the TSI data (see deploy/updater/README.md, "Automatic monthly update").
+# State restored from the latest data-* release -> run -> deliverables -> csr-fetch -> csr-build -> csr-link
+# -> anomalies -> supabase-sync -> prod-export -> release-data --publish. The LLM is the Claude Code CLI,
+# authenticated by the ANTHROPIC_API_KEY secret.
+name: Monthly data update
+
+on:
+  schedule:
+    - cron: "0 3 1 * *"   # 1st of each month, 03:00 UTC; full check in January, April, July and October
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Re-read AND re-extract (LLM) every detail page (run --full): long and costly"
+        type: boolean
+        default: false
+      recheck_all:
+        description: "Full check: re-read every detail page, LLM only for changed ones (run --recheck-all)"
+        type: boolean
+        default: false
+      detail_only:
+        description: "csr-link: only send the projects with a detail page to the LLM"
+        type: boolean
+        default: true
+      skip_deliverables:
+        description: "Skip the publications (deliverables) step"
+        type: boolean
+        default: false
+      publish_release:
+        description: "Publish a data-YYYY-MM-DD release at the end"
+        type: boolean
+        default: true
+      sync_supabase:
+        description: "Publish to Supabase (web explorer)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # the data release
+  actions: write    # keeps the schedule enabled (last step)
+
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+env:
+  # Claude Code CLI version, tested with the agent (bump it here after a local test: see the README).
+  CLAUDE_CODE_VERSION: "2.1.119"
+  # Time budgets of the LLM steps (minutes). Their sum leaves at least 30 minutes of the job timeout (350) to the
+  # setup (~15 min) and the publication steps. A step that reaches its budget keeps what it has written; the
+  # next run resumes.
+  RUN_BUDGET_MIN: "150"
+  DELIVERABLES_BUDGET_MIN: "75"
+  CSR_LINK_BUDGET_MIN: "60"
+  CI_WORK: ci-work
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the agent
+        run: python -m pip install .
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install the Claude Code CLI
+        run: npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+      - name: Check the Claude CLI and the API key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          claude --version
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::error::Repository secret ANTHROPIC_API_KEY is missing (Settings > Secrets and variables > Actions)"
+            exit 1
+          fi
+          # Same flags as the agent (ClaudeCliChatGenerator): no tool, no settings, no MCP server, no session
+          # saved, structured output through --json-schema.
+          code=0
+          out=$(echo 'Set ok to true.' | claude -p --model haiku --output-format json --tools "" \
+            --strict-mcp-config --mcp-config '{"mcpServers":{}}' --setting-sources "" --no-session-persistence \
+            --json-schema '{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}') \
+            || code=$?
+          if [ "$code" -ne 0 ] || ! printf '%s' "$out" | python -c \
+              'import json, sys; d = json.load(sys.stdin); sys.exit(0 if not d.get("is_error") and (d.get("structured_output") or {}).get("ok") is True else 1)'; then
+            echo "::error::The Claude CLI test call failed (exit $code): invalid key, no credit, or CLI change"
+            printf '%s' "$out" | head -c 500
+            exit 1
+          fi
+          echo "Claude CLI OK"
+
+      - name: Choose the mode
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_FULL: ${{ inputs.full }}
+          IN_RECHECK: ${{ inputs.recheck_all }}
+          IN_DETAIL_ONLY: ${{ inputs.detail_only }}
+          IN_SKIP_DELIVERABLES: ${{ inputs.skip_deliverables }}
+          IN_PUBLISH: ${{ inputs.publish_release }}
+          IN_SYNC: ${{ inputs.sync_supabase }}
+        run: |
+          if [ "$EVENT" = schedule ]; then
+            # Scheduled runs: incremental, with a full check each quarter (every detail page re-read, sitemap
+            # dates ignored; only changed pages go to the LLM).
+            case "$(date -u +%m)" in 01|04|07|10) recheck=true ;; *) recheck=false ;; esac
+            full=false; detail_only=true; skip_deliverables=false; publish=true; sync=true
+          else
+            full=$IN_FULL; recheck=$IN_RECHECK; detail_only=$IN_DETAIL_ONLY
+            skip_deliverables=$IN_SKIP_DELIVERABLES; publish=$IN_PUBLISH; sync=$IN_SYNC
+          fi
+          {
+            echo "full=$full"
+            echo "recheck=$recheck"
+            echo "detail_only=$detail_only"
+            echo "skip_deliverables=$skip_deliverables"
+            echo "publish=$publish"
+            echo "sync=$sync"
+            echo "since=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+          echo "full=$full recheck=$recheck detail_only=$detail_only skip_deliverables=$skip_deliverables publish=$publish sync=$sync"
+
+      - name: Restore the state from the latest data release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release list -R "$GITHUB_REPOSITORY" --limit 100 --exclude-drafts --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("data-"))] | sort_by(.createdAt) | last | .tagName // empty')
+          if [ -z "$tag" ]; then
+            echo "::error::No data-* release in $GITHUB_REPOSITORY: publish one first (python -m tsi_agent release-data --publish)"
+            exit 1
+          fi
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" --pattern tsi-output-state.zip --dir "$RUNNER_TEMP/state"
+          mkdir -p output
+          unzip -o -q "$RUNNER_TEMP/state/tsi-output-state.zip" -d output
+          echo "STATE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "State restored from $tag ($(find output -type f | wc -l) files)"
+          if python -c 'import json, sys; d = json.load(open("output/state/index.json", encoding="utf-8")); sys.exit(0 if any(e.get("sitemap_lastmod") for e in d.get("projects", {}).values()) else 1)'; then
+            echo "HAS_SITEMAP_DATES=true" >> "$GITHUB_ENV"
+          else
+            echo "HAS_SITEMAP_DATES=false" >> "$GITHUB_ENV"
+            echo "::notice::The state has no sitemap dates yet: this run re-reads every detail page (run --recheck-all) and records them"
+          fi
+
+      # HTTP cache: fewer downloads (always revalidated with ETag / Last-Modified, so never stale). The official
+      # titles used by the fuzzy merge for pages that are not downloaded come from the state, not from this cache.
+      - uses: actions/cache@v4
+        with:
+          path: .cache/http
+          key: http-cache-${{ github.run_id }}
+          restore-keys: http-cache-
+
+      - name: Projects (run)
+        timeout-minutes: 160
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FULL: ${{ steps.mode.outputs.full }}
+          RECHECK: ${{ steps.mode.outputs.recheck }}
+        run: |
+          args=(run)
+          if [ "$FULL" = true ]; then
+            args+=(--full); label="full re-extraction"
+          elif [ "$RECHECK" = true ] || [ "${HAS_SITEMAP_DATES:-false}" != true ]; then
+            args+=(--recheck-all); label="full check"
+          else
+            label=incremental
+          fi
+          echo "RUN_MODE=$label" >> "$GITHUB_ENV"
+          STEP_BUDGET_MIN=$RUN_BUDGET_MIN bash .github/scripts/run_step.sh run quota python -m tsi_agent "${args[@]}"
+
+      - name: Publications (deliverables)
+        if: steps.mode.outputs.skip_deliverables != 'true'
+        timeout-minutes: 85
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          STEP_BUDGET_MIN=$DELIVERABLES_BUDGET_MIN \
+            bash .github/scripts/run_step.sh deliverables quota python -m tsi_agent deliverables
+
+      - name: CSR database (csr-fetch)
+        run: bash .github/scripts/run_step.sh csr-fetch soft python -m tsi_agent csr-fetch
+
+      - name: CSR files (csr-build)
+        run: bash .github/scripts/run_step.sh csr-build strict python -m tsi_agent csr-build
+
+      - name: Project -> CSR links (csr-link)
+        timeout-minutes: 70
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DETAIL_ONLY: ${{ steps.mode.outputs.detail_only }}
+        run: |
+          args=(csr-link)
+          if [ "$DETAIL_ONLY" = true ]; then args+=(--detail-only); fi
+          STEP_BUDGET_MIN=$CSR_LINK_BUDGET_MIN \
+            bash .github/scripts/run_step.sh csr-link quota python -m tsi_agent "${args[@]}"
+
+      - name: Anomalies
+        run: bash .github/scripts/run_step.sh anomalies strict python -m tsi_agent anomalies
+
+      - name: Supabase (supabase-sync)
+        if: steps.mode.outputs.sync == 'true'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          STEP_RETRY_AFTER_S: "60"
+        run: bash .github/scripts/run_step.sh supabase-sync soft python -m tsi_agent supabase-sync
+
+      - name: Production export (prod-export)
+        run: bash .github/scripts/run_step.sh prod-export strict python -m tsi_agent prod-export
+
+      - name: Data release (release-data --publish)
+        if: steps.mode.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="data-$(date -u +%F)"
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            tag="$tag-$(date -u +%H%M)"   # second run on the same day
+          fi
+          bash .github/scripts/run_step.sh release-data strict \
+            python -m tsi_agent release-data --publish --tag "$tag" --repo "$GITHUB_REPOSITORY"
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+
+      # Failed or cancelled run (including the job timeout): keep the paid work. Same content as the
+      # tsi-output-state.zip of a release; restore it as described in the README.
+      - name: Zip the partial state
+        if: failure() || cancelled()
+        run: |
+          if [ -d output ]; then
+            python -c "from pathlib import Path; from tsi_agent import release; print(release.write_state_zip(Path('output'), Path('ci-partial/tsi-output-state.zip')), 'files')"
+            echo "PARTIAL_ARTIFACT=output-state-partial-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload the partial state
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-state-partial-${{ github.run_id }}
+          path: ci-partial/tsi-output-state.zip
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Job summary
+        if: always()
+        env:
+          SINCE: ${{ steps.mode.outputs.since }}
+        run: |
+          args=(--runs-dir logs/runs --work-dir "$CI_WORK" --manifest deploy/prod/build/manifest.json)
+          if [ -n "${SINCE:-}" ]; then args+=(--since "$SINCE"); fi
+          if [ -n "${RUN_MODE:-}" ]; then args+=(--mode "$RUN_MODE"); fi
+          if [ -n "${STATE_TAG:-}" ]; then args+=(--state-tag "$STATE_TAG"); fi
+          if [ -n "${RELEASE_TAG:-}" ]; then
+            args+=(--release-tag "$RELEASE_TAG" --release-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG")
+          fi
+          if [ -n "${PARTIAL_ARTIFACT:-}" ]; then args+=(--partial-artifact "$PARTIAL_ARTIFACT"); fi
+          python .github/scripts/ci_summary.py "${args[@]}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the run logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-logs-${{ github.run_id }}
+          path: |
+            logs/runs/
+            ci-work/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      # GitHub disables scheduled workflows after 60 days without activity in the repository: re-enable this
+      # one at each run so that the monthly schedule keeps running.
+      - name: Keep the schedule enabled
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/update-data.yml/enable"
+
+      - name: Fail if a step was deferred (quota, time budget or soft failure)
+        if: env.DEFERRED_FAILURES != ''
+        run: |
+          echo "::error::Steps that did not finish: $DEFERRED_FAILURES. The data and the release contain what was done; run the workflow again later (it resumes)."
+          exit 1

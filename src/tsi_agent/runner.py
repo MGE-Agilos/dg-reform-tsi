@@ -79,7 +79,9 @@ def format_discovery(report: dict[str, Any], path: str, max_pairs: int = MAX_PAI
 def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = False,
                    countries: list[str] | None = None, limit: int | None = None, chunk_size: int | None = None,
                    dry_run: bool = False, model: str | None = None, run_id: str | None = None,
-                   pipeline_factory: PipelineFactory = build_pipeline) -> dict[str, Any]:
+                   recheck_all: bool = False, pipeline_factory: PipelineFactory = build_pipeline) -> dict[str, Any]:
+    """`full` : relire et re-extraire (LLM) toutes les pages detail. `recheck_all` : relire toutes les pages detail
+    sans tenir compte des dates du sitemap, mais n'envoyer au LLM que celles dont le texte a change."""
     chunk = chunk_size if chunk_size is not None else settings.chunk_size
     with runlog.open_run(settings.logs_dir, run_id) as run:
         pipeline = pipeline_factory(settings, sources, dry_run=dry_run, model=model)
@@ -88,11 +90,14 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
         quota = False
         written: dict[str, int] = {}
         llm_pages = 0
+        skipped_by_sitemap = 0  # pages detail connues non relues : date du sitemap inchangee
+        undated = fetch_failed = extract_failed = 0
         while True:
             chunk_limit = None if dry_run else (chunk if budget is None else min(chunk, budget))
             data: dict[str, Any] = {
                 "listing": {"countries": countries},
-                "detector": {"run_id": run.run_id, "full": full, "limit": chunk_limit},
+                "detector": {"run_id": run.run_id, "full": full, "limit": chunk_limit,
+                             "sitemap_skip": not recheck_all},
             }
             if not dry_run:
                 data["detail_fetcher"] = {"full": full}
@@ -101,9 +106,11 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
                                                           "extractor", "writer"})
             chunks += 1
             det = out["detector"]
+            skipped_by_sitemap += len(det.get("skipped", []))
+            undated += det.get("undated", 0)
             if dry_run:
                 run.extra["dry_run"] = {"detail_candidates": len(det["detail"]), "thin_to_write": len(det["thin"]),
-                                        "delisted": len(det["delisted"])}
+                                        "delisted": len(det["delisted"]), "skipped_by_sitemap": skipped_by_sitemap}
                 report = out.get("judge", {}).get("report") or out.get("discoverer", {}).get("report")
                 if report is not None:
                     run.extra["dry_run"]["discovery"] = save_discovery_report(settings.logs_dir, run.run_id, report)
@@ -113,13 +120,63 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
             processed = len(det["detail"])
             sent = len(out["detail_fetcher"]["pages"])
             llm_pages += sent
+            fetch_failed += len(out["detail_fetcher"].get("failed", []))
+            extract_failed += len(out.get("extractor", {}).get("failed", []))
             if budget is not None:
                 budget -= sent
             quota = bool(out.get("extractor", {}).get("quota_exceeded"))
             if quota or det["remaining"] == 0 or processed == 0 or (budget is not None and budget <= 0):
                 run.extra["remaining_detail"] = det["remaining"]
                 break
-        run.extra.update({"chunks": chunks, "quota_exceeded": quota, "written": written, "llm_pages": llm_pages})
+        run.extra.update({"chunks": chunks, "quota_exceeded": quota, "written": written, "llm_pages": llm_pages,
+                          "skipped_by_sitemap": skipped_by_sitemap, "detail_without_sitemap_date": undated,
+                          "failed": fetch_failed + extract_failed, "fetch_failed": fetch_failed,
+                          "extract_failed": extract_failed})
+    return run.final_summary
+
+
+def seed_sitemap_lastmod(settings: Settings, sources: dict[str, Any], *, fetcher: Any = None,
+                         run_id: str | None = None) -> dict[str, Any]:
+    """Enregistre la date <lastmod> actuelle du sitemap pour chaque page detail connue, SANS la telecharger.
+
+    Initialisation du mode incremental : suppose que le corpus est a jour (sinon un changement anterieur a cette
+    date ne serait vu qu'avec `run --full`). RuntimeError si le sitemap est indisponible ou incomplet.
+    """
+    from tsi_agent.components.listing import SourceListingFetcher
+    from tsi_agent.parsers.sitemap import sitemap_lastmods
+    from tsi_agent.urls import is_detail_candidate
+    with runlog.open_run(settings.logs_dir, run_id) as run:
+        if not sources.get("sitemap_url"):
+            raise RuntimeError("sitemap_url absent de la configuration des sources")
+        listing = SourceListingFetcher(sources=sources, cache_dir=settings.cache_dir,
+                                       min_interval_s=settings.min_interval_s, user_agent=settings.user_agent)
+        if fetcher is not None:
+            listing._fetcher = fetcher
+        pages = listing.fetch_sitemap()
+        if not pages:
+            raise RuntimeError("sitemap indisponible ou incomplet : aucune date enregistree")
+        lastmods: dict[str, str] = {}
+        for page in pages:
+            lastmods.update(sitemap_lastmods(page.content))
+        store = shared_store(settings.output_dir)
+        known = seeded = 0
+        for entry in store.all().values():
+            if not entry.detail_page:
+                continue
+            known += 1
+            # URL de la page detail seulement : une fiche pays ou un domaine a aussi une date dans le sitemap.
+            lastmod = next((lastmods[u] for u in entry.source_urls if is_detail_candidate(u) and u in lastmods), None)
+            if lastmod is None:
+                continue  # page absente du sitemap ou sans date : elle sera relue par le prochain run
+            seeded += 1
+            if entry.sitemap_lastmod != lastmod:
+                entry.sitemap_lastmod = lastmod
+                store.put(entry, save=False)
+        store.flush()
+        runlog.event("seed_sitemap_lastmod", "seed", None, "ok", sitemap_dates=len(lastmods), detail_known=known,
+                     seeded=seeded)
+        run.extra.update({"mode": "seed_sitemap_lastmod", "sitemap_dates": len(lastmods), "detail_known": known,
+                          "seeded": seeded, "without_date": known - seeded})
     return run.final_summary
 
 

@@ -41,12 +41,23 @@ class MarkdownProjectWriter:
         return min(dates) if dates else today
 
     def _entry(self, ref: ProjectRef, file: str, first_seen: str, today: str,
-               content_hash: str | None, listing_hash: str) -> StoreEntry:
+               content_hash: str | None, listing_hash: str, sitemap_lastmod: str | None = None) -> StoreEntry:
         return StoreEntry(project_id=ref.project_id, file=file, programme=ref.programme,
                           detail_page=ref.detail_page, content_hash=content_hash,
                           listing_hash=listing_hash, source_urls=source_urls(ref),
                           countries=list(ref.countries), first_seen=first_seen, last_updated=today,
-                          listed=True, aliases=list(ref.aliases))
+                          listed=True, aliases=list(ref.aliases), sitemap_lastmod=sitemap_lastmod,
+                          title=ref.title, year=ref.year)
+
+    def _record_lastmod(self, ref: ProjectRef) -> None:
+        """Page detail relue (changee ou non) : sa date du sitemap devient la reference du mode incremental."""
+        if not ref.sitemap_lastmod:
+            return  # run sans sitemap (pilote, sitemap incomplet) : on garde la date connue
+        store = self._get_store()
+        entry = store.get(ref.project_id)
+        if entry is not None and entry.sitemap_lastmod != ref.sitemap_lastmod:
+            entry.sitemap_lastmod = ref.sitemap_lastmod
+            store.put(entry, save=False)
 
     def _replace_aliases(self, ref: ProjectRef) -> None:
         store = self._get_store()
@@ -92,7 +103,8 @@ class MarkdownProjectWriter:
         file = store.write_project_file(ref.project_id, text)
         self._replace_aliases(ref)
         # Hash de la vue listing : c'est à elle que le prochain run comparera (pas au ref enrichi).
-        store.put(self._entry(ref, file, first_seen, today, rec.content_hash, rec.listing_hash))
+        lastmod = ref.sitemap_lastmod or (stored.sitemap_lastmod if stored else None)
+        store.put(self._entry(ref, file, first_seen, today, rec.content_hash, rec.listing_hash, lastmod))
         runlog.event(NAME, "write", ref.project_id, "detail", file=file)
         return file
 
@@ -144,7 +156,10 @@ class MarkdownProjectWriter:
     @component.output_types(written=list[str], stats=dict[str, int])
     def run(self, run_id: str, records: list[ProjectRecord] | None = None, thin: list[ProjectRef] | None = None,
             unchanged: list[ProjectRef] | None = None, delisted: list[str] | None = None,
-            programme_docs: list[ProgrammeDoc] | None = None) -> dict[str, Any]:
+            programme_docs: list[ProgrammeDoc] | None = None,
+            skipped: list[ProjectRef] | None = None) -> dict[str, Any]:
+        """`unchanged` : pages detail relues sans changement ; `skipped` : pages detail non relues (date du sitemap
+        inchangee). Les deux ne mettent a jour que le front matter ; seule `unchanged` enregistre une date."""
         self._deliverables = None  # l'etage livrables a pu ecrire l'etat entre deux runs : le relire a chaque run
         today = date.today().isoformat()
         store = self._get_store()
@@ -171,14 +186,18 @@ class MarkdownProjectWriter:
             if i % THIN_FLUSH_EVERY == 0:
                 store.flush()
         store.flush()
-        for ref in unchanged or []:
+        reread = {id(ref) for ref in unchanged or []}
+        for ref in [*(unchanged or []), *(skipped or [])]:
             try:
                 self._replace_aliases(ref)  # thin écrit pendant que la page détail avait disparu
                 if self._refresh(ref.project_id, today, ref=ref):
                     stats["refreshed"] += 1
                     runlog.event(NAME, "write", ref.project_id, "refreshed_front_matter")
+                if id(ref) in reread:
+                    self._record_lastmod(ref)
             except OSError as exc:
                 failed(ref.project_id, exc)
+        store.flush()
         for pid in delisted or []:
             try:
                 if self._refresh(pid, today, listed=False):

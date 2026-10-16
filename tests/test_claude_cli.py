@@ -71,6 +71,14 @@ def test_quota_error(fake_run):
         ClaudeCliChatGenerator().run(messages=MESSAGES)
 
 
+def test_credit_balance_is_quota(fake_run):
+    # Cle API sans credit : le lot doit s'arreter comme sur un quota, pas echouer page par page.
+    fake_run(stdout=cli_output(is_error=True, result="Credit balance is too low to access the Anthropic API."),
+             returncode=1)
+    with pytest.raises(LLMQuotaExceeded):
+        ClaudeCliChatGenerator().run(messages=MESSAGES)
+
+
 def test_429_status_is_quota(fake_run):
     fake_run(stdout=cli_output(is_error=True, api_error_status=429, result="API Error"), returncode=1)
     with pytest.raises(LLMQuotaExceeded):

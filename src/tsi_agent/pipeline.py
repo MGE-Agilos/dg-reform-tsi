@@ -34,7 +34,7 @@ def build_pipeline(settings: Settings, sources: dict[str, Any], *, dry_run: bool
     p = Pipeline()
     p.add_component("listing", SourceListingFetcher(sources=sources, **http))
     p.add_component("discoverer", ProjectDiscoverer(sitemap_excluded_areas=sources.get("sitemap_excluded_areas"),
-                                                    **http))
+                                                    output_dir=settings.output_dir, **http))
     p.add_component("judge", SitemapMergeJudge(chat_generator=judge_generator or default_judge_generator(settings),
                                                output_dir=settings.output_dir,
                                                **http))
@@ -59,6 +59,7 @@ def build_pipeline(settings: Settings, sources: dict[str, Any], *, dry_run: bool
     p.connect("extractor.records", "writer.records")
     p.connect("detector.thin", "writer.thin")
     p.connect("detail_fetcher.unchanged", "writer.unchanged")
+    p.connect("detector.skipped", "writer.skipped")
     p.connect("detector.delisted", "writer.delisted")
     p.connect("discoverer.programme_docs", "writer.programme_docs")
     return p
