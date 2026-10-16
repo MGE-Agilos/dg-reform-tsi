@@ -81,9 +81,9 @@ class ChangeDetector:
                             skipped=list[ProjectRef])
     def run(self, refs: list[ProjectRef], run_id: str, scope: dict[str, Any],
             suspect_countries: list[str] | None = None, deferred_ids: list[str] | None = None, full: bool = False,
-            limit: int | None = None) -> dict[str, Any]:
+            limit: int | None = None, sitemap_skip: bool = True) -> dict[str, Any]:
         """`skipped` : pages detail connues dont la date du sitemap n'est pas plus recente que celle enregistree
-        (mode incremental, sauf `full`) ; ni telechargees ni comptees dans `limit`, le writer les traite comme
+        (mode incremental, sauf `full` ou `sitemap_skip=False`) ; ni telechargees ni comptees dans `limit`, le writer les traite comme
         inchangees (mise a jour du front matter si le listing a change)."""
         store = self._get_store()
         known = store.all()
@@ -102,7 +102,7 @@ class ChangeDetector:
             if ref.detail_url:
                 if ref.project_id in offered:
                     continue
-                if (not full and entry is not None and entry.detail_page and entry.content_hash
+                if (sitemap_skip and not full and entry is not None and entry.detail_page and entry.content_hash
                         and not_modified_since(ref.sitemap_lastmod, entry.sitemap_lastmod)):
                     offered.add(ref.project_id)
                     skipped.append(ref)

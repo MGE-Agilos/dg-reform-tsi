@@ -144,6 +144,13 @@ def test_new_page_and_full_are_fetched(tmp_path):
     assert [r.project_id for r in out["detail"]] == ["new"]
 
 
+def test_sitemap_skip_can_be_disabled_without_full(tmp_path):
+    known = detail("known", "2025-12-01T15:25Z")
+    d = detector_with(tmp_path, [(known, "2025-12-01T15:25Z")])
+    out = d.run(refs=[known], run_id="r", scope=SCOPE, sitemap_skip=False)
+    assert [r.project_id for r in out["detail"]] == ["known"] and out["skipped"] == []
+
+
 def test_skipped_pages_do_not_count_against_the_limit(tmp_path):
     a, b = detail("a", "2025-01-01T00:00Z"), detail("b", "2025-01-01T00:00Z")
     d = detector_with(tmp_path, [(a, "2025-01-01T00:00Z"), (b, "2025-01-01T00:00Z")])
@@ -295,6 +302,13 @@ def test_seed_then_incremental_run_then_newer_date_then_full(settings):
     entry = next(e for e in LocalProjectStore(settings.output_dir).all().values() if newer in e.source_urls)
     assert entry.sitemap_lastmod == "2026-01-01T00:00Z"
 
+    # --recheck-all : tout est relu, mais seul le texte change part au LLM (ici : rien).
+    site, gen = Site(dates), FakeChatGenerator()
+    summary = run_extraction(settings, SOURCES, recheck_all=True, run_id="recheck",
+                             pipeline_factory=factory(gen, site))
+    assert sorted(set(site.detail_calls(urls))) == [u for u in urls if is_canonical_detail(u)]
+    assert summary["skipped_by_sitemap"] == 0 and summary["llm_calls"] == 0 and gen.calls == []
+
     # --full : tout est relu.
     site = Site(dates)
     summary = run_extraction(settings, SOURCES, full=True, run_id="full",
@@ -306,6 +320,15 @@ def test_seed_then_incremental_run_then_newer_date_then_full(settings):
 def test_seed_fails_cleanly_without_sitemap(settings):
     with pytest.raises(RuntimeError, match="sitemap"):
         seed_sitemap_lastmod(settings, SOURCES, fetcher=FakeFetcher(), run_id="s")
+
+
+def test_cli_passes_recheck_all(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cli, "_check_llm", lambda settings: True)
+    monkeypatch.setattr(cli, "run_extraction", lambda *a, **k: seen.update(k) or {"quota_exceeded": False})
+    assert cli.main(["run", "--recheck-all"]) == 0
+    assert seen["recheck_all"] is True and seen["full"] is False
+    assert cli.main(["run"]) == 0 and seen["recheck_all"] is False
 
 
 def test_cli_seed_option_needs_no_llm(monkeypatch, capsys):

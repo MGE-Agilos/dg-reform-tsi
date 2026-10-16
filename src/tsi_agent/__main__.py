@@ -69,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="découverte seule (sitemap compris), sans LLM ni écriture de projets ; bilan des fusions "
                           "dans logs/runs/<run_id>.discovery.json")
     run.add_argument("--model")
+    run.add_argument("--recheck-all", action="store_true",
+                     help="relire toutes les pages détail sans tenir compte des dates du sitemap ; seules celles dont "
+                          "le texte a changé partent au LLM (contrairement à --full)")
     run.add_argument("--seed-sitemap-lastmod", action="store_true",
                      help="initialiser le mode incrémental : enregistrer la date <lastmod> actuelle du sitemap des "
                           "pages détail connues, sans les télécharger ni appeler le LLM (corpus supposé à jour)")
@@ -377,7 +380,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         summary = run_extraction(settings, sources, full=args.full, countries=args.countries, limit=args.limit,
-                                 chunk_size=args.chunk_size, dry_run=args.dry_run, model=args.model)
+                                 chunk_size=args.chunk_size, dry_run=args.dry_run, model=args.model,
+                                 recheck_all=args.recheck_all)
     except Exception as exc:
         print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)

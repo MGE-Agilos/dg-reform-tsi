@@ -79,7 +79,9 @@ def format_discovery(report: dict[str, Any], path: str, max_pairs: int = MAX_PAI
 def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = False,
                    countries: list[str] | None = None, limit: int | None = None, chunk_size: int | None = None,
                    dry_run: bool = False, model: str | None = None, run_id: str | None = None,
-                   pipeline_factory: PipelineFactory = build_pipeline) -> dict[str, Any]:
+                   recheck_all: bool = False, pipeline_factory: PipelineFactory = build_pipeline) -> dict[str, Any]:
+    """`full` : relire et re-extraire (LLM) toutes les pages detail. `recheck_all` : relire toutes les pages detail
+    sans tenir compte des dates du sitemap, mais n'envoyer au LLM que celles dont le texte a change."""
     chunk = chunk_size if chunk_size is not None else settings.chunk_size
     with runlog.open_run(settings.logs_dir, run_id) as run:
         pipeline = pipeline_factory(settings, sources, dry_run=dry_run, model=model)
@@ -93,7 +95,8 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
             chunk_limit = None if dry_run else (chunk if budget is None else min(chunk, budget))
             data: dict[str, Any] = {
                 "listing": {"countries": countries},
-                "detector": {"run_id": run.run_id, "full": full, "limit": chunk_limit},
+                "detector": {"run_id": run.run_id, "full": full, "limit": chunk_limit,
+                             "sitemap_skip": not recheck_all},
             }
             if not dry_run:
                 data["detail_fetcher"] = {"full": full}

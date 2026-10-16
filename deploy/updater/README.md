@@ -153,9 +153,16 @@ kept.
 - **Politeness towards the Commission's website.** At least 2 s between two requests; after a "too many
   requests" response (HTTP 429), the agent slows down to up to 15 s between two requests and only speeds up again
   gradually. This is the main reason for the duration.
-- **First `run` on a PC**: the HTTP cache is empty (it is not in the release), so all the detail pages are
+- **Incremental `run`**: the sitemap of the site gives the date of last change (`<lastmod>`) of each page. A
+  known detail page whose date has not changed since it was last read is **not downloaded again** (counted as
+  `skipped_by_sitemap` in `logs\runs\<run>.summary.json`). New pages, pages with a newer date and pages without a
+  date are read as before. The listings, the SRSP PDF and the sitemap itself are always read.
+- **First `run` on a PC**: if the restored state has no sitemap dates yet (releases before October 2026), record
+  them once without downloading anything (the data of the release is assumed to be current):
+  `.venv\Scripts\python.exe -m tsi_agent run --seed-sitemap-lastmod`. Otherwise all the detail pages are
   reloaded, about **2 hours**. Later runs only reload the listings and the changed pages: a few minutes to half an
-  hour.
+  hour. `run --recheck-all` reads every detail page again whatever its date (only changed pages go to the LLM);
+  `run --full` also re-extracts every page with the LLM (long and costly).
 - **Publications**: download of the PDFs (up to 50 MB) and one long LLM call per publication; allow several
   minutes per ten new publications.
 - **Costs** (order of magnitude, OpenAI public price for gpt-5.1: $1.25 per million input tokens, $10 per million
@@ -164,6 +171,75 @@ kept.
   (`run --full`, all the publications, all the links) about $100. With EC GPT, billing is internal to the
   Commission. The cost of each run is in `logs\runs\<run>.summary.json` (`cost_usd`), computed with the `pricing`
   section of the settings.
+
+## Automatic monthly update (GitHub Actions)
+
+The workflow [`.github/workflows/update-data.yml`](../../.github/workflows/update-data.yml) runs the whole update
+in GitHub, without a PC. The LLM is the Claude Code CLI (`llm_provider: claude_cli`, `model: sonnet` in
+`config/settings.yaml`), authenticated by an Anthropic API key (no Claude subscription is used).
+
+**What it does**, in order:
+
+1. installs the agent (`pip install .`) and the Claude Code CLI, then makes a tiny test call (Haiku) to check the
+   key before the long steps;
+2. restores the state (`output/`) from `tsi-output-state.zip` of the **latest `data-*` release** of the
+   repository; with no such release, the job stops with a clear message;
+3. if the state has no sitemap dates yet, records them once (`run --seed-sitemap-lastmod`, no download);
+4. `run` (incremental), `deliverables`, `csr-fetch`, `csr-build`, `csr-link --detail-only`, `anomalies`,
+   `supabase-sync`, `prod-export`;
+5. publishes a release `data-YYYY-MM-DD` (`release-data --publish`; `data-YYYY-MM-DD-HHMM` for a second run on
+   the same day). The next run restores its state from it.
+
+**Schedule.** The 1st of each month at 03:00 UTC. In January, April, July and October, the scheduled run is a
+**full check** (`run --recheck-all`): every detail page is read again whatever its sitemap date, in case the
+site changed a page without changing its date; only the pages whose text changed go to the LLM.
+
+**Run it by hand.** GitHub > *Actions* > *Monthly data update* > *Run workflow* (or
+`gh workflow run update-data.yml -f skip_deliverables=true`). Inputs:
+
+| Input | Default | Effect |
+|---|---|---|
+| `full` | false | `run --full`: re-read **and re-extract with the LLM** every detail page (hours, tens of dollars; every project is then sent again to `csr-link`) |
+| `recheck_all` | false | `run --recheck-all`: the quarterly full check |
+| `detail_only` | true | `csr-link --detail-only`: only the projects with a detail page go to the LLM |
+| `skip_deliverables` | false | skip the publications step |
+| `publish_release` | true | publish the `data-*` release at the end (without it, the next run starts again from the previous release) |
+| `sync_supabase` | true | publish projects, CSRs, links and anomalies to Supabase (web explorer) |
+
+Only one update runs at a time (`concurrency: update-data`); the job stops after 340 minutes.
+
+**Errors.** A step that stops on the LLM quota (exit code 1: `run`, `deliverables`, `csr-link`), a failed
+`csr-fetch` (ECFIN site down: the previous CSR export is kept) or a failed `supabase-sync` does not stop the
+following steps: the release is still published with what was done, then the job ends **in failure** so that
+GitHub sends an e-mail. Run the workflow again later: each step resumes where it stopped. A configuration error
+(exit code 2, for example a refused key) or a failed `csr-build`, `anomalies`, `prod-export` or `release-data`
+stops the job at once, without a release.
+
+**Secrets** (GitHub > *Settings* > *Secrets and variables* > *Actions* > *New repository secret*, or
+`gh secret set NAME`): never in a file, never printed in the log.
+
+| Secret | Used by |
+|---|---|
+| `ANTHROPIC_API_KEY` | the Claude Code CLI (`run`, `deliverables`, `csr-link`, test call) |
+| `SUPABASE_URL` | `supabase-sync` |
+| `SUPABASE_SERVICE_KEY` | `supabase-sync` (service_role key) |
+
+The release uses the token that GitHub gives to each job (`permissions: contents: write`): no secret needed.
+
+**Where to see the result.** The page of the run (*Actions* > the run) shows a **summary**: result and duration
+of each step; for each run of the agent, the projects new or updated, the pages skipped thanks to the sitemap,
+the publications, the CSR links, the LLM calls and their cost; the CSR files, the rows sent to Supabase, the
+files and chunks of the export, and the link to the release. The logs of the agent (`logs/runs/`) are attached
+to the run as the artifact `run-logs-<id>` for 30 days.
+
+**Costs.**
+- GitHub: a public repository has unlimited minutes on `ubuntu-latest`; for a private one, a monthly run of 1
+  to 4 hours fits in the free minutes of most plans.
+- Anthropic API (Claude Sonnet: $3 per million input tokens, $15 per million output tokens, prices of 2026):
+  roughly 2 to 3 cents per extracted project, 5 to 15 cents per summarised publication, 4 to 5 cents per project
+  linked to the CSRs. A usual monthly update costs **a few dollars**; the quarterly full check costs about the
+  same (only changed pages go to the LLM). The exact cost of each run is in the summary (`cost_usd`, as reported
+  by the CLI). Set a spending limit on the key in the Anthropic console.
 
 ## Troubleshooting
 
