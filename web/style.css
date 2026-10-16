@@ -43,6 +43,8 @@
   --viz-faint: #c9d0d9;
   --viz-grid: #e9edf2;
   --viz-axis: #c3cad4;
+  --viz-edge: #a3adba;     /* lineage edges at rest (de-emphasis grey) */
+  --viz-edge-hi: #1f5fb4;  /* highlighted edges (validated: band, chroma, contrast) */
   color-scheme: light;
 }
 
@@ -87,6 +89,8 @@
     --viz-faint: #343d49;
     --viz-grid: #222a34;
     --viz-axis: #3a4552;
+    --viz-edge: #56616f;
+    --viz-edge-hi: #4c8fef;
     color-scheme: dark;
   }
 }
@@ -382,4 +386,43 @@ a.viz-mark { cursor: pointer; }
 @media (forced-colors: active) {
   .viz-bar { fill: CanvasText; }
   .viz-key, .viz-line { background: CanvasText; }
+}
+
+/* Lineage network (CSR -> projects). Node text stays in text tokens; colour sits on a small marker. */
+.ln-summary { margin: 4px 0 12px; }
+.ln-card { padding: 14px; }
+.ln-legend { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.ln-key { vertical-align: middle; margin-right: 6px; flex: none; }
+.ln-pill-key { display: inline-block; font-size: 0.72rem; font-weight: 600; border: 1px solid var(--border); background: var(--row-alt); border-radius: 999px; padding: 0 6px; margin-right: 6px; line-height: 1.4; }
+.ln-wrap { position: relative; min-width: 0; }
+.ln-cols { display: flex; justify-content: space-between; font-size: 0.8rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin: 6px 0 2px; }
+.ln-graph { min-width: 0; }
+.ln-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.ln-year { fill: var(--muted); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ln-box { fill: var(--card); stroke: var(--border); stroke-width: 1; }
+.ln-t1 { fill: var(--fg); font-size: 12px; font-weight: 600; }
+.ln-t2 { fill: var(--muted); font-size: 11px; }
+.ln-pill { fill: var(--row-alt); stroke: var(--border); stroke-width: 1; }
+.ln-pill-t { fill: var(--fg); font-size: 10px; font-weight: 700; }
+.ln-node { cursor: pointer; outline: none; transition: opacity 0.15s; }
+.ln-node:hover .ln-box, .ln-node.on .ln-box { stroke: var(--viz-edge-hi); }
+.ln-node:focus-visible .ln-box { stroke: var(--focus); stroke-width: 3; }
+.ln-node[aria-pressed="true"] .ln-box { stroke: var(--viz-edge-hi); stroke-width: 2; }
+.ln-unlinked { opacity: 0.5; }
+.ln-unlinked .ln-box { stroke-dasharray: 3 3; }
+.ln-line { fill: none; stroke: var(--viz-edge); stroke-width: 1.5; stroke-linecap: round; }
+.ln-partial .ln-line, .ln-line.ln-partial-key { stroke-dasharray: 5 4; }
+.ln-line.ln-direct-key, .ln-line.ln-partial-key { stroke: var(--fg); stroke-width: 2; }
+.ln-hit { fill: none; stroke: transparent; stroke-width: 10; pointer-events: stroke; }
+.ln-edge { transition: opacity 0.15s; }
+.ln-edge.on .ln-line, .ln-edge:hover .ln-line { stroke: var(--viz-edge-hi); stroke-width: 2; }
+.ln-graph.has-focus .ln-node:not(.on), .ln-graph.has-focus .ln-edge:not(.on) { opacity: 0.15; }
+.ln-tip { max-width: 320px; }
+.ln-tip div { margin-top: 2px; }
+.ln-detail { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 10px; overflow-wrap: anywhere; }
+.ln-detail h3 { margin-top: 0; }
+.ln-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+@media (forced-colors: active) {
+  .ln-line { stroke: CanvasText; }
+  .ln-edge.on .ln-line { stroke: Highlight; }
 }
