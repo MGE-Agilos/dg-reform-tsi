@@ -359,7 +359,7 @@ function linkItem(link) {
 async function renderProject(id, seq) {
   const [proj, links, latest] = await Promise.all([
     sb.from("projects").select("project_id,title,programme,year,countries,policy_area,results,detail_page,url,summary,deliverables,csrs").eq("project_id", id).single(),
-    sb.from("project_csr_links").select("level,rationale,basis,part_id,csr_parts(text,assessment,csr_id,csrs(title,year))").eq("project_id", id),
+    sb.from("project_csr_links").select("level,rationale,basis,part_id,csr_parts(text,assessment,csr_id,csrs(title,year,country))").eq("project_id", id),
     impactHistoryQuery(id, 1),
   ]);
   if (stale(seq)) return;
@@ -374,8 +374,17 @@ async function renderProject(id, seq) {
     ["Policy area", esc(areaLabel(r.policy_area))], ["Results", esc(r.results || "not stated")],
     ["Deliverables", esc(r.deliverables)], ["Detail page", r.detail_page ? "yes" : "no"], ["Project ID", `<code>${esc(r.project_id)}</code>`],
   ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  // Lineage: the country with the most links of this project, years of its linked CSRs.
+  const byCountry = new Map();
+  for (const l of sorted) {
+    const c = l.csr_parts?.csrs;
+    if (c && Object.hasOwn(COUNTRIES, c.country)) byCountry.set(c.country, [...(byCountry.get(c.country) || []), num(c.year)]);
+  }
+  const [lnCountry, lnYears] = [...byCountry.entries()].sort((a, b) => b[1].length - a[1].length)[0] || [];
+  const lineage = lnCountry
+    ? ` <a class="btn btn-secondary" href="${esc(lineageHref(lnCountry, lnYears, `project:${r.project_id}`))}">Show lineage</a>` : "";
   const page = (safeUrl(r.url) ? `<p>${extLink(r.url, "Project page")} ↗</p>` : "")
-    + `<p><a class="btn btn-secondary" href="#impact/${encodeURIComponent(r.project_id)}">Impact analysis</a></p>`;
+    + `<p class="toolbar-actions"><a class="btn btn-secondary" href="#impact/${encodeURIComponent(r.project_id)}">Impact analysis</a>${lineage}</p>`;
   const summary = r.summary
     ? `<div class="card"><h3 class="section-label">Summary <span class="ai-note">AI-generated summary</span></h3><p class="prose">${esc(r.summary)}</p></div>`
     : "";
@@ -465,13 +474,15 @@ async function renderCsr(id, seq) {
   const assessment = r.assessment
     ? `<p><span class="label">Latest assessment${r.assessment_year ? ` (${esc(r.assessment_year)})` : ""}:</span> ${esc(r.assessment)}</p>` : "";
   const source = safeUrl(r.source_url) ? `<p class="small">${extLink(r.source_url, "ECFIN CSR database")} ↗</p>` : "";
+  const lineage = Object.hasOwn(COUNTRIES, r.country)
+    ? `<p><a class="btn btn-secondary" href="${esc(lineageHref(r.country, [num(r.year)], `csr:${r.csr_id}`, n === 0))}">Show in lineage network</a></p>` : "";
   view(`<a class="back" href="#csrs">← CSRs</a>`
     + `<div class="card"><p class="muted small">${esc(countryName(r.country))} · ${esc(r.year)} · CSR ${esc(r.number)} · <code>${esc(r.csr_id)}</code></p>`
     + `<h2 class="detail-title" tabindex="-1">${esc(r.title)}</h2>`
     + `<p><strong>${n} project${n === 1 ? "" : "s"} support${n === 1 ? "s" : ""} this CSR</strong> <span class="ai-note">AI-assessed</span></p>`
     + `<p class="prose">${esc(r.text)}</p>`
     + (areas ? `<p class="small"><span class="label">Policy areas:</span> ${esc(areas)}</p>` : "")
-    + `${assessment}${source}</div>`
+    + `${assessment}${source}${lineage}</div>`
     + `<div class="card"><h3>Sub-parts</h3>${parts.data.length ? parts.data.map(partBlock).join("") : `<p class="empty">No sub-part.</p>`}</div>`);
 }
 
@@ -563,11 +574,15 @@ async function downloadCsv(f) {
   if (error) return showError(error, "Could not export anomalies");
   $("csv-note").textContent = total > rows.length
     ? `Export limited to the first ${rows.length.toLocaleString("en")} of ${total.toLocaleString("en")} rows.` : "";
-  // Separator ";" for Excel with Belgian/French regional settings; UTF-8 BOM and CRLF.
+  saveCsv("anomalies.csv", cols, rows);
+}
+
+/** Download rows (objects) as CSV: separator ";" for Excel with Belgian/French regional settings; UTF-8 BOM and CRLF. */
+function saveCsv(filename, cols, rows) {
   const lines = [cols.map(csvCell).join(";"), ...rows.map((r) => cols.map((c) => csvCell(r[c])).join(";"))];
   const blob = new Blob(["\uFEFF" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
-  const a = Object.assign(document.createElement("a"), { href: url, download: "anomalies.csv" });
+  const a = Object.assign(document.createElement("a"), { href: url, download: filename });
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -595,6 +610,8 @@ function clearAiState() {
   impactPending.clear();
   chatPending = false;
   dashCache = null;
+  lineageCache.clear();
+  lineageState = null;
   try {
     sessionStorage.removeItem(CHAT_KEY);
     for (let i = sessionStorage.length - 1; i >= 0; i--) {
@@ -1041,9 +1058,9 @@ function hrefFor(route, values) {
 }
 
 /** Text cut to a pixel width (estimate), with an ellipsis; the full text stays in the tooltip and the table. */
-function fitText(text, width) {
+function fitText(text, width, charW = CH) {
   const s = String(text ?? "");
-  const max = Math.max(2, Math.floor(width / CH));
+  const max = Math.max(2, Math.floor(width / charW));
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
 
@@ -1326,7 +1343,7 @@ function coverageRows(m) {
   return [...m.coverage].map((x) => ({ ...x, pct: x.csrs ? (100 * x.covered) / x.csrs : 0 }))
     .sort((a, b) => b.pct - a.pct || b.csrs - a.csrs).map((x) => ({
       label: countryName(x.key), display: `${Math.round(x.pct)}% (${x.covered}/${x.csrs})`, csrs: x.csrs, covered: x.covered,
-      segs: [{ v: x.pct, key: "s1", href: Object.hasOwn(COUNTRIES, x.key) ? hrefFor("csrs", { country: x.key }) : null,
+      segs: [{ v: x.pct, key: "s1", href: Object.hasOwn(COUNTRIES, x.key) ? hrefFor("lineage", { country: x.key }) : null,
         tip: { label: countryName(x.key), value: `${Math.round(x.pct)}% of CSRs supported`, share: `${fmtN(x.covered)} of ${fmtN(x.csrs)} CSRs have a linked project` } }],
     }));
 }
@@ -1455,7 +1472,7 @@ function dashboardHtml(m, at) {
     + figure("csrYear", "CSRs by year", { sub: "Click a bar to list that year's CSRs.", tableHtml: dataTable(["Year", "CSRs"], m.csrYears.map((x) => [String(x.year), fmtN(x.n)])) })
     + figure("assessments", "Latest CSR assessment", { sub: "From full implementation to no progress.",
       tableHtml: dataTable(["Assessment", "CSRs"], assessmentRows(m).map((r) => [r.label, r.display])) })
-    + figure("coverage", "CSRs supported by a project, by country", { wide: true, sub: "Share of the country's CSRs with at least one linked project (AI-assessed links). Click to list them.",
+    + figure("coverage", "CSRs supported by a project, by country", { wide: true, sub: "Share of the country's CSRs with at least one linked project (AI-assessed links). Click to open the lineage network.",
       tableHtml: dataTable(["Country", "CSRs", "With a project", "Share"], coverageRows(m).map((r) => [r.label, fmtN(r.csrs), fmtN(r.covered), share(r.covered, r.csrs)])) })
     + figure("links", "Project–CSR links by level", { tableHtml: dataTable(["Level", "Links"], inOrder(m.linksByLevel, ["direct", "partial"]).map((x) => [LINK_LABELS[x.key] || x.key, fmtN(x.n)])) })
     + `</div></section>`;
@@ -1587,6 +1604,533 @@ async function renderDashboard(seq) {
   paintDashboard();
 }
 
+// ---------- lineage: bipartite network CSR -> projects, per country (hand-made SVG) ----------
+
+const LN_FROM = 2019;
+const LN_TO = 2025;
+const LN_NODE_H = 30; // two text lines
+const LN_STEP = 36; // vertical pitch of a node
+const LN_YEAR_H = 26; // year sub-heading in the CSR column
+const LN_MIN_COL = 96; // below this column width the labels are unreadable: list view instead
+const lineageCache = new Map(); // `${uid}|${country}|${from}|${to}` -> { csrs, scores }
+let lineageState = null; // { model, country, width, pinned }
+
+function assessmentInfo(value) {
+  const k = String(value ?? "none").trim().toLowerCase() || "none";
+  const hit = ASSESSMENT_SCALE.find(([key]) => key === k);
+  return hit ? { label: hit[1], key: hit[2] } : { label: String(value), key: "muted" };
+}
+
+function csrNumber(a, b) {
+  return (parseFloat(a.number) - parseFloat(b.number)) || String(a.number ?? "").localeCompare(String(b.number ?? ""));
+}
+
+/**
+ * Graph model from the nested csrs rows and the latest score per project.
+ * One edge per (CSR, project) pair; its level is direct if any sub-part link is direct.
+ */
+function lineageModel(rows, scores, { unlinked = false, country = "" } = {}) {
+  const csrList = arr(rows).filter((c) => c && c.csr_id).map((c) => ({
+    id: String(c.csr_id), year: num(c.year), number: c.number ?? "", title: c.title ?? "", text: c.text ?? "",
+    assessment: c.assessment ?? null, assessmentYear: c.assessment_year ?? null, parts: arr(c.csr_parts),
+  })).sort((a, b) => a.year - b.year || csrNumber(a, b) || a.id.localeCompare(b.id));
+  const projects = new Map();
+  const edges = new Map();
+  for (const c of csrList) {
+    for (const part of c.parts) {
+      for (const link of arr(part?.project_csr_links)) {
+        const p = link?.projects;
+        if (!p || !p.project_id) continue;
+        const pid = String(p.project_id);
+        if (!projects.has(pid)) {
+          projects.set(pid, { id: pid, title: p.title ?? pid, programme: p.programme ?? "", year: p.year ?? "", results: p.results ?? "",
+            url: p.url ?? "", score: Number.isFinite(scores?.get?.(pid)) ? scores.get(pid) : null });
+        }
+        const key = `${c.id}\u0000${pid}`;
+        if (!edges.has(key)) edges.set(key, { csr: c.id, project: pid, level: "partial", parts: [] });
+        const e = edges.get(key);
+        const level = link.level === "direct" ? "direct" : "partial";
+        if (level === "direct") e.level = "direct";
+        e.parts.push({ part: String(part.part_id ?? ""), text: part.text ?? "", level, rationale: link.rationale ?? "", basis: link.basis ?? "" });
+      }
+    }
+  }
+  const edgeList = [...edges.values()];
+  const linkedCsrs = new Set(edgeList.map((e) => e.csr));
+  const shown = csrList.filter((c) => unlinked || linkedCsrs.has(c.id));
+  const csrIndex = new Map(shown.map((c, i) => [c.id, i]));
+  const projectList = [...projects.values()];
+  const visibleEdges = edgeList.filter((e) => csrIndex.has(e.csr));
+  for (const e of visibleEdges) e.parts.sort((a, b) => (a.level === b.level ? a.part.localeCompare(b.part) : a.level === "direct" ? -1 : 1));
+  return {
+    country,
+    csrs: shown.map((c) => ({ ...c, linked: linkedCsrs.has(c.id), info: assessmentInfo(c.assessment) })),
+    projects: projectList,
+    edges: visibleEdges,
+    csrIndex,
+    summary: {
+      csrs: csrList.length, csrsLinked: linkedCsrs.size, projects: projectList.length,
+      links: edgeList.length, direct: edgeList.filter((e) => e.level === "direct").length,
+    },
+  };
+}
+
+/** Positions: CSRs by year then number; projects in barycentric order (mean centre of their CSRs), pulled towards it. */
+function lineageLayout(model, width) {
+  const W = Math.max(280, Math.floor(width) || 0);
+  const narrow = W < 600;
+  const leftW = Math.round(narrow ? W * 0.4 : Math.min(300, W * 0.34));
+  const rightW = Math.round(narrow ? W * 0.42 : Math.min(380, W * 0.4));
+  const rightX = W - rightW;
+  const csrPos = [];
+  const headers = [];
+  let y = 0;
+  let year = null;
+  model.csrs.forEach((c, i) => {
+    if (c.year !== year) {
+      year = c.year;
+      headers.push({ year, y });
+      y += LN_YEAR_H;
+    }
+    csrPos[i] = y;
+    y += LN_STEP;
+  });
+  const leftH = y;
+  const centre = (i) => csrPos[i] + LN_NODE_H / 2;
+  const byProject = new Map(model.projects.map((p) => [p.id, []]));
+  for (const e of model.edges) byProject.get(e.project)?.push(model.csrIndex.get(e.csr));
+  const order = model.projects.map((p, i) => {
+    const ids = byProject.get(p.id) || [];
+    const bary = ids.length ? ids.reduce((s, k) => s + centre(k), 0) / ids.length : Infinity;
+    return { i, bary, p };
+  }).filter((o) => Number.isFinite(o.bary))
+    .sort((a, b) => a.bary - b.bary || String(b.p.year).localeCompare(String(a.p.year)) || String(a.p.title).localeCompare(String(b.p.title)));
+  // Forward pass: as close to the barycentre as the minimum pitch allows; backward pass: keep within the height.
+  const top = LN_YEAR_H;
+  const ys = [];
+  order.forEach((o, k) => {
+    const target = Math.max(top, o.bary - LN_NODE_H / 2);
+    ys[k] = k ? Math.max(target, ys[k - 1] + LN_STEP) : target;
+  });
+  const bottom = Math.max(leftH, top + order.length * LN_STEP);
+  for (let k = order.length - 1; k >= 0; k--) {
+    const limit = k === order.length - 1 ? bottom - LN_STEP : ys[k + 1] - LN_STEP;
+    ys[k] = Math.max(top + k * LN_STEP, Math.min(ys[k], limit));
+  }
+  const projPos = new Map(order.map((o, k) => [o.p.id, ys[k]]));
+  const height = Math.ceil(Math.max(leftH, order.length ? ys[order.length - 1] + LN_STEP : 0)) + 4;
+  return { W, narrow, leftW, rightW, rightX, csrPos, headers, projPos, order: order.map((o) => o.p.id), height,
+    readable: leftW >= LN_MIN_COL && rightW >= LN_MIN_COL };
+}
+
+function lnAria(parts) {
+  return esc(parts.filter(Boolean).join(", "));
+}
+
+/** The network as an SVG string (pure: also used by the Node render test). */
+function lineageSvg(model, width) {
+  const L = lineageLayout(model, width);
+  const cc = model.country;
+  const x1 = L.leftW;
+  const x2 = L.rightX;
+  const dx = (x2 - x1) / 2;
+  const csrIdx = model.csrIndex;
+  let edges = "";
+  model.edges.forEach((e, i) => {
+    const ci = csrIdx.get(e.csr);
+    const py = L.projPos.get(e.project);
+    if (ci === undefined || py === undefined) return;
+    const ya = L.csrPos[ci] + LN_NODE_H / 2;
+    const yb = py + LN_NODE_H / 2;
+    const d = `M${px(x1)} ${px(ya)}C${px(x1 + dx)} ${px(ya)} ${px(x2 - dx)} ${px(yb)} ${px(x2)} ${px(yb)}`;
+    edges += `<g class="ln-edge ln-${e.level}" data-e="${i}"><path class="ln-line" d="${d}"/><path class="ln-hit" d="${d}"/></g>`;
+  });
+  let nodes = "";
+  for (const h of L.headers) {
+    nodes += `<text class="ln-year" x="2" y="${h.y + 17}">${esc(h.year)}</text>`;
+  }
+  const textW1 = (w) => w - 20 - 6; // marker + padding
+  model.csrs.forEach((c, i) => {
+    const y = L.csrPos[i];
+    const full = `${cc} ${c.year} · CSR ${c.number}`;
+    const label = full.length * CH <= textW1(L.leftW) ? full : fitText(`CSR ${c.number}`, textW1(L.leftW));
+    const n = model.edges.filter((e) => e.csr === c.id).length;
+    nodes += `<g class="ln-node ln-csr${c.linked ? "" : " ln-unlinked"}" data-node="c${i}" tabindex="0" role="button" aria-pressed="false"`
+      + ` aria-label="${lnAria([full, c.info.label, `${n} project${n === 1 ? "" : "s"}`])}">`
+      + `<rect class="ln-box" x="0.5" y="${y}" width="${L.leftW - 1}" height="${LN_NODE_H}" rx="4"/>`
+      + `<rect class="viz-fill-${esc(c.info.key)}" x="5" y="${y + 5}" width="8" height="${LN_NODE_H - 10}" rx="2"/>`
+      + `<text class="ln-t1" x="20" y="${y + 13}">${esc(label)}</text>`
+      + `<text class="ln-t2" x="20" y="${y + 25}">${esc(fitText(c.info.label, textW1(L.leftW), 6.4))}</text></g>`;
+  });
+  model.projects.forEach((p) => {
+    const y = L.projPos.get(p.id);
+    if (y === undefined) return;
+    const k = L.order.indexOf(p.id);
+    const x = L.rightX;
+    const hasScore = Number.isFinite(p.score);
+    const pill = hasScore ? 38 : 0;
+    const meta = [p.programme, p.year].filter(Boolean).join(" ");
+    const n = model.edges.filter((e) => e.project === p.id).length;
+    nodes += `<g class="ln-node ln-project" data-node="p${k}" data-id="${esc(p.id)}" tabindex="0" role="button" aria-pressed="false"`
+      + ` aria-label="${lnAria([p.title, meta, hasScore ? `impact score ${p.score}/10` : "", `${n} CSR${n === 1 ? "" : "s"}`])}">`
+      + `<rect class="ln-box" x="${x + 0.5}" y="${y}" width="${L.rightW - 1}" height="${LN_NODE_H}" rx="4"/>`
+      + `<rect class="viz-fill-${programmeKey(p.programme)}" x="${x + 5}" y="${y + 5}" width="8" height="${LN_NODE_H - 10}" rx="2"/>`
+      + `<text class="ln-t1" x="${x + 20}" y="${y + 13}">${esc(fitText(p.title, textW1(L.rightW)))}</text>`
+      + `<text class="ln-t2" x="${x + 20}" y="${y + 25}">${esc(fitText(meta, textW1(L.rightW) - pill, 6.4))}</text>`
+      + (hasScore ? `<rect class="ln-pill" x="${x + L.rightW - 6 - 34}" y="${y + 16}" width="34" height="12" rx="6"/>`
+        + `<text class="ln-pill-t" x="${x + L.rightW - 6 - 17}" y="${y + 25.5}" text-anchor="middle">${esc(`${p.score}/10`)}</text>` : "")
+      + `</g>`;
+  });
+  const svg = `<svg class="ln-svg" viewBox="0 0 ${L.W} ${L.height}" width="100%" height="${L.height}" role="group"`
+    + ` aria-label="${esc(`Network of CSRs and supporting projects, ${countryName(cc)}`)}">`
+    + `<g class="ln-edges">${edges}</g><g class="ln-nodes">${nodes}</g></svg>`;
+  return { svg, layout: L };
+}
+
+/** One row per link (CSR sub-part -> project), for the table view and the CSV export. */
+function lineageRows(model) {
+  const projects = new Map(model.projects.map((p) => [p.id, p]));
+  const csrs = new Map(model.csrs.map((c) => [c.id, c]));
+  return model.edges.flatMap((e) => e.parts.map((pt) => {
+    const c = csrs.get(e.csr) || {};
+    const p = projects.get(e.project) || {};
+    return { csr_id: e.csr, csr_year: c.year, csr_number: c.number, part_id: pt.part, project_id: e.project, project_title: p.title,
+      programme: p.programme, project_year: p.year, level: pt.level, basis: pt.basis, rationale: pt.rationale };
+  }));
+}
+
+const LN_CSV_COLS = ["csr_id", "csr_year", "csr_number", "part_id", "project_id", "project_title", "programme", "project_year", "level", "basis", "rationale"];
+
+function lineageTable(model) {
+  const rows = lineageRows(model).map((r) => [
+    td(hashLink("csr", r.csr_id, r.csr_id), "nowrap"), td(esc(r.part_id), "nowrap"),
+    td(hashLink("project", r.project_id, r.project_title || r.project_id), "title-cell"), td(badge(r.level)), td(esc(r.rationale)),
+  ]);
+  return table(["CSR", "Sub-part", "Project", "Level", "Rationale"], rows, "No link.");
+}
+
+function lineageLegend() {
+  const line = (cls) => `<svg class="ln-key" width="26" height="10" aria-hidden="true"><line class="ln-line ${cls}" x1="1" y1="5" x2="25" y2="5"/></svg>`;
+  const sw = (key, label) => `<li><span class="viz-key viz-key-${key}" aria-hidden="true"></span>${esc(label)}</li>`;
+  return `<div class="ln-legend">`
+    + `<ul class="viz-legend"><li>${line("ln-direct-key")}Direct link</li><li>${line("ln-partial-key")}Partial link</li>`
+    + `<li><span class="ln-pill-key" aria-hidden="true">6/10</span>Latest impact score</li></ul>`
+    + `<ul class="viz-legend"><li class="muted">CSR assessment:</li>${ASSESSMENT_SCALE.filter(([k]) => k !== "none").map(([, label, key]) => sw(key, label)).join("")}${sw("muted", "None")}</ul>`
+    + `<ul class="viz-legend"><li class="muted">Programme:</li>${PROGRAMMES.map((p) => sw(programmeKey(p), p)).join("")}</ul></div>`;
+}
+
+function lineageSummary(s) {
+  return `${fmtN(s.csrs)} CSR${s.csrs === 1 ? "" : "s"} (${fmtN(s.csrsLinked)} with at least one project) · `
+    + `${fmtN(s.projects)} project${s.projects === 1 ? "" : "s"} · ${fmtN(s.links)} link${s.links === 1 ? "" : "s"} (${fmtN(s.direct)} direct)`;
+}
+
+/** Detail panel of the pinned node (links to the CSR or project page). */
+function lineageDetail(model, key) {
+  if (!key) return `<p class="muted small">Click a CSR or a project to pin its links and see the details here.</p>`;
+  const projects = new Map(model.projects.map((p) => [p.id, p]));
+  const csrs = new Map(model.csrs.map((c) => [c.id, c]));
+  if (key[0] === "c") {
+    const c = model.csrs[Number(key.slice(1))];
+    if (!c) return "";
+    const items = model.edges.filter((e) => e.csr === c.id).map((e) => {
+      const p = projects.get(e.project) || {};
+      return `<li>${badge(e.level)} ${hashLink("project", e.project, p.title || e.project)} <span class="muted small">${esc([p.programme, p.year].filter(Boolean).join(" "))}</span></li>`;
+    }).join("");
+    return `<h3>${esc(`${model.country} ${c.year} · CSR ${c.number}`)}</h3><p>${esc(c.title)}</p>`
+      + `<p class="small"><span class="label">Assessment:</span> ${esc(c.info.label)}${c.assessmentYear ? ` (${esc(c.assessmentYear)})` : ""}</p>`
+      + (items ? `<ul class="ln-list">${items}</ul>` : `<p class="empty">No project linked.</p>`)
+      + `<p>${hashLink("csr", c.id, "Open the CSR")}</p>`;
+  }
+  const id = model.projects.length ? lineageState?.layout?.order?.[Number(key.slice(1))] : null;
+  const p = projects.get(id);
+  if (!p) return "";
+  const items = model.edges.filter((e) => e.project === p.id).map((e) => {
+    const c = csrs.get(e.csr) || {};
+    return `<li>${badge(e.level)} ${hashLink("csr", e.csr, `${model.country} ${c.year} · CSR ${c.number}`)} <span class="muted small">${esc(c.title)}</span></li>`;
+  }).join("");
+  const page = safeUrl(p.url) ? ` · ${extLink(p.url, "Project page")} ↗` : "";
+  return `<h3>${esc(p.title)}</h3><p class="small muted">${esc([p.programme, p.year, p.results ? `results ${p.results}` : "",
+    Number.isFinite(p.score) ? `impact score ${p.score}/10` : ""].filter(Boolean).join(" · "))}</p>`
+    + `<ul class="ln-list">${items}</ul><p>${hashLink("project", p.id, "Open the project")}${page}</p>`;
+}
+
+/** Tooltip lines for a node or an edge (plain strings, inserted with textContent). */
+function lineageTipLines(model, target) {
+  const order = lineageState?.layout?.order || [];
+  const short = (s, n) => (String(s ?? "").length > n ? `${String(s).slice(0, n - 1)}…` : String(s ?? ""));
+  if (target.node?.[0] === "c") {
+    const c = model.csrs[Number(target.node.slice(1))];
+    if (!c) return null;
+    const n = model.edges.filter((e) => e.csr === c.id).length;
+    return [`${model.country} ${c.year} · CSR ${c.number}`, short(c.title || c.text, 180),
+      `Assessment: ${c.info.label}${c.assessmentYear ? ` (${c.assessmentYear})` : ""}`, `${n} project${n === 1 ? "" : "s"}`];
+  }
+  if (target.node?.[0] === "p") {
+    const p = model.projects.find((x) => x.id === order[Number(target.node.slice(1))]);
+    if (!p) return null;
+    const n = model.edges.filter((e) => e.project === p.id).length;
+    return [short(p.title, 140), [p.programme, p.year].filter(Boolean).join(" · "), `Results: ${p.results || "not stated"}`,
+      Number.isFinite(p.score) ? `Impact score: ${p.score}/10` : "No impact analysis", `${n} CSR${n === 1 ? "" : "s"}`];
+  }
+  const e = model.edges[Number(target.edge)];
+  if (!e) return null;
+  const c = model.csrs[model.csrIndex.get(e.csr)] || {};
+  const p = model.projects.find((x) => x.id === e.project) || {};
+  const parts = e.parts.slice(0, 4).map((pt) => `${pt.part} (${pt.level}): ${short(pt.rationale, 160)}`);
+  if (e.parts.length > 4) parts.push(`+${e.parts.length - 4} more sub-parts`);
+  return [`${e.level === "direct" ? "Direct" : "Partial"} link`, `CSR ${c.number} (${c.year}) → ${short(p.title, 80)}`, ...parts];
+}
+
+function lineageHighlight(key) {
+  const root = $("ln-graph");
+  const s = lineageState;
+  if (!root || !s) return;
+  root.querySelectorAll(".on").forEach((el) => el.classList.remove("on"));
+  root.classList.toggle("has-focus", Boolean(key));
+  if (!key) return;
+  const order = s.layout.order;
+  const on = (sel) => root.querySelector(sel)?.classList.add("on");
+  on(`[data-node="${key}"]`);
+  s.model.edges.forEach((e, i) => {
+    const ck = `c${s.model.csrIndex.get(e.csr)}`;
+    const pk = `p${order.indexOf(e.project)}`;
+    if (ck === key || pk === key) {
+      on(`[data-e="${i}"]`);
+      on(`[data-node="${ck === key ? pk : ck}"]`);
+    }
+  });
+}
+
+function lineagePin(key) {
+  const s = lineageState;
+  if (!s) return;
+  s.pinned = key && s.pinned !== key ? key : null;
+  $("ln-graph")?.querySelectorAll(".ln-node").forEach((n) => n.setAttribute("aria-pressed", String(n.dataset.node === s.pinned)));
+  lineageHighlight(s.pinned);
+  const panel = $("ln-detail");
+  if (panel) panel.innerHTML = lineageDetail(s.model, s.pinned);
+}
+
+function hideLineageTip() {
+  const tip = $("ln-tip");
+  if (tip) tip.hidden = true;
+}
+
+function showLineageTip(lines, x, y) {
+  const tip = $("ln-tip");
+  const root = $("ln-wrap");
+  if (!tip || !root || !lines) return;
+  const [first, ...rest] = lines;
+  const strong = document.createElement("strong");
+  strong.textContent = first;
+  tip.replaceChildren(strong, ...rest.filter(Boolean).map((t) => {
+    const d = document.createElement("div");
+    d.textContent = t;
+    return d;
+  }));
+  tip.hidden = false;
+  const box = root.getBoundingClientRect();
+  const tw = tip.offsetWidth;
+  const th = tip.offsetHeight;
+  let left = x - box.left + 12;
+  if (left + tw > box.width) left = Math.max(0, x - box.left - tw - 12);
+  let top = y - box.top - th - 10;
+  if (top < 0) top = y - box.top + 18;
+  tip.style.left = `${Math.round(left)}px`;
+  tip.style.top = `${Math.round(top)}px`;
+}
+
+function paintLineageGraph() {
+  const slot = $("ln-graph");
+  const s = lineageState;
+  if (!slot || !s) return;
+  const { svg, layout } = lineageSvg(s.model, slot.clientWidth);
+  s.layout = layout;
+  s.width = $("ln-wrap")?.clientWidth || 0;
+  if (!layout.readable) {
+    slot.innerHTML = `<p class="muted small">The screen is too narrow for the network: the list of links is shown instead.</p>${lineageTable(s.model)}`;
+    return;
+  }
+  slot.innerHTML = svg;
+  const keep = s.pinned; // re-apply the pinned selection on the new drawing
+  s.pinned = null;
+  if (keep && slot.querySelector(`[data-node="${keep}"]`)) lineagePin(keep);
+}
+
+function bindLineage() {
+  const slot = $("ln-graph");
+  if (!slot) return;
+  const targetOf = (el) => {
+    if (!(el instanceof Element)) return null;
+    const node = el.closest("[data-node]");
+    if (node) return { node: node.dataset.node, el: node };
+    const edge = el.closest("[data-e]");
+    return edge ? { edge: edge.dataset.e, el: edge } : null;
+  };
+  slot.addEventListener("pointermove", (ev) => {
+    const s = lineageState;
+    const t = targetOf(ev.target);
+    if (!s || !t) {
+      hideLineageTip();
+      if (s && !s.pinned) lineageHighlight(null);
+      return;
+    }
+    if (t.node && !s.pinned) lineageHighlight(t.node);
+    showLineageTip(lineageTipLines(s.model, t), ev.clientX, ev.clientY);
+  });
+  slot.addEventListener("pointerleave", () => {
+    hideLineageTip();
+    if (lineageState && !lineageState.pinned) lineageHighlight(null);
+  });
+  slot.addEventListener("focusin", (ev) => {
+    const s = lineageState;
+    const t = targetOf(ev.target);
+    if (!s || !t?.node) return;
+    if (!s.pinned) lineageHighlight(t.node);
+    const r = t.el.getBoundingClientRect();
+    showLineageTip(lineageTipLines(s.model, t), r.left + Math.min(r.width / 2, 120), r.top);
+  });
+  slot.addEventListener("focusout", () => {
+    hideLineageTip();
+    if (lineageState && !lineageState.pinned) lineageHighlight(null);
+  });
+  slot.addEventListener("click", (ev) => {
+    const t = targetOf(ev.target);
+    if (t?.node) lineagePin(t.node);
+  });
+  slot.addEventListener("keydown", (ev) => {
+    const t = targetOf(ev.target);
+    if (t?.node && (ev.key === "Enter" || ev.key === " ")) {
+      ev.preventDefault();
+      lineagePin(t.node);
+    }
+  });
+}
+
+/** Nested query (existing foreign keys); if it fails, the same data from simple queries. */
+async function fetchLineage(country, from, to) {
+  const key = `${currentUid}|${country}|${from}|${to}`;
+  if (lineageCache.has(key)) return lineageCache.get(key);
+  let csrs;
+  const nested = await sb.from("csrs")
+    .select("csr_id,year,number,title,text,assessment,assessment_year,csr_parts(part_id,text,project_csr_links(level,rationale,basis,projects(project_id,title,programme,year,results,url)))")
+    .eq("country", country).gte("year", from).lte("year", to);
+  if (!nested.error) {
+    csrs = nested.data;
+  } else {
+    const base = await sb.from("csrs").select("csr_id,year,number,title,text,assessment,assessment_year").eq("country", country).gte("year", from).lte("year", to);
+    if (base.error) return { error: base.error };
+    const ids = base.data.map((c) => c.csr_id);
+    const parts = ids.length ? await sb.from("csr_parts").select("part_id,csr_id,text").in("csr_id", ids) : { data: [] };
+    if (parts.error) return { error: parts.error };
+    const partIds = parts.data.map((p) => p.part_id);
+    const links = partIds.length ? await sb.from("project_csr_links").select("part_id,project_id,level,rationale,basis").in("part_id", partIds) : { data: [] };
+    if (links.error) return { error: links.error };
+    const pids = [...new Set(links.data.map((l) => l.project_id))];
+    const projs = pids.length ? await sb.from("projects").select("project_id,title,programme,year,results,url").in("project_id", pids) : { data: [] };
+    if (projs.error) return { error: projs.error };
+    const pmap = new Map(projs.data.map((p) => [p.project_id, p]));
+    csrs = base.data.map((c) => ({ ...c, csr_parts: parts.data.filter((p) => p.csr_id === c.csr_id).map((p) => ({
+      ...p, project_csr_links: links.data.filter((l) => l.part_id === p.part_id).map((l) => ({ ...l, projects: pmap.get(l.project_id) || null })),
+    })) }));
+  }
+  const pids = [...new Set(arr(csrs).flatMap((c) => arr(c.csr_parts).flatMap((p) => arr(p.project_csr_links).map((l) => l.projects?.project_id))).filter(Boolean))];
+  const scores = new Map();
+  if (pids.length) {
+    const res = await sb.from("impact_reports").select("project_id,score,created_at").in("project_id", pids)
+      .order("created_at", { ascending: false }).order("id", { ascending: false });
+    if (!res.error) for (const r of res.data) if (!scores.has(r.project_id) && Number.isFinite(r.score)) scores.set(r.project_id, r.score);
+  }
+  const entry = { csrs, scores };
+  lineageCache.set(key, entry);
+  return entry;
+}
+
+/** Country with the most CSRs supported by a project (from the dashboard figures), for #lineage without a country. */
+async function defaultLineageCountry() {
+  if (!dashCache || dashCache.uid !== currentUid) {
+    const res = await fetchDashboard().catch(() => ({ error: true }));
+    if (res.error) return "";
+    dashCache = { uid: currentUid, model: res.model, at: new Date() };
+  }
+  const best = [...dashCache.model.coverage].filter((c) => Object.hasOwn(COUNTRIES, c.key)).sort((a, b) => b.covered - a.covered)[0];
+  return best?.key || "";
+}
+
+async function renderLineage(p, seq) {
+  const raw = p.get("country") || "";
+  let country = pick(raw, COUNTRIES);
+  let from = yearOf(p, "from") ?? LN_FROM;
+  let to = yearOf(p, "to") ?? LN_TO;
+  if (from > to) [from, to] = [to, from];
+  const unlinked = p.get("unlinked") === "1";
+  const sel = p.get("sel") || "";
+  if (!country && !raw) {
+    const best = await defaultLineageCountry();
+    if (stale(seq)) return;
+    if (best) {
+      const q = new URLSearchParams(p);
+      q.set("country", best);
+      return location.replace(`#lineage?${q.toString()}`);
+    }
+  }
+  const form = filterForm("lineage", countriesSelect(country)
+    + yearField("from", "From year", from) + yearField("to", "To year", to)
+    + checkField("unlinked", "Show CSRs without a project", unlinked));
+  const intro = `<p class="muted">Country-specific recommendations (left, by year) and the projects that support them (right). `
+    + `Links assessed by AI from the project text: verify before use.</p>`;
+  if (!country) {
+    view(`${heading("Lineage")}${intro}${form}`
+      + (raw ? `<p class="error" role="alert">Unknown country code: choose a country.</p>` : `<p class="empty">Choose a country.</p>`));
+    bindFilters();
+    return;
+  }
+  const res = await fetchLineage(country, from, to);
+  if (stale(seq)) return;
+  if (res.error) return showError(res.error, "Could not load the lineage network");
+  const model = lineageModel(res.csrs, res.scores, { unlinked, country });
+  const head = `${heading(`Lineage · ${countryName(country)}`)}${intro}${form}`;
+  if (!model.edges.length) {
+    view(`${head}<p class="muted small">${esc(lineageSummary(model.summary))}</p>`
+      + `<div class="card"><p class="empty">No project is linked to a CSR of ${esc(countryName(country))} between ${from} and ${to}.</p>`
+      + `<p><a href="${esc(hrefFor("projects", { country }))}">See the projects of ${esc(countryName(country))}</a></p></div>`);
+    bindFilters();
+    lineageState = null;
+    return;
+  }
+  lineageState = { model, country, pinned: null, layout: null, width: 0 };
+  view(`${head}<p class="ln-summary"><strong>${esc(lineageSummary(model.summary))}</strong></p>`
+    + `<div class="card ln-card">${lineageLegend()}`
+    + `<div id="ln-wrap" class="ln-wrap"><div class="ln-cols" aria-hidden="true"><span>CSRs</span><span>Projects</span></div>`
+    + `<div id="ln-graph" class="ln-graph"></div><div id="ln-tip" class="viz-tip ln-tip" role="tooltip" hidden></div></div>`
+    + `<div id="ln-detail" class="ln-detail" aria-live="polite"></div>`
+    + `<details class="viz-table"><summary>Table of links</summary>`
+    + `<div class="toolbar"><span class="muted small">One row per CSR sub-part and project.</span>`
+    + `<button type="button" class="btn btn-secondary" id="ln-csv">Download CSV</button></div>${lineageTable(model)}</details></div>`);
+  bindFilters();
+  bindLineage();
+  $("ln-csv").addEventListener("click", () => saveCsv(`lineage-${country}-${from}-${to}.csv`, LN_CSV_COLS, lineageRows(model)));
+  paintLineageGraph();
+  $("ln-detail").innerHTML = lineageDetail(model, null);
+  // Selection passed by the CSR or project page (#lineage?...&sel=csr:ID or sel=project:ID).
+  const m = /^(csr|project):(.+)$/.exec(sel);
+  if (m) {
+    const key = m[1] === "csr"
+      ? (model.csrIndex.has(m[2]) ? `c${model.csrIndex.get(m[2])}` : null)
+      : (lineageState.layout?.order.includes(m[2]) ? `p${lineageState.layout.order.indexOf(m[2])}` : null);
+    if (key) {
+      lineagePin(key);
+      $("ln-graph").querySelector(`[data-node="${key}"]`)?.scrollIntoView({ block: "center" });
+    }
+  }
+}
+
+/** #lineage link that opens the network on a CSR or a project (years widened to include it). */
+function lineageHref(country, years, sel, unlinked = false) {
+  const ys = years.filter((y) => Number.isFinite(y) && y > 1900);
+  return hrefFor("lineage", { country, from: Math.min(LN_FROM, ...ys), to: Math.max(LN_TO, ...ys), unlinked: unlinked ? "1" : "", sel });
+}
+
 // ---------- auth and routing ----------
 
 function showScreen(name) {
@@ -1615,13 +2159,14 @@ async function isTester(session) {
 async function route(seq) {
   const { route: r, id, params: p } = params();
   const viewKey = ["project", "csr", "impact"].includes(r) && id ? `${r}/${id}`
-    : (["dashboard", "csrs", "anomalies", "chat", "impact"].includes(r) ? r : "projects");
+    : (["dashboard", "lineage", "csrs", "anomalies", "chat", "impact"].includes(r) ? r : "projects");
   setActiveTab(r);
   loading();
   try {
     if (r === "project" && id) await renderProject(id, seq);
     else if (r === "csr" && id) await renderCsr(id, seq);
     else if (r === "dashboard") await renderDashboard(seq);
+    else if (r === "lineage") await renderLineage(p, seq);
     else if (r === "csrs") await renderCsrs(p, seq);
     else if (r === "anomalies") await renderAnomalies(p, seq);
     else if (r === "chat") await renderChat(seq);
@@ -1803,10 +2348,13 @@ async function init() {
     await sb.auth.signOut({ scope: "local" }); // SIGNED_OUT re-renders (user id changes)
     history.replaceState(null, "", location.pathname + location.search + "#projects");
   });
-  // One Escape handler for the whole page: hides the dashboard tooltip when one is shown.
+  // One Escape handler for the whole page: hides the chart tooltips and releases a pinned lineage node.
   document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
     const tip = $("dash-tip");
-    if (e.key === "Escape" && tip) tip.hidden = true;
+    if (tip) tip.hidden = true;
+    hideLineageTip();
+    if (lineageState?.pinned && $("ln-graph")) lineagePin(lineageState.pinned);
   });
   let resizeTimer = 0;
   window.addEventListener("resize", () => {
@@ -1814,6 +2362,8 @@ async function init() {
     resizeTimer = setTimeout(() => {
       const root = $("dash");
       if (root && root.clientWidth !== dashWidth) paintDashCharts();
+      const wrap = $("ln-wrap");
+      if (wrap && lineageState && wrap.clientWidth !== lineageState.width) paintLineageGraph();
     }, 150);
   });
   window.addEventListener("hashchange", () => {
