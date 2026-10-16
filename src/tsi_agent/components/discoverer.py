@@ -13,7 +13,7 @@ from tsi_agent.parsers import main_text
 from tsi_agent.parsers.detail import parse_detail, parse_detail_meta
 from tsi_agent.parsers.factsheet import parse_factsheet
 from tsi_agent.parsers.policy_area import parse_policy_area
-from tsi_agent.parsers.sitemap import DEFAULT_EXCLUDED_AREAS, parse_sitemap, sitemap_project_urls
+from tsi_agent.parsers.sitemap import DEFAULT_EXCLUDED_AREAS, parse_sitemap, sitemap_lastmods, sitemap_project_urls
 from tsi_agent.parsers.spotlight import parse_spotlight
 from tsi_agent.parsers.srsp_pdf import parse_srsp_pdf
 from tsi_agent.urls import is_canonical_detail, is_final_detail, policy_area_from_url
@@ -47,6 +47,7 @@ def combine(a: ProjectRef, b: ProjectRef) -> ProjectRef:
         spotlight=a.spotlight or b.spotlight, highlighted=a.highlighted or b.highlighted,
         listing_urls=_union(a.listing_urls, b.listing_urls),
         aliases=[x for x in aliases if x != project_id],
+        sitemap_lastmod=a.sitemap_lastmod or b.sitemap_lastmod,
     )
 
 
@@ -226,10 +227,12 @@ class ProjectDiscoverer:
         scope: dict[str, Any] = {"countries": [], "srsp": False, "all_countries": False}
         sitemap_urls: list[str] = []
         sitemap_keys: set[str] = set()
+        lastmods: dict[str, str] = {}
         for page in pages:
             if page.kind == "sitemap":
                 try:
                     sitemap_urls += parse_sitemap(page.content)[1]
+                    lastmods.update(sitemap_lastmods(page.content))
                     sitemap_keys.add(page.key)
                 except ValueError as exc:
                     runlog.event(NAME, "error", page.url, "parse_failed", kind=page.kind, error=repr(exc))
@@ -272,6 +275,8 @@ class ProjectDiscoverer:
                 r.policy_area = policy_area_from_url(r.detail_url)
         ambiguous = ambiguous_title_keys(resolved)
         merged, fuzzy = self._fuzzy_with_hints(merge_refs(resolved), ambiguous)
+        for r in merged:  # mode incremental : date du sitemap de la page detail (None sans sitemap ou sans date)
+            r.sitemap_lastmod = lastmods.get(r.detail_url) if r.detail_url else None
         report = self._report(merged, fuzzy, thin_ids, {r.detail_url for r in from_sitemap}, sitemap_report)
         kept_docs = []
         for doc in docs:

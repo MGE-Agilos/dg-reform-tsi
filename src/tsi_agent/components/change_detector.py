@@ -5,6 +5,7 @@ from haystack import component
 
 from tsi_agent import runlog
 from tsi_agent.models import ProjectRef
+from tsi_agent.parsers.sitemap import not_modified_since
 from tsi_agent.store import ProjectStore, shared_store, StoreEntry
 from tsi_agent.urls import is_detail_candidate
 
@@ -76,10 +77,14 @@ class ChangeDetector:
                              message=f"{country}: {now[country]} projects listed vs {before[country]} known")
         return dropped
 
-    @component.output_types(thin=list[ProjectRef], detail=list[ProjectRef], delisted=list[str], remaining=int)
+    @component.output_types(thin=list[ProjectRef], detail=list[ProjectRef], delisted=list[str], remaining=int,
+                            skipped=list[ProjectRef])
     def run(self, refs: list[ProjectRef], run_id: str, scope: dict[str, Any],
             suspect_countries: list[str] | None = None, deferred_ids: list[str] | None = None, full: bool = False,
             limit: int | None = None) -> dict[str, Any]:
+        """`skipped` : pages detail connues dont la date du sitemap n'est pas plus recente que celle enregistree
+        (mode incremental, sauf `full`) ; ni telechargees ni comptees dans `limit`, le writer les traite comme
+        inchangees (mise a jour du front matter si le listing a change)."""
         store = self._get_store()
         known = store.all()
         if scope.get("fetched") is not None:
@@ -87,7 +92,7 @@ class ChangeDetector:
             refs = [_complete(r, known.get(r.project_id), fetched) for r in refs]
         alias_owner = {alias: pid for pid, e in known.items() for alias in e.aliases}
         offered = self._offered.setdefault(run_id, set())
-        thin, detail, remaining = [], [], 0
+        thin, detail, skipped, remaining = [], [], [], 0
         deferred = set(deferred_ids or [])
         seen = {r.project_id for r in refs} | {a for r in refs for a in r.aliases} | deferred
         # Lien reporté : il porte l'ancien slug/l'ancienne URL, l'état connaît le projet sous son slug canonique.
@@ -96,6 +101,12 @@ class ChangeDetector:
             entry = known.get(ref.project_id)
             if ref.detail_url:
                 if ref.project_id in offered:
+                    continue
+                if (not full and entry is not None and entry.detail_page and entry.content_hash
+                        and not_modified_since(ref.sitemap_lastmod, entry.sitemap_lastmod)):
+                    offered.add(ref.project_id)
+                    skipped.append(ref)
+                    runlog.event(NAME, "classify", ref.project_id, "unchanged_sitemap", lastmod=ref.sitemap_lastmod)
                     continue
                 if limit is not None and len(detail) >= limit:
                     remaining += 1
@@ -118,4 +129,4 @@ class ChangeDetector:
         ]
         for pid in delisted:
             runlog.event(NAME, "classify", pid, "delisted")
-        return {"thin": thin, "detail": detail, "delisted": delisted, "remaining": remaining}
+        return {"thin": thin, "detail": detail, "delisted": delisted, "remaining": remaining, "skipped": skipped}

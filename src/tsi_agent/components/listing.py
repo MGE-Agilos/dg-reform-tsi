@@ -59,6 +59,11 @@ class SourceListingFetcher:
             runlog.event(NAME, "error", index_url, "sitemap_incomplete", error=repr(exc))
             return []
 
+    def fetch_sitemap(self) -> list[RawPage]:
+        """Pages du sitemap configure (`sitemap_url`) ; [] si absent, indisponible ou incomplet."""
+        url = self.sources.get("sitemap_url")
+        return self._sitemap_pages(url) if url else []
+
     @component.output_types(pages=list[RawPage])
     def run(self, countries: list[str] | None = None) -> dict[str, list[RawPage]]:
         pages = []

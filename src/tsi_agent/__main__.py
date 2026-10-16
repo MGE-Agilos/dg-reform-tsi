@@ -14,7 +14,7 @@ from tsi_agent.index_pipeline import build_index_pipeline
 from tsi_agent.llm import load_dotenv
 from tsi_agent.pipeline import build_pipeline
 from tsi_agent.runner import (format_discovery, refresh_deliverables_metadata, run_deliverables, run_extraction,
-                              run_index)
+                              run_index, seed_sitemap_lastmod)
 
 
 def _countries(value: str) -> list[str]:
@@ -31,8 +31,10 @@ def _uses_llm(args: argparse.Namespace) -> bool:
         return not args.refresh_metadata
     if args.command == "csr-link":
         return not args.sample
-    # run --dry-run garde la verification : l'arbitre du sitemap (SitemapMergeJudge) appelle le LLM meme en dry-run.
-    return args.command in ("run", "llm-check")
+    if args.command == "run":
+        # --dry-run garde la verification : l'arbitre du sitemap (SitemapMergeJudge) appelle le LLM meme en dry-run.
+        return not args.seed_sitemap_lastmod
+    return args.command == "llm-check"
 
 
 def _check_llm(settings: Settings) -> bool:
@@ -67,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
                      help="découverte seule (sitemap compris), sans LLM ni écriture de projets ; bilan des fusions "
                           "dans logs/runs/<run_id>.discovery.json")
     run.add_argument("--model")
+    run.add_argument("--seed-sitemap-lastmod", action="store_true",
+                     help="initialiser le mode incrémental : enregistrer la date <lastmod> actuelle du sitemap des "
+                          "pages détail connues, sans les télécharger ni appeler le LLM (corpus supposé à jour)")
     index = sub.add_parser("index", help="vectoriser les fichiers extraits nouveaux ou modifiés (couche RAG)")
     index.add_argument("--full", action="store_true", help="revectoriser tous les fichiers")
     deliv = sub.add_parser("deliverables", help="livrables des projets (publications PDF) : texte et résumé IA")
@@ -360,6 +365,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
             return 2
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        return 0
+    if args.seed_sitemap_lastmod:
+        try:
+            summary = seed_sitemap_lastmod(settings, sources)
+        except (RuntimeError, OSError) as exc:
+            print(f"ERREUR : {exc}", file=sys.stderr)
+            return 1
         print(json.dumps(summary, indent=2, ensure_ascii=False))
         return 0
     try:

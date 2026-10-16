@@ -1,6 +1,7 @@
 """Parser du sitemap XML du site (index de sitemaps ou liste d'URLs) et filtre des pages projet TSI."""
 
 import re
+from datetime import datetime, timezone
 from xml.etree import ElementTree
 
 # Rubriques du site qui ne sont pas des pages projet : pages de navigation, partenaires, appels "flagship"
@@ -15,8 +16,8 @@ def _local(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-def parse_sitemap(xml: bytes | str) -> tuple[list[str], list[str]]:
-    """(sitemaps enfants, URLs de pages) ; ValueError si le contenu n'est pas un sitemap XML."""
+def _entries(xml: bytes | str) -> tuple[str, list[tuple[str, str | None]]]:
+    """(type de racine, [(loc, lastmod ou None)]) ; ValueError si le contenu n'est pas un sitemap XML."""
     try:
         root = ElementTree.fromstring(xml)
     except ElementTree.ParseError as exc:
@@ -24,12 +25,42 @@ def parse_sitemap(xml: bytes | str) -> tuple[list[str], list[str]]:
     kind = _local(root.tag)
     if kind not in ("sitemapindex", "urlset"):
         raise ValueError(f"sitemap inattendu : <{kind}>")
-    locs = []
+    out = []
     for entry in root:
-        loc = next((c for c in entry if _local(c.tag) == "loc"), None)
-        if loc is not None and loc.text and loc.text.strip():
-            locs.append(loc.text.strip())
+        fields = {_local(c.tag): (c.text or "").strip() for c in entry if _local(c.tag) in ("loc", "lastmod")}
+        if fields.get("loc"):
+            out.append((fields["loc"], fields.get("lastmod") or None))
+    return kind, out
+
+
+def parse_sitemap(xml: bytes | str) -> tuple[list[str], list[str]]:
+    """(sitemaps enfants, URLs de pages) ; ValueError si le contenu n'est pas un sitemap XML."""
+    kind, entries = _entries(xml)
+    locs = [loc for loc, _ in entries]
     return (locs, []) if kind == "sitemapindex" else ([], locs)
+
+
+def sitemap_lastmods(xml: bytes | str) -> dict[str, str]:
+    """URL de page -> date <lastmod> telle quelle (pages sans date omises ; {} pour un index de sitemaps)."""
+    kind, entries = _entries(xml)
+    return {} if kind == "sitemapindex" else {loc: lastmod for loc, lastmod in entries if lastmod}
+
+
+def _instant(value: str | None) -> datetime | None:
+    """Date W3C du sitemap (ex. 2025-12-01T15:25Z) -> instant UTC ; None si absente ou illisible."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def not_modified_since(current: str | None, recorded: str | None) -> bool:
+    """La page n'a-t-elle pas change depuis sa date enregistree ? Faux si l'une des dates manque ou est illisible."""
+    now, before = _instant(current), _instant(recorded)
+    return now is not None and before is not None and now <= before
 
 
 def sitemap_project_urls(urls: list[str], excluded_areas: list[str] | tuple[str, ...]) -> list[str]:

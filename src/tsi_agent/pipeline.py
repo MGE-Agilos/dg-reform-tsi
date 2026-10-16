@@ -59,6 +59,7 @@ def build_pipeline(settings: Settings, sources: dict[str, Any], *, dry_run: bool
     p.connect("extractor.records", "writer.records")
     p.connect("detector.thin", "writer.thin")
     p.connect("detail_fetcher.unchanged", "writer.unchanged")
+    p.connect("detector.skipped", "writer.skipped")
     p.connect("detector.delisted", "writer.delisted")
     p.connect("discoverer.programme_docs", "writer.programme_docs")
     return p

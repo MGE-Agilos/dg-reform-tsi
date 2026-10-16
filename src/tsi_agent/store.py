@@ -46,6 +46,8 @@ class StoreEntry(BaseModel):
     last_updated: str
     listed: bool = True
     aliases: list[str] = Field(default_factory=list)
+    # Date <lastmod> du sitemap de la page detail lors de sa derniere lecture (mode incremental de `run`).
+    sitemap_lastmod: str | None = None
 
 
 class ProjectStore(Protocol):
