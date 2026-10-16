@@ -1454,7 +1454,6 @@ function dashboardHtml(m, at) {
   const csrs = `<section class="dash-section" aria-labelledby="dash-csrs"><h3 id="dash-csrs">CSRs and lineage</h3><div class="dash-grid">`
     + figure("csrYear", "CSRs by year", { sub: "Click a bar to list that year's CSRs.", tableHtml: dataTable(["Year", "CSRs"], m.csrYears.map((x) => [String(x.year), fmtN(x.n)])) })
     + figure("assessments", "Latest CSR assessment", { sub: "From full implementation to no progress.",
-      legendHtml: legend([["o1", "Full"], ["o3", "Some"], ["o5", "No progress"], ["muted", "Not assessed"]].map(([key, label]) => ({ key, label }))),
       tableHtml: dataTable(["Assessment", "CSRs"], assessmentRows(m).map((r) => [r.label, r.display])) })
     + figure("coverage", "CSRs supported by a project, by country", { wide: true, sub: "Share of the country's CSRs with at least one linked project (AI-assessed links). Click to list them.",
       tableHtml: dataTable(["Country", "CSRs", "With a project", "Share"], coverageRows(m).map((r) => [r.label, fmtN(r.csrs), fmtN(r.covered), share(r.covered, r.csrs)])) })
@@ -1531,7 +1530,6 @@ function bindDashTips(root) {
     show(m, r.left + Math.min(r.width / 2, 160), r.top);
   });
   root.addEventListener("focusout", hide);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") hide(); });
 }
 
 async function fetchDashboard() {
@@ -1804,6 +1802,11 @@ async function init() {
     wantsPasswordChange = false;
     await sb.auth.signOut({ scope: "local" }); // SIGNED_OUT re-renders (user id changes)
     history.replaceState(null, "", location.pathname + location.search + "#projects");
+  });
+  // One Escape handler for the whole page: hides the dashboard tooltip when one is shown.
+  document.addEventListener("keydown", (e) => {
+    const tip = $("dash-tip");
+    if (e.key === "Escape" && tip) tip.hidden = true;
   });
   let resizeTimer = 0;
   window.addEventListener("resize", () => {
