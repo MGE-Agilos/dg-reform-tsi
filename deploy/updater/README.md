@@ -157,12 +157,14 @@ kept.
   known detail page whose date has not changed since it was last read is **not downloaded again** (counted as
   `skipped_by_sitemap` in `logs\runs\<run>.summary.json`). New pages, pages with a newer date and pages without a
   date are read as before. The listings, the SRSP PDF and the sitemap itself are always read.
-- **First `run` on a PC**: if the restored state has no sitemap dates yet (releases before October 2026), record
-  them once without downloading anything (the data of the release is assumed to be current):
-  `.venv\Scripts\python.exe -m tsi_agent run --seed-sitemap-lastmod`. Otherwise all the detail pages are
-  reloaded, about **2 hours**. Later runs only reload the listings and the changed pages: a few minutes to half an
-  hour. `run --recheck-all` reads every detail page again whatever its date (only changed pages go to the LLM);
-  `run --full` also re-extracts every page with the LLM (long and costly).
+- **First `run` on a PC**, or a state without sitemap dates (releases before October 2026): run
+  `.venv\Scripts\python.exe -m tsi_agent run --recheck-all` once. It reads every detail page again whatever its
+  date, records the dates, and only sends the pages whose text changed to the LLM: about **2 hours**. Later runs
+  only reload the listings and the changed pages: a few minutes to half an hour. `run --full` also re-extracts
+  every page with the LLM (long and costly).
+- `run --seed-sitemap-lastmod` records the current sitemap dates **without downloading anything**. Use it only if
+  the state is known to be current (for example a release published the same day from a complete run): a page
+  changed since the state was made would then only be seen by the next full check.
 - **Publications**: download of the PDFs (up to 50 MB) and one long LLM call per publication; allow several
   minutes per ten new publications.
 - **Costs** (order of magnitude, OpenAI public price for gpt-5.1: $1.25 per million input tokens, $10 per million
@@ -180,19 +182,25 @@ in GitHub, without a PC. The LLM is the Claude Code CLI (`llm_provider: claude_c
 
 **What it does**, in order:
 
-1. installs the agent (`pip install .`) and the Claude Code CLI, then makes a tiny test call (Haiku) to check the
-   key before the long steps;
+1. installs the agent (`pip install .`) and the Claude Code CLI (pinned version, see below), then makes a tiny
+   test call (Haiku, same options as the agent) to check the key before the long steps;
 2. restores the state (`output/`) from `tsi-output-state.zip` of the **latest `data-*` release** of the
    repository; with no such release, the job stops with a clear message;
-3. if the state has no sitemap dates yet, records them once (`run --seed-sitemap-lastmod`, no download);
-4. `run` (incremental), `deliverables`, `csr-fetch`, `csr-build`, `csr-link --detail-only`, `anomalies`,
-   `supabase-sync`, `prod-export`;
-5. publishes a release `data-YYYY-MM-DD` (`release-data --publish`; `data-YYYY-MM-DD-HHMM` for a second run on
+3. `run` (incremental; a **full check** `run --recheck-all` if the state has no sitemap dates yet, which records
+   them), `deliverables`, `csr-fetch`, `csr-build`, `csr-link --detail-only`, `anomalies`, `supabase-sync`,
+   `prod-export`;
+4. publishes a release `data-YYYY-MM-DD` (`release-data --publish`; `data-YYYY-MM-DD-HHMM` for a second run on
    the same day). The next run restores its state from it.
 
 **Schedule.** The 1st of each month at 03:00 UTC. In January, April, July and October, the scheduled run is a
 **full check** (`run --recheck-all`): every detail page is read again whatever its sitemap date, in case the
 site changed a page without changing its date; only the pages whose text changed go to the LLM.
+
+GitHub **disables a scheduled workflow after 60 days without activity in the repository** (no commit). To avoid
+it, the last step of each run re-enables the workflow through the API (`permissions: actions: write`). If the
+schedule was disabled anyway (for example after two failed runs before that step), GitHub shows a banner in
+*Actions* > *Monthly data update*: click *Enable workflow*, or run
+`gh workflow enable update-data.yml -R MGE-Agilos/dg-reform-tsi`.
 
 **Run it by hand.** GitHub > *Actions* > *Monthly data update* > *Run workflow* (or
 `gh workflow run update-data.yml -f skip_deliverables=true`). Inputs:
@@ -206,14 +214,41 @@ site changed a page without changing its date; only the pages whose text changed
 | `publish_release` | true | publish the `data-*` release at the end (without it, the next run starts again from the previous release) |
 | `sync_supabase` | true | publish projects, CSRs, links and anomalies to Supabase (web explorer) |
 
-Only one update runs at a time (`concurrency: update-data`); the job stops after 340 minutes.
+Only one update runs at a time (`concurrency: update-data`); the job stops after 350 minutes.
 
-**Errors.** A step that stops on the LLM quota (exit code 1: `run`, `deliverables`, `csr-link`), a failed
-`csr-fetch` (ECFIN site down: the previous CSR export is kept) or a failed `supabase-sync` does not stop the
-following steps: the release is still published with what was done, then the job ends **in failure** so that
-GitHub sends an e-mail. Run the workflow again later: each step resumes where it stopped. A configuration error
-(exit code 2, for example a refused key) or a failed `csr-build`, `anomalies`, `prod-export` or `release-data`
-stops the job at once, without a release.
+**Time budgets.** The LLM steps have a time budget, set at the top of the workflow: `RUN_BUDGET_MIN` (150),
+`DELIVERABLES_BUDGET_MIN` (75), `CSR_LINK_BUDGET_MIN` (60). Their sum leaves at least 30 minutes for the CSR,
+export and release steps. A step that reaches its budget is interrupted; what it has written so far is kept,
+the following steps run, and the next run continues the work.
+
+**Errors.** A step that stops on the LLM quota (exit code 1: `run`, `deliverables`, `csr-link`), reaches its time
+budget, a failed `csr-fetch` (ECFIN site down: the previous CSR export is kept) or a failed `supabase-sync` does
+not stop the following steps: the release is still published with what was done, then the job ends **in
+failure** so that GitHub sends an e-mail. Run the workflow again later: each step resumes where it stopped. A
+configuration error (exit code 2, for example a refused key) or a failed `csr-build`, `anomalies`, `prod-export`
+or `release-data` stops the job at once, without a release.
+
+`supabase-sync` is tried a second time after 60 seconds. If it fails again, the summary says that **the tables of
+the web explorer may be partial**: run the workflow again with `publish_release=false` (no second release), or
+run `python -m tsi_agent supabase-sync` locally with the state of the release.
+
+**Failed or cancelled run.** When the job fails before the release (or is cancelled, or reaches 350 minutes), the
+work already paid for is not lost: the state of `output/` is attached to the run as the artifact
+`output-state-partial-<run id>` for 30 days. It has the same content as `tsi-output-state.zip` in a release. To
+continue from it:
+- **on a PC**: download it (page of the run > *Artifacts*, or
+  `gh run download <run id> -n output-state-partial-<run id> -R MGE-Agilos/dg-reform-tsi`), unzip the artifact,
+  then unzip the `tsi-output-state.zip` it contains into `output\` (after moving away the old `output\`), and run
+  `update.ps1` or the steps that did not finish; then publish a release (`release-data --publish`) so that the
+  next automatic run starts from it;
+- the workflow itself always starts from the latest release, not from an artifact.
+
+**Claude Code CLI version.** The workflow installs the version in `CLAUDE_CODE_VERSION` at the top of
+`.github/workflows/update-data.yml`, so that a new CLI release cannot change the behaviour of a monthly run. To
+move to a newer version: install it locally (`npm install -g @anthropic-ai/claude-code@<version>`), run
+`python -m tsi_agent llm-check --n 3` and a small `run --limit 3`, then change `CLAUDE_CODE_VERSION` in a commit.
+The test call of the workflow uses the same options as the agent (`--tools ""`, `--json-schema`...), so an
+incompatible CLI change stops the job before any long step.
 
 **Secrets** (GitHub > *Settings* > *Secrets and variables* > *Actions* > *New repository secret*, or
 `gh secret set NAME`): never in a file, never printed in the log.
@@ -224,12 +259,14 @@ stops the job at once, without a release.
 | `SUPABASE_URL` | `supabase-sync` |
 | `SUPABASE_SERVICE_KEY` | `supabase-sync` (service_role key) |
 
-The release uses the token that GitHub gives to each job (`permissions: contents: write`): no secret needed.
+The release and the schedule upkeep use the token that GitHub gives to each job (`permissions: contents: write`,
+`actions: write`): no secret needed. The checkout does not keep this token in the working copy
+(`persist-credentials: false`).
 
 **Where to see the result.** The page of the run (*Actions* > the run) shows a **summary**: result and duration
 of each step; for each run of the agent, the projects new or updated, the pages skipped thanks to the sitemap,
-the publications, the CSR links, the LLM calls and their cost; the CSR files, the rows sent to Supabase, the
-files and chunks of the export, and the link to the release. The logs of the agent (`logs/runs/`) are attached
+the publications, the CSR links, the failures, the detail pages without a sitemap date, the LLM calls and their
+cost; the CSR files, the rows sent to Supabase, the files and chunks of the export, and the link to the release. The logs of the agent (`logs/runs/`) are attached
 to the run as the artifact `run-logs-<id>` for 30 days.
 
 **Costs.**

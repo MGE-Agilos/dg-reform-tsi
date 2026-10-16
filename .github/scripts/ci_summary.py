@@ -6,7 +6,8 @@
 
 Inputs (all optional, a missing or unreadable file is reported, never fatal):
 - `<runs-dir>/*.summary.json`: one per run of the agent (run, deliverables, csr-link, seed...);
-- `<work-dir>/steps.tsv`: `step<TAB>exit code<TAB>duration in s`, one line per step (written by run_step.sh);
+- `<work-dir>/steps.tsv`: `step<TAB>exit code<TAB>duration in s<TAB>policy`, one line per step (written by
+  run_step.sh; exit 1 is labelled as a quota only for the `quota` policy, 124 is the time budget);
 - `<work-dir>/csr-build.out`, `<work-dir>/supabase-sync.out`: JSON printed by these commands;
 - the manifest of prod-export.
 """
@@ -86,6 +87,11 @@ def _details(run: dict, step: str) -> tuple[str, str, str]:
                  f"{w.get('refreshed', 0)} refreshed", f"{w.get('delisted', 0)} delisted"]
         if w.get("write_failed"):
             parts.append(f"{w['write_failed']} write errors")
+        if run.get("failed"):
+            parts.append(f"{run['failed']} failed ({run.get('fetch_failed', 0)} fetch, "
+                         f"{run.get('extract_failed', 0)} extraction)")
+        if run.get("detail_without_sitemap_date"):
+            parts.append(f"{run['detail_without_sitemap_date']} without sitemap date")
         if run.get("remaining_detail"):
             parts.append(f"{run['remaining_detail']} detail pages left")
         new = int(w.get("detail", 0) or 0) + int(w.get("thin", 0) or 0)
@@ -105,22 +111,40 @@ def _details(run: dict, step: str) -> tuple[str, str, str]:
     return "-", "-", step
 
 
-def _steps_table(work_dir: Path) -> list[str]:
+def read_steps(work_dir: Path) -> list[tuple[str, str, str, str]] | None:
+    """(step, exit code, duration in s, policy) per line of steps.tsv; None if the file is missing."""
     try:
-        rows = [line.split("\t") for line in (Path(work_dir) / "steps.tsv").read_text(encoding="utf-8").splitlines()
-                if line.strip()]
+        lines = (Path(work_dir) / "steps.tsv").read_text(encoding="utf-8").splitlines()
     except OSError:
+        return None
+    return [tuple((line.split("\t") + ["", "", "", ""])[:4]) for line in lines if line.strip()]
+
+
+def step_result(code: str, policy: str) -> str:
+    """Label of a step result. Exit 1 is a quota only for the LLM steps (policy `quota`); 124 is the time budget."""
+    if code == "0":
+        return "ok"
+    if code == "124" and policy in ("quota", "soft"):
+        return "time budget reached, continued"
+    if code == "1" and policy == "quota":
+        return "quota (exit 1), continued"
+    if policy == "soft":
+        return f"failed (exit {code}), continued"
+    return f"failed (exit {code})"
+
+
+def _steps_table(steps: list[tuple[str, str, str, str]] | None) -> list[str]:
+    if steps is None:
         return ["No step result recorded."]
     out = ["| Step | Result | Duration |", "|---|---|---|"]
-    for row in rows:
-        name, code, duration = (row + ["", "", ""])[:3]
-        result = {"0": "ok", "1": "quota (exit 1)"}.get(code, f"failed (exit {code})")
-        out.append(f"| {name} | {result} | {_minutes(duration)} |")
+    for name, code, duration, policy in steps:
+        out.append(f"| {name} | {step_result(code, policy)} | {_minutes(duration)} |")
     return out
 
 
 def render(runs_dir: Path, work_dir: Path, manifest: Path, since: str | None = None, mode: str | None = None,
-           state_tag: str | None = None, release_tag: str | None = None, release_url: str | None = None) -> str:
+           state_tag: str | None = None, release_tag: str | None = None, release_url: str | None = None,
+           partial_artifact: str | None = None) -> str:
     lines = ["## TSI data update", ""]
     head = [f"Mode: **{mode}**"] if mode else []
     if state_tag:
@@ -128,7 +152,15 @@ def render(runs_dir: Path, work_dir: Path, manifest: Path, since: str | None = N
     if head:
         lines += [" · ".join(head), ""]
 
-    lines += ["### Steps", "", *_steps_table(work_dir), ""]
+    steps = read_steps(work_dir)
+    lines += ["### Steps", "", *_steps_table(steps), ""]
+    if any(name == "supabase-sync" and code != "0" for name, code, _, _ in steps or []):
+        lines += ["> **Supabase tables may be partial** (supabase-sync failed twice). Run the workflow again with "
+                  "`publish_release=false`, or run `python -m tsi_agent supabase-sync` locally.", ""]
+    if partial_artifact:
+        lines += [f"> **The job did not finish.** The work done so far (state of `output/`) is kept in the artifact "
+                  f"`{partial_artifact}` for 30 days: restore it as described in deploy/updater/README.md "
+                  "(\"Automatic monthly update\", failed run).", ""]
 
     lines += ["### Runs of the agent", ""]
     runs = load_runs(runs_dir, since)
@@ -191,12 +223,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--state-tag")
     parser.add_argument("--release-tag")
     parser.add_argument("--release-url")
+    parser.add_argument("--partial-artifact", help="artifact holding the state of a failed or cancelled run")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     sys.stdout.write(render(Path(args.runs_dir), Path(args.work_dir), Path(args.manifest), since=args.since,
                             mode=args.mode, state_tag=args.state_tag, release_tag=args.release_tag,
-                            release_url=args.release_url))
+                            release_url=args.release_url, partial_artifact=args.partial_artifact))
     return 0
 
 
