@@ -17,7 +17,7 @@ def tree(tmp_path):
     out = tmp_path / "output"
     for rel in ("projects/a.md", "state/index.json", "csr/csr-FR-2023-1.md", "deliverables/x/text.md",
                 "vectors/collection/data.bin", "reports/anomalies.md", "state/index.json.tmp",
-                "deliverables/big.pdf.part"):
+                "deliverables/big.pdf.part", "state/supabase_rows.json"):
         p = out / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(rel, encoding="utf-8")
@@ -202,3 +202,10 @@ def test_failed_zip_leaves_no_part_file(tree, monkeypatch):
 
 def test_default_tag():
     assert release.default_tag(date(2026, 10, 14)) == "data-2026-10-14"
+
+
+def test_state_zip_for_a_failed_ci_run(tree, tmp_path):
+    out, _, _ = tree
+    target = tmp_path / "partial" / "tsi-output-partial.zip"
+    assert release.write_state_zip(out, target) == 4
+    assert names(target) == ["csr/csr-FR-2023-1.md", "deliverables/x/text.md", "projects/a.md", "state/index.json"]

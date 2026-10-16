@@ -48,6 +48,9 @@ class StoreEntry(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     # Date <lastmod> du sitemap de la page detail lors de sa derniere lecture (mode incremental de `run`).
     sitemap_lastmod: str | None = None
+    # Titre et annee officiels (page detail) : indices de la fusion floue quand la page n'est pas relue.
+    title: str | None = None
+    year: int | None = None
 
 
 class ProjectStore(Protocol):

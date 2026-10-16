@@ -78,13 +78,14 @@ class ChangeDetector:
         return dropped
 
     @component.output_types(thin=list[ProjectRef], detail=list[ProjectRef], delisted=list[str], remaining=int,
-                            skipped=list[ProjectRef])
+                            skipped=list[ProjectRef], undated=int)
     def run(self, refs: list[ProjectRef], run_id: str, scope: dict[str, Any],
             suspect_countries: list[str] | None = None, deferred_ids: list[str] | None = None, full: bool = False,
             limit: int | None = None, sitemap_skip: bool = True) -> dict[str, Any]:
         """`skipped` : pages detail connues dont la date du sitemap n'est pas plus recente que celle enregistree
         (mode incremental, sauf `full` ou `sitemap_skip=False`) ; ni telechargees ni comptees dans `limit`, le writer les traite comme
-        inchangees (mise a jour du front matter si le listing a change)."""
+        inchangees (mise a jour du front matter si le listing a change). `undated` : pages detail proposees sans
+        date du sitemap (relues a chaque run)."""
         store = self._get_store()
         known = store.all()
         if scope.get("fetched") is not None:
@@ -92,7 +93,7 @@ class ChangeDetector:
             refs = [_complete(r, known.get(r.project_id), fetched) for r in refs]
         alias_owner = {alias: pid for pid, e in known.items() for alias in e.aliases}
         offered = self._offered.setdefault(run_id, set())
-        thin, detail, skipped, remaining = [], [], [], 0
+        thin, detail, skipped, remaining, undated = [], [], [], 0, 0
         deferred = set(deferred_ids or [])
         seen = {r.project_id for r in refs} | {a for r in refs for a in r.aliases} | deferred
         # Lien reporté : il porte l'ancien slug/l'ancienne URL, l'état connaît le projet sous son slug canonique.
@@ -113,6 +114,7 @@ class ChangeDetector:
                     continue
                 offered.add(ref.project_id)
                 detail.append(ref)
+                undated += ref.sitemap_lastmod is None
                 runlog.event(NAME, "classify", ref.project_id, "known_detail" if entry else "new_detail")
             elif entry is None:
                 if ref.project_id in alias_owner and alias_owner[ref.project_id] in seen:
@@ -129,4 +131,5 @@ class ChangeDetector:
         ]
         for pid in delisted:
             runlog.event(NAME, "classify", pid, "delisted")
-        return {"thin": thin, "detail": detail, "delisted": delisted, "remaining": remaining, "skipped": skipped}
+        return {"thin": thin, "detail": detail, "delisted": delisted, "remaining": remaining, "skipped": skipped,
+                "undated": undated}

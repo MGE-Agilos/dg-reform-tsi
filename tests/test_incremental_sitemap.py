@@ -87,6 +87,15 @@ def test_discoverer_without_sitemap_leaves_dates_empty():
     assert [r.sitemap_lastmod for r in refs] == [None]
 
 
+def test_combine_keeps_the_date_of_the_detail_url_kept():
+    a = ProjectRef(project_id="a", title="A", detail_url="https://x/a_en", sitemap_lastmod="2025-01-01T00:00Z")
+    b = ProjectRef(project_id="b", title="B", detail_url="https://x/b_en", sitemap_lastmod="2026-01-01T00:00Z")
+    assert combine(a, b).detail_url == "https://x/a_en" and combine(a, b).sitemap_lastmod == "2025-01-01T00:00Z"
+    stray = ProjectRef(project_id="t", title="T", sitemap_lastmod="2024-01-01T00:00Z")  # sans page detail
+    assert combine(stray, b).sitemap_lastmod == "2026-01-01T00:00Z"
+    assert combine(stray, ProjectRef(project_id="u", title="U")).sitemap_lastmod is None
+
+
 def test_combine_keeps_the_sitemap_date_and_listing_hash_ignores_it():
     detail = ProjectRef(project_id="p", title="P", detail_url="https://x/p_en", sitemap_lastmod="2025-01-01T00:00Z")
     thin = ProjectRef(project_id="tsi-2022-p", title="P")
@@ -151,6 +160,14 @@ def test_sitemap_skip_can_be_disabled_without_full(tmp_path):
     assert [r.project_id for r in out["detail"]] == ["known"] and out["skipped"] == []
 
 
+def test_detector_counts_detail_pages_without_sitemap_date(tmp_path):
+    dated = detail("dated", "2025-12-01T15:25Z")
+    d = detector_with(tmp_path, [(dated, "2025-12-01T15:25Z")])
+    out = d.run(refs=[dated, detail("new-dated", "2025-01-01T00:00Z"), detail("undated-1"), detail("undated-2")],
+                run_id="r", scope=SCOPE)
+    assert out["undated"] == 2
+
+
 def test_skipped_pages_do_not_count_against_the_limit(tmp_path):
     a, b = detail("a", "2025-01-01T00:00Z"), detail("b", "2025-01-01T00:00Z")
     d = detector_with(tmp_path, [(a, "2025-01-01T00:00Z"), (b, "2025-01-01T00:00Z")])
@@ -195,6 +212,13 @@ def test_writer_records_the_date_of_written_and_unchanged_pages(tmp_path):
     assert LocalProjectStore(tmp_path).get("hems").sitemap_lastmod == "2025-06-01T00:00Z"
 
 
+def test_writer_stores_the_official_title_programme_and_year(tmp_path):
+    w = writer(tmp_path)
+    w.run(run_id="r1", records=[record(ref(title="Official HEMS title", programme="TSI", year=2022))])
+    entry = w._store.get("hems")
+    assert (entry.title, entry.programme, entry.year) == ("Official HEMS title", "TSI", 2022)
+
+
 def test_writer_refreshes_listing_metadata_of_skipped_pages(tmp_path):
     w = writer(tmp_path)
     w.run(run_id="r1", records=[record(ref(sitemap_lastmod="2025-01-01T00:00Z"))])
@@ -233,11 +257,14 @@ def urlset(dates: dict[str, str]) -> bytes:
 class Site(FakeFetcher):
     """Site factice : le sitemap (simple, sans index) donne `dates` ; journalise les pages detail lues."""
 
-    def __init__(self, dates: dict[str, str]):
-        super().__init__(default=self._page)
+    def __init__(self, dates: dict[str, str], missing: set[str] | None = None, pages: dict[str, bytes] | None = None):
+        super().__init__(pages=pages, default=self._page)
         self.dates = dates
+        self.missing = missing or set()
 
     def _page(self, url):
+        if url in self.missing:
+            return None
         return urlset(self.dates) if url == SOURCES["sitemap_url"] else fake_site(url)
 
     def detail_calls(self, urls):
@@ -290,6 +317,7 @@ def test_seed_then_incremental_run_then_newer_date_then_full(settings):
     site, gen = Site(dates), FakeChatGenerator()
     summary = run_extraction(settings, SOURCES, run_id="inc", pipeline_factory=factory(gen, site))
     assert summary["skipped_by_sitemap"] == len(urls) and summary["llm_calls"] == 0 and gen.calls == []
+    assert summary["detail_without_sitemap_date"] == 0 and summary["failed"] == 0
     assert site.detail_calls(urls) == []
     saved = json.loads(Path(settings.logs_dir, "runs", "inc.summary.json").read_text(encoding="utf-8"))
     assert saved["skipped_by_sitemap"] == len(urls)
@@ -301,6 +329,26 @@ def test_seed_then_incremental_run_then_newer_date_then_full(settings):
     assert site.detail_calls(urls) == [newer] and summary["skipped_by_sitemap"] == len(urls) - 1
     entry = next(e for e in LocalProjectStore(settings.output_dir).all().values() if newer in e.source_urls)
     assert entry.sitemap_lastmod == "2026-01-01T00:00Z"
+    dates[newer] = "2026-01-01T00:00Z"
+
+    def lastmod_of(url):
+        return next(e for e in LocalProjectStore(settings.output_dir).all().values()
+                    if url in e.source_urls).sitemap_lastmod
+
+    # Date plus recente mais page illisible (404) : la date enregistree ne bouge pas, la page sera relue.
+    failing = next(u for u in urls[1:] if is_canonical_detail(u))
+    site = Site({**dates, failing: "2026-02-01T00:00Z"}, missing={failing})
+    summary = run_extraction(settings, SOURCES, run_id="fetch-fail",
+                             pipeline_factory=factory(FakeChatGenerator(), site))
+    assert lastmod_of(failing) == "2025-12-01T15:25Z"
+    assert summary["failed"] == 1 and summary["fetch_failed"] == 1
+    # Date plus recente, texte change, extraction en echec : la date enregistree ne bouge pas non plus.
+    changed = fixture_bytes("detail_hems_croatia.html").replace(b"</main>", b"<p>New paragraph.</p></main>")
+    site = Site({**dates, failing: "2026-02-01T00:00Z"}, pages={failing: changed})
+    summary = run_extraction(settings, SOURCES, run_id="extract-fail",
+                             pipeline_factory=factory(FakeChatGenerator(error=RuntimeError("boom")), site))
+    assert lastmod_of(failing) == "2025-12-01T15:25Z"
+    assert summary["failed"] == 1 and summary["extract_failed"] == 1 and summary["fetch_failed"] == 0
 
     # --recheck-all : tout est relu, mais seul le texte change part au LLM (ici : rien).
     site, gen = Site(dates), FakeChatGenerator()
@@ -315,6 +363,14 @@ def test_seed_then_incremental_run_then_newer_date_then_full(settings):
                              pipeline_factory=factory(FakeChatGenerator(), site))
     assert sorted(set(site.detail_calls(urls))) == [u for u in urls if is_canonical_detail(u)]
     assert summary["skipped_by_sitemap"] == 0
+
+
+def test_seed_matches_only_detail_page_urls(settings):
+    store = LocalProjectStore(settings.output_dir)
+    store.put(StoreEntry(project_id="p", file="f", detail_page=True, source_urls=[HR], first_seen="d",
+                         last_updated="d"))
+    summary = seed_sitemap_lastmod(settings, SOURCES, fetcher=Site({HR: "2025-12-01T15:25Z"}), run_id="s")
+    assert summary["seeded"] == 0 and LocalProjectStore(settings.output_dir).get("p").sitemap_lastmod is None
 
 
 def test_seed_fails_cleanly_without_sitemap(settings):
@@ -350,3 +406,34 @@ def test_cli_seed_option_needs_no_llm(monkeypatch, capsys):
     monkeypatch.setattr(cli, "seed_sitemap_lastmod", broken)
     assert cli.main(["run", "--seed-sitemap-lastmod"]) == 1
     assert "sitemap incomplete" in capsys.readouterr().err
+
+
+# --- indice de la fusion floue sans cache HTTP (page non relue grace au sitemap) ----------------------------------
+
+def test_discoverer_hint_falls_back_to_the_stored_official_title(tmp_path):
+    store = LocalProjectStore(tmp_path)
+    store.put(StoreEntry(project_id="hems", file="projects/hems.md", detail_page=True, programme="TSI", year=2022,
+                         title="Official HEMS title", source_urls=[URL], first_seen="d", last_updated="d"))
+    disc = ProjectDiscoverer(output_dir=str(tmp_path))
+    disc._fetcher = FakeFetcher()  # cache HTTP vide
+    disc._store = store
+    assert disc._hint(URL) == ("TSI", 2022, "Official HEMS title")
+
+
+def test_discoverer_hint_reads_the_front_matter_of_older_states(tmp_path):
+    w = writer(tmp_path)
+    w.run(run_id="r1", records=[record(ref(title="Official HEMS title"))])
+    entry = w._store.get("hems")
+    w._store.put(entry.model_copy(update={"title": None, "year": None}))  # etat d'avant ces champs
+    disc = ProjectDiscoverer(output_dir=str(tmp_path))
+    disc._fetcher = FakeFetcher()
+    disc._store = w._store
+    assert disc._hint(URL) == ("TSI", 2022, "Official HEMS title")
+
+
+def test_discoverer_hint_prefers_the_http_cache_and_needs_no_store(tmp_path):
+    page = fixture_bytes("detail_hems_croatia.html")
+    disc = ProjectDiscoverer()  # sans dossier de sortie : pas d'etat consulte
+    disc._fetcher = FakeFetcher(cached_pages={URL: page})
+    assert disc._hint(URL)[2] == "Establishment of Helicopter Emergency Medical Services in Croatia"
+    assert ProjectDiscoverer()._hint_from_store(URL) == (None, None, None)

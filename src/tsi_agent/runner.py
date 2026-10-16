@@ -91,6 +91,7 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
         written: dict[str, int] = {}
         llm_pages = 0
         skipped_by_sitemap = 0  # pages detail connues non relues : date du sitemap inchangee
+        undated = fetch_failed = extract_failed = 0
         while True:
             chunk_limit = None if dry_run else (chunk if budget is None else min(chunk, budget))
             data: dict[str, Any] = {
@@ -106,6 +107,7 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
             chunks += 1
             det = out["detector"]
             skipped_by_sitemap += len(det.get("skipped", []))
+            undated += det.get("undated", 0)
             if dry_run:
                 run.extra["dry_run"] = {"detail_candidates": len(det["detail"]), "thin_to_write": len(det["thin"]),
                                         "delisted": len(det["delisted"]), "skipped_by_sitemap": skipped_by_sitemap}
@@ -118,6 +120,8 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
             processed = len(det["detail"])
             sent = len(out["detail_fetcher"]["pages"])
             llm_pages += sent
+            fetch_failed += len(out["detail_fetcher"].get("failed", []))
+            extract_failed += len(out.get("extractor", {}).get("failed", []))
             if budget is not None:
                 budget -= sent
             quota = bool(out.get("extractor", {}).get("quota_exceeded"))
@@ -125,7 +129,9 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
                 run.extra["remaining_detail"] = det["remaining"]
                 break
         run.extra.update({"chunks": chunks, "quota_exceeded": quota, "written": written, "llm_pages": llm_pages,
-                          "skipped_by_sitemap": skipped_by_sitemap})
+                          "skipped_by_sitemap": skipped_by_sitemap, "detail_without_sitemap_date": undated,
+                          "failed": fetch_failed + extract_failed, "fetch_failed": fetch_failed,
+                          "extract_failed": extract_failed})
     return run.final_summary
 
 
@@ -138,6 +144,7 @@ def seed_sitemap_lastmod(settings: Settings, sources: dict[str, Any], *, fetcher
     """
     from tsi_agent.components.listing import SourceListingFetcher
     from tsi_agent.parsers.sitemap import sitemap_lastmods
+    from tsi_agent.urls import is_detail_candidate
     with runlog.open_run(settings.logs_dir, run_id) as run:
         if not sources.get("sitemap_url"):
             raise RuntimeError("sitemap_url absent de la configuration des sources")
@@ -157,7 +164,8 @@ def seed_sitemap_lastmod(settings: Settings, sources: dict[str, Any], *, fetcher
             if not entry.detail_page:
                 continue
             known += 1
-            lastmod = next((lastmods[u] for u in entry.source_urls if u in lastmods), None)
+            # URL de la page detail seulement : une fiche pays ou un domaine a aussi une date dans le sitemap.
+            lastmod = next((lastmods[u] for u in entry.source_urls if is_detail_candidate(u) and u in lastmods), None)
             if lastmod is None:
                 continue  # page absente du sitemap ou sans date : elle sera relue par le prochain run
             seeded += 1

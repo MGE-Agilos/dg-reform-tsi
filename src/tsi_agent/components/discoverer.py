@@ -16,6 +16,8 @@ from tsi_agent.parsers.policy_area import parse_policy_area
 from tsi_agent.parsers.sitemap import DEFAULT_EXCLUDED_AREAS, parse_sitemap, sitemap_lastmods, sitemap_project_urls
 from tsi_agent.parsers.spotlight import parse_spotlight
 from tsi_agent.parsers.srsp_pdf import parse_srsp_pdf
+from tsi_agent.render import parse_front_matter
+from tsi_agent.store import ProjectStore, shared_store
 from tsi_agent.urls import is_canonical_detail, is_final_detail, policy_area_from_url
 
 NAME = "ProjectDiscoverer"
@@ -47,7 +49,7 @@ def combine(a: ProjectRef, b: ProjectRef) -> ProjectRef:
         spotlight=a.spotlight or b.spotlight, highlighted=a.highlighted or b.highlighted,
         listing_urls=_union(a.listing_urls, b.listing_urls),
         aliases=[x for x in aliases if x != project_id],
-        sitemap_lastmod=a.sitemap_lastmod or b.sitemap_lastmod,
+        sitemap_lastmod=(a if a.detail_url else b).sitemap_lastmod,  # date de la page detail gardee
     )
 
 
@@ -161,9 +163,14 @@ class ProjectDiscoverer:
     """Parse les listings, résout les liens non canoniques, fusionne, produit les documents programme."""
 
     def __init__(self, cache_dir: str = ".cache/http", min_interval_s: float = 2.0,
-                 user_agent: str = DEFAULT_USER_AGENT, sitemap_excluded_areas: list[str] | None = None):
+                 user_agent: str = DEFAULT_USER_AGENT, sitemap_excluded_areas: list[str] | None = None,
+                 output_dir: str | None = None):
         """:param sitemap_excluded_areas: rubriques du sitemap qui ne sont pas des pages projet (defaut :
-        DEFAULT_EXCLUDED_AREAS)."""
+        DEFAULT_EXCLUDED_AREAS).
+        :param output_dir: dossier de l'etat ; titre, programme et annee officiels d'une page detail absente du
+        cache HTTP (non relue en mode incremental) y sont lus pour la fusion floue. None : pas d'etat consulte."""
+        self.output_dir = output_dir
+        self._store: ProjectStore | None = None
         self.cache_dir = cache_dir
         self.min_interval_s = min_interval_s
         self.user_agent = user_agent
@@ -345,8 +352,27 @@ class ProjectDiscoverer:
         return out
 
     # --- fusion floue --------------------------------------------------------------------------------------------
+    def _hint_from_store(self, url: str) -> tuple[str | None, int | None, str | None]:
+        """Programme, annee et titre officiel enregistres pour cette page detail (etat, sinon front matter du
+        fichier projet pour un etat anterieur a ces champs) ; (None, None, None) si inconnue ou sans etat."""
+        if self._store is None:
+            if self.output_dir is None:
+                return (None, None, None)
+            self._store = shared_store(self.output_dir)
+        entry = self._store.get(slug_from_url(url))
+        if entry is None or not entry.detail_page or url not in entry.source_urls:
+            return (None, None, None)
+        if entry.title:
+            return (entry.programme, entry.year, entry.title)
+        text = self._store.read_project_file(entry.project_id)
+        if text is None:
+            return (None, None, None)
+        fm, _ = parse_front_matter(text.replace("\r\n", "\n"))
+        year = fm.get("year")
+        return (fm.get("programme"), int(year) if year else None, fm.get("title") or None)
+
     def _hint(self, url: str) -> tuple[str | None, int | None, str | None]:
-        """Programme, annee et titre officiel d'une page detail deja en cache HTTP (aucune requete)."""
+        """Programme, annee et titre officiel d'une page detail : cache HTTP, sinon etat (aucune requete)."""
         if url not in self._hint_cache:
             hint: tuple[str | None, int | None, str | None] = (None, None, None)
             try:
@@ -354,6 +380,8 @@ class ProjectDiscoverer:
                 if content is not None:
                     title, programme, year = parse_detail_meta(content)
                     hint = (programme, year, title or None)
+                else:
+                    hint = self._hint_from_store(url)
             except Exception as exc:  # indice seulement : une page illisible ne change rien
                 runlog.event(NAME, "discover", url, "hint_failed", error=repr(exc))
             self._hint_cache[url] = hint

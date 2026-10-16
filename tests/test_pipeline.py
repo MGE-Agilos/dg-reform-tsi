@@ -42,6 +42,9 @@ def factory(generator, fetcher):
         for name in ("listing", "discoverer", "detail_fetcher"):
             if name in pipe.graph.nodes:
                 pipe.get_component(name)._fetcher = fetcher
+        # fake_site sert la meme page detail (HEMS) pour toutes les URLs : le titre "officiel" enregistre serait
+        # celui de HEMS partout et fausserait la fusion floue. Ici, pas d'indice tire de l'etat (cache HTTP vide).
+        pipe.get_component("discoverer").output_dir = None
         return pipe
     return make
 

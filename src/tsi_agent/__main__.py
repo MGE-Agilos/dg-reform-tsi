@@ -236,10 +236,14 @@ def main(argv: list[str] | None = None) -> int:
         from tsi_agent.csr_link import LINK_SCHEMA, run_linking, write_sample
         from tsi_agent.llm import make_json_generator
         source = Path(settings.output_dir) / "csr" / "csr_full.xlsx"
-        if not source.exists():
+        if not source.exists():  # code 2 : erreur de mise en place ; 1 est reserve au quota (reprise plus tard)
             print(f"ERREUR : {source} introuvable — lancer d'abord `python -m tsi_agent csr-fetch`", file=sys.stderr)
-            return 1
-        csrs = build_csrs(read_rows(source))
+            return 2
+        try:
+            csrs = build_csrs(read_rows(source))
+        except Exception as exc:
+            print(f"ERREUR : lecture de {source} impossible : {exc!r}", file=sys.stderr)
+            return 2
         if args.sample:
             out = Path(settings.output_dir) / "reports" / "csr_links_sample.csv"
             print(f"Échantillon : {write_sample(settings, csrs, args.sample, out)}")
@@ -250,11 +254,16 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"ERREUR : {exc}", file=sys.stderr)
             return 2
-        with runlog.open_run(settings.logs_dir) as run:
-            summary = run_linking(settings, csrs, generator, limit=args.limit, project_ids=args.projects,
-                                  detail_only=args.detail_only)
-            run.extra.update({"mode": "csr_link", **{k: v for k, v in summary.items() if k != "failed"},
-                              "failed": summary["failed"][:50]})
+        try:
+            with runlog.open_run(settings.logs_dir) as run:
+                summary = run_linking(settings, csrs, generator, limit=args.limit, project_ids=args.projects,
+                                      detail_only=args.detail_only)
+                run.extra.update({"mode": "csr_link", **{k: v for k, v in summary.items() if k != "failed"},
+                                  "failed": summary["failed"][:50]})
+        except Exception as exc:
+            print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return 2
         print(json.dumps({**summary, "run": run.final_summary.get("run_id") if run.final_summary else None,
                           "cost_usd": (run.final_summary or {}).get("cost_usd")}, indent=2, ensure_ascii=False))
         return 1 if summary["quota_exceeded"] else 0

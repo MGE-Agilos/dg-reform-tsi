@@ -46,7 +46,8 @@ class MarkdownProjectWriter:
                           detail_page=ref.detail_page, content_hash=content_hash,
                           listing_hash=listing_hash, source_urls=source_urls(ref),
                           countries=list(ref.countries), first_seen=first_seen, last_updated=today,
-                          listed=True, aliases=list(ref.aliases), sitemap_lastmod=sitemap_lastmod)
+                          listed=True, aliases=list(ref.aliases), sitemap_lastmod=sitemap_lastmod,
+                          title=ref.title, year=ref.year)
 
     def _record_lastmod(self, ref: ProjectRef) -> None:
         """Page detail relue (changee ou non) : sa date du sitemap devient la reference du mode incremental."""

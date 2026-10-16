@@ -3,8 +3,9 @@
 Fichiers joints a la release (dossier `deploy/release/<tag>/`) :
 - `tsi-prod-files.zip` : les fichiers `tsi-*` de `deploy/prod/build/files` (avec leurs `.meta.json`), a plat ;
 - `manifest.json` : le manifeste de `prod-export` ;
-- `tsi-output-state.zip` : le contenu de `output/` (chemins relatifs a `output/`), sauf `vectors/`, `reports/` et les
-  fichiers temporaires (`*.tmp`, `*.part`) ; c'est l'etat a restaurer pour une mise a jour sur un autre PC.
+- `tsi-output-state.zip` : le contenu de `output/` (chemins relatifs a `output/`), sauf `vectors/`, `reports/`, les
+  fichiers temporaires (`*.tmp`, `*.part`) et la sauvegarde de supabase-sync (`state/supabase_rows.json`, qui
+  redoublerait rapports d'impact et anomalies) ; c'est l'etat a restaurer pour une mise a jour sur un autre PC.
 `NOTES.md` sert de description de la release.
 """
 
@@ -25,6 +26,7 @@ NOTES = "NOTES.md"
 ASSETS = (PROD_ZIP, MANIFEST, STATE_ZIP)
 EXCLUDED_DIRS = ("vectors", "reports")
 EXCLUDED_SUFFIXES = (".tmp", ".part")
+EXCLUDED_FILES = ("state/supabase_rows.json",)  # sauvegarde des lignes envoyees a Supabase, regeneree a chaque sync
 GUIDE_URL = f"https://github.com/{DEFAULT_REPO}/blob/main/deploy/prod/GUIDE.md"
 _DATED_TAG = re.compile(r"^data-(\d{4}-\d{2}-\d{2})$")
 _VALID_TAG = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -73,7 +75,8 @@ def _state_files(output_dir: Path) -> list[tuple[Path, str]]:
         if not path.is_file():
             continue
         rel = path.relative_to(output_dir)
-        if rel.parts[0] in EXCLUDED_DIRS or path.name.endswith(EXCLUDED_SUFFIXES):
+        if (rel.parts[0] in EXCLUDED_DIRS or path.name.endswith(EXCLUDED_SUFFIXES)
+                or rel.as_posix() in EXCLUDED_FILES):
             continue
         out.append((path, rel.as_posix()))
     return out
@@ -89,6 +92,15 @@ def _zip(target: Path, entries: list[tuple[Path, str]]) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def write_state_zip(output_dir: Path, target: Path) -> int:
+    """Zip de l'etat de `output/` (memes exclusions que la release) ; nombre de fichiers. Sert au workflow GitHub
+    pour garder le travail d'une execution en echec (artefact a restaurer comme `tsi-output-state.zip`)."""
+    entries = _state_files(Path(output_dir))
+    Path(target).parent.mkdir(parents=True, exist_ok=True)
+    _zip(Path(target), entries)
+    return len(entries)
 
 
 def _notes(tag: str, day: date, manifest: dict[str, Any]) -> str:
