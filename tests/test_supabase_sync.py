@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 import httpx
 import openpyxl
@@ -76,7 +77,8 @@ def make_output(tmp_path):
 
 def test_build_rows_tables_and_projects(tmp_path):
     rows = build_rows(make_output(tmp_path), current_year=2026)
-    assert list(rows) == list(TABLES) == ["projects", "csrs", "csr_parts", "project_csr_links", "anomalies"]
+    assert list(TABLES) == ["projects", "csrs", "csr_parts", "project_csr_links", "anomalies"]
+    assert list(rows) == [*TABLES, "impact_reports"] and rows["impact_reports"] == []
     p1, p2 = sorted(rows["projects"], key=lambda r: r["project_id"])
     assert p1 == {"project_id": "p1", "title": "Public administration reform", "programme": "TSI", "year": 2024,
                   "countries": ["HR"], "policy_area": "public-administration-and-governance", "results": "achieved",
@@ -173,3 +175,92 @@ def test_new_format_secret_key_uses_apikey_only(tmp_path):
     push({t: [] for t in ("projects", "csrs", "csr_parts", "project_csr_links", "anomalies")},
          "https://abc.supabase.co", "sb_secret_xyz", client=client, backup=tmp_path / "r.json")
     assert calls and all(c[3] == "sb_secret_xyz" and c[4] is None for c in calls)
+
+
+IMPACT = """---
+project_id: p1
+title: 'Public administration reform'
+generated: '2026-10-07'
+model: opus
+overall_verdict: The reform was adopted.
+confidence: Medium
+impact_score: 8
+impact_level: strong
+---
+
+# Impact analysis — Public administration reform
+
+Body of the report.
+"""
+
+
+def make_impact(out):
+    (out / "impact").mkdir(parents=True, exist_ok=True)
+    (out / "impact" / "p1.md").write_text(IMPACT, encoding="utf-8")
+    (out / "impact" / "noscore.md").write_text(IMPACT.replace("impact_score: 8\n", "").replace("p1", "p9"),
+                                               encoding="utf-8")
+    (out / "impact" / "broken.md").write_text("no front matter at all", encoding="utf-8")
+    (out / "impact" / "odd.md").write_text(IMPACT.replace("p1", "p2").replace("impact_level: strong", "impact_level: huge")
+                                           .replace("generated: '2026-10-07'\n", ""), encoding="utf-8")
+    return out
+
+
+def test_impact_rows_reads_local_reports(tmp_path):
+    from tsi_agent.supabase_sync import impact_rows
+    out = make_impact(tmp_path / "output")
+    rows = sorted(impact_rows(out), key=lambda r: r["project_id"])
+    assert [r["project_id"] for r in rows] == ["p1", "p2"]
+    p1 = rows[0]
+    assert p1 == {"project_id": "p1", "title": "Public administration reform", "score": 8, "level": "strong",
+                  "confidence": "medium", "verdict": "The reform was adopted.",
+                  "report": "# Impact analysis — Public administration reform\n\nBody of the report.\n",
+                  "model": "opus", "source": "local", "created_at": "2026-10-07"}
+    assert rows[1]["level"] is None and rows[1]["created_at"]  # niveau inconnu -> null ; date de fichier a defaut
+    assert all(set(r) == set(p1) for r in rows)  # memes cles pour l'insertion groupee PostgREST
+    assert impact_rows(tmp_path / "missing") == []
+
+
+def test_impact_rows_generated_parsed_as_date_or_datetime_else_file_time(tmp_path):
+    from tsi_agent.supabase_sync import impact_rows
+    out = tmp_path / "output"
+    (out / "impact").mkdir(parents=True)
+    cases = {"a": "generated: 2026-10-07", "b": "generated: '2026-10-07T14:54:46+02:00'",
+             "c": "generated: 2026-10-07 14:54:46", "d": "generated: 'last tuesday'", "e": "generated: 12"}
+    for name, line in cases.items():
+        (out / "impact" / f"{name}.md").write_text(IMPACT.replace("p1", name).replace("generated: '2026-10-07'", line),
+                                                   encoding="utf-8")
+    got = {r["project_id"]: r["created_at"] for r in impact_rows(out)}
+    assert got["a"] == "2026-10-07"
+    assert got["b"] == "2026-10-07T14:54:46+02:00"
+    assert got["c"].startswith("2026-10-07T14:54:46")
+    for name in ("d", "e"):  # texte non date : date du fichier (ISO, UTC), jamais le texte brut
+        assert got[name] not in ("last tuesday", "12")
+        datetime.fromisoformat(got[name])
+        assert got[name].endswith("+00:00")
+
+
+def test_build_rows_includes_impact_reports(tmp_path):
+    out = make_impact(make_output(tmp_path))
+    rows = build_rows(out, current_year=2026)
+    assert [r["project_id"] for r in sorted(rows["impact_reports"], key=lambda r: r["project_id"])] == ["p1", "p2"]
+
+
+def test_push_replaces_only_local_impact_reports_after_other_tables(tmp_path):
+    rows = {t: [] for t in TABLES}
+    rows["projects"] = [{"project_id": "p1"}]
+    rows["impact_reports"] = [{"project_id": "p1", "source": "local"}]
+    calls, client = recorder()
+    summary = push(rows, "https://abc.supabase.co", "service-key", client=client, backup=tmp_path / "rows.json")
+    methods = [(m, p.removeprefix("/rest/v1/"), q) for m, p, q, *_ in calls]
+    assert methods[-2:] == [("DELETE", "impact_reports", "source=eq.local"), ("POST", "impact_reports", "")]
+    assert [m for m in methods if m[1] == "impact_reports"] == methods[-2:]
+    assert not any("web" in q for _, _, q in methods)
+    assert calls[-1][5] == 1
+    assert summary["impact_reports"] == 1
+    assert json.loads((tmp_path / "rows.json").read_text(encoding="utf-8"))["impact_reports"] == rows["impact_reports"]
+
+
+def test_push_without_impact_key_leaves_impact_reports_alone(tmp_path):
+    calls, client = recorder()
+    push({t: [] for t in TABLES}, "https://abc.supabase.co", "k", client=client, backup=tmp_path / "r.json")
+    assert not any(p.endswith("impact_reports") for _, p, *_ in calls)

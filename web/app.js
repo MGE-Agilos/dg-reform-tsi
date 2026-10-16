@@ -357,9 +357,10 @@ function linkItem(link) {
 }
 
 async function renderProject(id, seq) {
-  const [proj, links] = await Promise.all([
+  const [proj, links, latest] = await Promise.all([
     sb.from("projects").select("project_id,title,programme,year,countries,policy_area,results,detail_page,url,summary,deliverables,csrs").eq("project_id", id).single(),
     sb.from("project_csr_links").select("level,rationale,basis,part_id,csr_parts(text,assessment,csr_id,csrs(title,year))").eq("project_id", id),
+    impactHistoryQuery(id, 1),
   ]);
   if (stale(seq)) return;
   if (proj.error) return showError(proj.error, proj.error.code === "PGRST116" ? "Project not found" : "Could not load the project");
@@ -380,8 +381,10 @@ async function renderProject(id, seq) {
     : "";
   const linksHtml = sorted.length ? `<ul class="link-list">${sorted.map(linkItem).join("")}</ul>` : `<p class="empty">No CSR link assessed.</p>`;
   view(`<a class="back" href="#projects">← Projects</a><div class="card"><h2 class="detail-title" tabindex="-1">${esc(r.title)}</h2>`
-    + `<dl class="facts">${facts}</dl>${page}</div>${summary}`
+    + `<dl class="facts">${facts}</dl>${page}`
+    + `${latest.error ? "" : `<div id="impact-latest">${latestImpactHtml(latest.data)}</div>`}</div>${summary}`
     + `<div class="card"><h3 class="section-label">Supported CSRs (AI-assessed) <span class="muted small">${sorted.length}</span></h3>${linksHtml}</div>`);
+  bindReportToggles($("impact-latest"));
 }
 
 // ---------- CSRs ----------
@@ -591,6 +594,7 @@ function clearAiState() {
   impactErrors.clear();
   impactPending.clear();
   chatPending = false;
+  dashCache = null;
   try {
     sessionStorage.removeItem(CHAT_KEY);
     for (let i = sessionStorage.length - 1; i >= 0; i--) {
@@ -647,7 +651,7 @@ function proxyMessage(status, body) {
   return cause || `Unexpected error (HTTP ${status}).`;
 }
 
-/** POST {service, messages} to PROXY_URL (tsi-assistant) with the session token; returns the answer text or throws. */
+/** POST {service, messages} to PROXY_URL (tsi-assistant) with the session token; returns { answer, saved } or throws. */
 async function callProxy(service, messages) {
   const { data } = await sb.auth.getSession();
   const token = data?.session?.access_token;
@@ -671,7 +675,7 @@ async function callProxy(service, messages) {
   } finally {
     clearTimeout(timer);
   }
-  if (res.ok && typeof body?.answer === "string") return body.answer;
+  if (res.ok && typeof body?.answer === "string") return { answer: body.answer, saved: body.saved === true };
   throw new Error(proxyMessage(res.status, body));
 }
 
@@ -749,7 +753,7 @@ async function sendChat(text) {
   paintChat({ scroll: true });
   let status = "";
   try {
-    const answer = await callProxy("chat", messages);
+    const { answer } = await callProxy("chat", messages);
     if (epoch !== aiEpoch) return;
     setChat([...getChat(), { role: "assistant", content: answer }]);
     status = "Answer received.";
@@ -879,10 +883,12 @@ async function runImpact(r) {
   paintImpact(id);
   let status = "";
   try {
-    const report = await callProxy("impact", [{ role: "user", content: impactMessage(r).slice(0, MAX_CONTENT) }]);
+    const { answer: report, saved } = await callProxy("impact", [{ role: "user", content: impactMessage(r).slice(0, MAX_CONTENT) }]);
     if (epoch !== aiEpoch) return;
     saveReport(id, report);
-    status = "Report ready.";
+    status = saved ? "Report ready. Saved to the project's analyses." : "Report ready (not saved to the project's analyses).";
+    dashCache = null; // dashboard figures now out of date
+    if (saved) refreshPrevious(id).catch(() => {});
   } catch (e) {
     if (epoch !== aiEpoch) return;
     impactErrors.set(id, e?.message || String(e));
@@ -894,8 +900,9 @@ async function runImpact(r) {
 
 async function renderImpact(id, p, seq) {
   if (!id) return renderImpactSearch(p, seq);
-  const [proj] = await Promise.all([
+  const [proj, previous] = await Promise.all([
     sb.from("projects").select("project_id,title,programme,year,countries").eq("project_id", id).single(),
+    impactHistoryQuery(id, 5),
     loadMarkdown(),
   ]);
   if (stale(seq)) return;
@@ -905,12 +912,679 @@ async function renderImpact(id, p, seq) {
   view(`<a class="back" href="#impact">← Choose another project</a>`
     + `<div class="card"><p class="muted small">Impact analysis</p><h2 class="detail-title" tabindex="-1">${esc(r.title)}</h2>`
     + `<p class="muted small">${meta}${meta ? " · " : ""}${hashLink("project", r.project_id, "Project details")}</p>`
+    + `<div id="impact-previous" class="impact-previous" data-id="${esc(r.project_id)}">${previous.error ? "" : previousImpactsHtml(previous.data)}</div>`
     + `<div class="toolbar"><span class="toolbar-actions"><button type="button" class="btn" id="impact-run">Run impact analysis</button>`
     + `<span class="muted small">Takes 30 s to 2 min; uses web search (Anthropic).</span></span></div>`
     + `<p id="impact-status" class="chat-status" role="status"></p></div>`
     + `<div id="impact-report" data-id="${esc(r.project_id)}"></div>`);
   $("impact-run").addEventListener("click", () => runImpact(r));
+  bindReportToggles($("impact-previous"));
   paintImpact(r.project_id);
+}
+
+// ---------- saved impact analyses (impact_reports) ----------
+
+function fmtDate(value) {
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+}
+
+/** "7/10 (strong, high confidence) — 16 Oct 2026" from an impact_reports row (plain text: escape before use). */
+function impactLine(r) {
+  const score = Number.isFinite(r?.score) ? `${r.score}/10` : "no score";
+  const qual = [r?.level, r?.confidence ? `${r.confidence} confidence` : ""].filter(Boolean).join(", ");
+  const date = fmtDate(r?.created_at);
+  return `${score}${qual ? ` (${qual})` : ""}${date ? ` — ${date}` : ""}`;
+}
+
+function reportToggle(r) {
+  if (!/^\d+$/.test(String(r?.id ?? ""))) return "";
+  const id = String(r.id);
+  return `<button type="button" class="btn btn-secondary" data-report="${id}" aria-expanded="false" aria-controls="report-${id}">Show report</button>`;
+}
+
+function reportBody(r) {
+  return /^\d+$/.test(String(r?.id ?? "")) ? `<div class="md report-body" id="report-${r.id}" hidden></div>` : "";
+}
+
+/** "Show report" buttons: the report text is loaded on first opening, rendered through md(). */
+function bindReportToggles(container) {
+  container?.querySelectorAll("button[data-report]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const id = button.dataset.report;
+      const body = $(`report-${id}`);
+      if (!body) return;
+      if (body.dataset.loaded) {
+        body.hidden = !body.hidden;
+      } else {
+        button.disabled = true;
+        button.textContent = "Loading…";
+        const [res] = await Promise.all([
+          sb.from("impact_reports").select("report").eq("id", id).single(),
+          loadMarkdown(),
+        ]);
+        button.disabled = false;
+        if (!body.isConnected) return;
+        if (res.error) {
+          body.innerHTML = `<p class="error">${esc(res.error.message || "Could not load the report")}</p>`;
+        } else {
+          body.innerHTML = md(res.data?.report || "");
+          body.dataset.loaded = "1";
+        }
+        body.hidden = false;
+      }
+      button.textContent = body.hidden ? "Show report" : "Hide report";
+      button.setAttribute("aria-expanded", String(!body.hidden));
+    });
+  });
+}
+
+function latestImpactHtml(rows) {
+  const r = rows?.[0];
+  if (!r) return `<p class="muted small">No saved impact analysis yet.</p>`;
+  return `<div class="impact-latest"><div class="toolbar"><p class="impact-line"><strong>Latest impact analysis:</strong> `
+    + `${esc(impactLine(r))} <span class="ai-note">AI-generated</span></p>`
+    + `<span class="toolbar-actions">${reportToggle(r)}</span></div>${reportBody(r)}</div>`;
+}
+
+function previousImpactsHtml(rows) {
+  if (!rows?.length) return "";
+  const items = rows.map((r) => `<li><div class="toolbar"><span>${esc(impactLine(r))}`
+    + `${r.source ? ` <span class="muted small">· ${esc(r.source)}</span>` : ""}</span>`
+    + `<span class="toolbar-actions">${reportToggle(r)}</span></div>${reportBody(r)}</li>`).join("");
+  return `<h3>Previous analyses</h3><ul class="prev-list">${items}</ul>`;
+}
+
+function impactHistoryQuery(id, limit) {
+  return sb.from("impact_reports").select("id,score,level,confidence,created_at,source")
+    .eq("project_id", id).order("created_at", { ascending: false }).order("id", { ascending: false }).limit(limit);
+}
+
+/** After a new analysis: reload the "Previous analyses" list if the project is still on screen. */
+async function refreshPrevious(id) {
+  const res = await impactHistoryQuery(id, 5);
+  const box = $("impact-previous");
+  if (res.error || !box || box.dataset.id !== id) return;
+  box.innerHTML = previousImpactsHtml(res.data);
+  bindReportToggles(box);
+}
+
+// ---------- dashboard (hand-made SVG; method of the dataviz skill) ----------
+
+const CH = 7; // average glyph width (px) of the 12 px chart font, used to fit labels
+const DASH_MIN_W = 280;
+const PROGRAMME_KEYS = { TSI: "s1", SRSP: "s2", SRSS: "s3" }; // fixed categorical order, never by rank
+const SEVERITY_KEYS = [["high", "High"], ["medium", "Medium"], ["low", "Low"], ["info", "Info"]];
+const ASSESSMENT_SCALE = [
+  ["full implementation", "Full implementation", "o1"], ["substantial progress", "Substantial progress", "o2"],
+  ["some progress", "Some progress", "o3"], ["limited progress", "Limited progress", "o4"],
+  ["no progress", "No progress", "o5"], ["not assessed", "Not assessed", "muted"], ["none", "No assessment", "muted"],
+];
+const RESULT_LABELS = { achieved: "Results achieved", expected: "Results expected", none: "Not stated" };
+const LINK_LABELS = { direct: "Direct", partial: "Partial" };
+const LEVEL_ORDER = ["strong", "moderate", "weak", "none"];
+const CONFIDENCE_ORDER = ["high", "medium", "low", "none"];
+let dashCache = null; // { uid, model, at }
+let dashWidth = 0;
+
+const arr = (v) => (Array.isArray(v) ? v : []);
+const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+const fmtN = (v) => num(v).toLocaleString("en");
+const share = (a, b) => (b > 0 ? `${Math.round((100 * a) / b)}%` : "");
+const px = (v) => Math.round(v * 10) / 10;
+
+function hrefFor(route, values) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(values)) if (v !== undefined && v !== null && v !== "") q.set(k, String(v));
+  const s = q.toString();
+  return `#${route}${s ? "?" + s : ""}`;
+}
+
+/** Text cut to a pixel width (estimate), with an ellipsis; the full text stays in the tooltip and the table. */
+function fitText(text, width) {
+  const s = String(text ?? "");
+  const max = Math.max(2, Math.floor(width / CH));
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
+}
+
+/** Clean axis scale (1/2/5 steps, about 4 ticks, integer counts). */
+function niceScale(max) {
+  if (!(max > 0)) return { top: 1, step: 1 };
+  const rough = max / 4;
+  const mag = 10 ** Math.floor(Math.log10(rough));
+  const norm = rough / mag;
+  const step = Math.max(1, (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag);
+  return { top: Math.ceil(max / step) * step, step };
+}
+
+function compact(v) {
+  return v >= 1000 ? `${px(v / 1000)}K` : String(v);
+}
+
+/** Horizontal bar: square at the baseline (x), 4 px rounded data-end. */
+function hPath(x, y, w, h, round) {
+  if (!(w > 0)) return "";
+  const r = round ? Math.min(4, w, h / 2) : 0;
+  return `M${px(x)} ${px(y)}H${px(x + w - r)}`
+    + (r ? `A${r} ${r} 0 0 1 ${px(x + w)} ${px(y + r)}V${px(y + h - r)}A${r} ${r} 0 0 1 ${px(x + w - r)} ${px(y + h)}` : `V${px(y + h)}`)
+    + `H${px(x)}Z`;
+}
+
+/** Vertical column: square at the baseline (bottom), 4 px rounded top. */
+function vPath(x, y, w, h, round) {
+  if (!(h > 0)) return "";
+  const r = round ? Math.min(4, h, w / 2) : 0;
+  return `M${px(x)} ${px(y + h)}V${px(y + r)}`
+    + (r ? `A${r} ${r} 0 0 1 ${px(x + r)} ${px(y)}H${px(x + w - r)}A${r} ${r} 0 0 1 ${px(x + w)} ${px(y + r)}` : `H${px(x + w)}`)
+    + `V${px(y + h)}Z`;
+}
+
+/** Tooltip payload carried by a mark (read back with textContent, never as HTML). */
+function tipAttrs(t) {
+  return ` data-tip-label="${esc(t.label)}" data-tip-value="${esc(t.value)}"`
+    + (t.share ? ` data-tip-share="${esc(t.share)}"` : "")
+    + (t.series ? ` data-tip-series="${esc(t.series)}"` : "")
+    + (t.key ? ` data-tip-key="${esc(t.key)}"` : "");
+}
+
+/** A hoverable/focusable mark: a link when it opens a filtered list, else a focusable group. */
+function markOpen(href, t) {
+  const aria = esc([t.series, t.label, t.value, t.share].filter(Boolean).join(", "));
+  return href
+    ? `<a class="viz-mark" href="${esc(href)}" aria-label="${aria}"${tipAttrs(t)}>`
+    : `<g class="viz-mark" tabindex="0" role="img" aria-label="${aria}"${tipAttrs(t)}>`;
+}
+
+function markClose(href) {
+  return href ? "</a>" : "</g>";
+}
+
+function emptyChart(text = "No data.") {
+  return `<p class="empty viz-empty">${esc(text)}</p>`;
+}
+
+/**
+ * Horizontal bars (one row per category, optional stacked segments).
+ * rows: [{ label, display, href, tip, segs: [{ v, key, href, tip }] }]; max: scale end (default: largest total).
+ * Value labels sit outside the bar end (space reserved), category labels are cut to their column.
+ */
+function hbarChart(rows, width, { max, title = "" } = {}) {
+  if (!rows.length) return emptyChart();
+  const w = Math.max(DASH_MIN_W, Math.floor(width) || 0);
+  const longest = Math.max(...rows.map((r) => String(r.label ?? "").length));
+  const labelW = Math.max(48, Math.min(Math.round(w * 0.42), longest * CH + 12));
+  const valueW = Math.max(...rows.map((r) => String(r.display ?? "").length)) * CH + 10;
+  const plotW = Math.max(40, w - labelW - valueW);
+  const totals = rows.map((r) => r.segs.reduce((s, g) => s + num(g.v), 0));
+  const top = max > 0 ? max : Math.max(1, ...totals);
+  const band = 26;
+  const bar = 16;
+  const height = rows.length * band + 4;
+  let out = "";
+  rows.forEach((r, i) => {
+    const y0 = 2 + i * band;
+    const y = y0 + (band - bar) / 2;
+    const single = r.segs.length === 1;
+    const segs = r.segs.filter((g) => num(g.v) > 0);
+    const label = `<text class="viz-label" x="${labelW - 8}" y="${px(y0 + band / 2 + 4)}" text-anchor="end">${esc(fitText(r.label, labelW - 12))}</text>`;
+    let marks = "";
+    let x = labelW;
+    segs.forEach((g, j) => {
+      const sw = (Math.min(num(g.v), top) / top) * plotW;
+      const last = j === segs.length - 1;
+      const drawW = last ? sw : Math.max(0, sw - 2); // 2 px surface gap between stacked segments
+      const path = hPath(x, y, drawW, bar, last);
+      const fill = path ? `<path class="viz-bar viz-fill-${esc(g.key)}" d="${path}"/>` : "";
+      if (single) marks += fill;
+      else marks += `${markOpen(g.href, g.tip)}<rect class="viz-hit" x="${px(x)}" y="${y0}" width="${px(Math.max(sw, 1))}" height="${band}"/>${fill}${markClose(g.href)}`;
+      x += sw;
+    });
+    const value = `<text class="viz-value" x="${px(x + 6)}" y="${px(y0 + band / 2 + 4)}">${esc(r.display)}</text>`;
+    if (single) {
+      const g = r.segs[0];
+      out += `${markOpen(g.href ?? r.href, g.tip ?? r.tip)}<rect class="viz-hit" x="0" y="${y0}" width="${w}" height="${band}"/>${label}${marks}${value}${markClose(g.href ?? r.href)}`;
+    } else {
+      out += (r.tip ? `${markOpen(r.href, r.tip)}<rect class="viz-hit" x="0" y="${y0}" width="${labelW}" height="${band}"/>${label}${markClose(r.href)}` : label)
+        + marks + value;
+    }
+  });
+  const axis = `<line class="viz-axis" x1="${labelW}" x2="${labelW}" y1="0" y2="${height}"/>`;
+  return `<svg class="viz-svg" viewBox="0 0 ${w} ${height}" width="100%" height="${height}" role="group" aria-label="${esc(title)}">${axis}${out}</svg>`;
+}
+
+/**
+ * Vertical columns (optionally stacked), y axis with clean ticks and hairline grid.
+ * cols: [{ label, segs: [{ v, key, href, tip }] }]
+ */
+function vbarChart(cols, width, { height = 210, title = "" } = {}) {
+  if (!cols.length) return emptyChart();
+  const w = Math.max(DASH_MIN_W, Math.floor(width) || 0);
+  const totals = cols.map((c) => c.segs.reduce((s, g) => s + num(g.v), 0));
+  const { top, step } = niceScale(Math.max(...totals));
+  const left = Math.max(28, compact(top).length * CH + 10);
+  const right = 6;
+  const topPad = 10;
+  const axisH = 24; // x-axis band included in the height (no nested scroll)
+  const plotH = height - topPad - axisH;
+  const base = topPad + plotH;
+  const band = (w - left - right) / cols.length;
+  const colW = Math.max(2, Math.min(24, band - 2));
+  const longest = Math.max(...cols.map((c) => String(c.label ?? "").length));
+  const every = Math.max(1, Math.ceil((longest * CH + 6) / band)); // skip x labels that would collide
+  let grid = "";
+  for (let v = 0; v <= top; v += step) {
+    const y = px(base - (v / top) * plotH);
+    grid += `<line class="${v === 0 ? "viz-axis" : "viz-grid"}" x1="${left}" x2="${w - right}" y1="${y}" y2="${y}"/>`
+      + `<text class="viz-tick" x="${left - 6}" y="${px(y + 4)}" text-anchor="end">${esc(compact(v))}</text>`;
+  }
+  let marks = "";
+  cols.forEach((c, i) => {
+    const bx = left + i * band;
+    const x = bx + (band - colW) / 2;
+    const segs = c.segs.filter((g) => num(g.v) > 0);
+    let yc = base;
+    segs.forEach((g, j) => {
+      const h = (num(g.v) / top) * plotH;
+      const last = j === segs.length - 1;
+      const drawH = last ? h : Math.max(0, h - 2); // 2 px surface gap between stacked segments
+      const path = vPath(x, yc - drawH, colW, drawH, last);
+      const hitY = segs.length === 1 ? topPad : yc - h;
+      const hitH = segs.length === 1 ? plotH : Math.max(h, 1);
+      marks += `${markOpen(g.href, g.tip)}<rect class="viz-hit" x="${px(bx)}" y="${px(hitY)}" width="${px(band)}" height="${px(hitH)}"/>`
+        + (path ? `<path class="viz-bar viz-fill-${esc(g.key)}" d="${path}"/>` : "") + markClose(g.href);
+      yc -= h;
+    });
+    if (i % every === 0) {
+      marks += `<text class="viz-tick" x="${px(bx + band / 2)}" y="${base + 16}" text-anchor="middle">${esc(c.label)}</text>`;
+    }
+  });
+  return `<svg class="viz-svg" viewBox="0 0 ${w} ${height}" width="100%" height="${height}" role="group" aria-label="${esc(title)}">${grid}${marks}</svg>`;
+}
+
+/** Normalises the tsi_dashboard() jsonb into chart rows (missing keys give empty lists). */
+function dashModel(raw) {
+  const d = raw && typeof raw === "object" ? raw : {};
+  const t = d.totals && typeof d.totals === "object" ? d.totals : {};
+  const kv = (list) => arr(list).filter((x) => x && typeof x === "object").map((x) => ({ key: String(x.key ?? "none"), n: num(x.n) }));
+  const projects = num(t.projects);
+  const csrYears = arr(d.csrs_by_year).map((x) => ({ year: num(x.year), n: num(x.n) })).filter((x) => x.year).sort((a, b) => a.year - b.year);
+  const scores = new Map(arr(d.impact_scores).map((x) => [num(x.score), num(x.n)]));
+  const analysed = num(t.impact_projects) || [...scores.values()].reduce((s, n) => s + n, 0);
+  return {
+    totals: {
+      projects, detail: num(t.projects_with_detail), deliverables: num(t.deliverables), csrs: num(t.csrs),
+      csrParts: num(t.csr_parts), links: num(t.links), linkedProjects: num(t.projects_with_links),
+      reports: num(t.impact_reports), analysed, mean: t.impact_mean === null || t.impact_mean === undefined ? null : num(t.impact_mean),
+      anomalies: num(t.anomalies), anomaliesHigh: num(t.anomalies_high),
+    },
+    byProgramme: kv(d.projects_by_programme),
+    yearProgramme: arr(d.projects_by_year_programme).map((x) => ({ year: num(x.year), programme: String(x.programme ?? "none"), n: num(x.n) })).filter((x) => x.year),
+    byCountry: kv(d.projects_by_country).sort((a, b) => b.n - a.n),
+    byArea: kv(d.projects_by_policy_area).sort((a, b) => b.n - a.n),
+    byResults: kv(d.projects_by_results),
+    csrYears,
+    assessments: kv(d.csr_assessments),
+    coverage: arr(d.csr_coverage_by_country).map((x) => ({ key: String(x.country ?? x.key ?? ""), csrs: num(x.csrs), covered: num(x.csrs_with_project) }))
+      .filter((x) => x.key && x.csrs > 0),
+    linksByLevel: kv(d.links_by_level),
+    scores: Array.from({ length: 11 }, (_, s) => ({ score: s, n: scores.get(s) || 0 })),
+    byLevel: kv(d.impact_by_level),
+    byConfidence: kv(d.impact_by_confidence),
+    meanArea: arr(d.impact_mean_by_policy_area).map((x) => ({ key: String(x.key ?? "none"), mean: num(x.mean), n: num(x.n) })),
+    meanCountry: arr(d.impact_mean_by_country).map((x) => ({ key: String(x.key ?? ""), mean: num(x.mean), n: num(x.n) })),
+    recent: arr(d.impact_recent).filter((x) => x && typeof x === "object"),
+    anomalies: arr(d.anomalies_by_type_severity).map((x) => ({ type: String(x.type ?? ""), severity: String(x.severity ?? ""), n: num(x.n) })),
+  };
+}
+
+function programmeKey(p) {
+  return PROGRAMME_KEYS[p] || "muted";
+}
+
+function areaName(key) {
+  return key === "none" ? "Not classified" : areaLabel(key);
+}
+
+function inOrder(rows, order) {
+  return [...rows].sort((a, b) => {
+    const ia = order.indexOf(a.key);
+    const ib = order.indexOf(b.key);
+    return (ia < 0 ? order.length : ia) - (ib < 0 ? order.length : ib) || a.key.localeCompare(b.key);
+  });
+}
+
+/** Single-series rows (slot 1 colour for nominal categories). */
+function simpleRows(list, { label, href, total, unit = "", key = () => "s1" }) {
+  return list.map((x) => {
+    const tip = { label: label(x), value: `${fmtN(x.n)}${unit}`, share: total ? `${share(x.n, total)} of the total` : "" };
+    return { label: label(x), display: fmtN(x.n), segs: [{ v: x.n, key: key(x), href: href ? href(x) : null, tip }] };
+  });
+}
+
+function yearProgrammeCols(m) {
+  const years = [...new Set(m.yearProgramme.map((x) => x.year))].sort((a, b) => a - b);
+  if (!years.length) return [];
+  const all = [];
+  for (let y = years[0]; y <= years[years.length - 1]; y++) all.push(y);
+  const progs = [...PROGRAMMES, ...[...new Set(m.yearProgramme.map((x) => x.programme))].filter((p) => !PROGRAMMES.includes(p)).sort()];
+  return all.map((year) => {
+    const rows = m.yearProgramme.filter((x) => x.year === year);
+    const total = rows.reduce((s, x) => s + x.n, 0);
+    return {
+      label: String(year),
+      segs: progs.map((p) => {
+        const n = rows.find((x) => x.programme === p)?.n || 0;
+        const href = PROGRAMMES.includes(p) ? hrefFor("projects", { programme: p, from: year, to: year }) : hrefFor("projects", { from: year, to: year });
+        return { v: n, key: programmeKey(p), href, tip: { series: p === "none" ? "No programme" : p, label: String(year), value: `${fmtN(n)} projects`, share: total ? `${share(n, total)} of ${year}` : "", key: programmeKey(p) } };
+      }).filter((g) => g.v > 0),
+      total,
+    };
+  });
+}
+
+function anomalyRows(m) {
+  const types = [...new Set(m.anomalies.map((x) => x.type))];
+  const total = m.anomalies.reduce((s, x) => s + x.n, 0);
+  return types.map((type) => {
+    const rows = m.anomalies.filter((x) => x.type === type);
+    const n = rows.reduce((s, x) => s + x.n, 0);
+    const name = ANOMALY_TYPES[type] || type;
+    const known = Object.hasOwn(ANOMALY_TYPES, type);
+    const segs = SEVERITY_KEYS.map(([sev, sevLabel]) => {
+      const v = rows.find((x) => x.severity === sev)?.n || 0;
+      return { v, key: `sev-${sev}`, href: known ? hrefFor("anomalies", { type, severity: sev }) : null,
+        tip: { series: `${sevLabel} severity`, label: name, value: fmtN(v), share: n ? `${share(v, n)} of this type` : "", key: `sev-${sev}` } };
+    }).filter((g) => g.v > 0);
+    return { label: name, type, display: fmtN(n), n, href: known ? hrefFor("anomalies", { type, severity: "all" }) : null,
+      tip: { label: name, value: `${fmtN(n)} anomalies`, share: total ? `${share(n, total)} of all anomalies` : "" }, segs };
+  }).sort((a, b) => b.n - a.n);
+}
+
+function meanRows(list, label, href) {
+  return [...list].sort((a, b) => b.mean - a.mean || b.n - a.n).map((x) => {
+    const few = x.n < 2;
+    const tip = { label: label(x), value: `${x.mean.toFixed(1)}/10 mean score`, share: `${x.n} project${x.n === 1 ? "" : "s"} analysed${few ? " (too few to compare)" : ""}` };
+    return { label: label(x), display: `${x.mean.toFixed(1)} · n=${x.n}`, segs: [{ v: x.mean, key: few ? "faint" : "s1", href: href(x), tip }] };
+  });
+}
+
+function assessmentRows(m) {
+  const total = m.assessments.reduce((s, x) => s + x.n, 0);
+  const byKey = new Map();
+  for (const x of m.assessments) {
+    const k = x.key.trim().toLowerCase();
+    byKey.set(k, (byKey.get(k) || 0) + x.n);
+  }
+  const known = new Set(ASSESSMENT_SCALE.map(([k]) => k));
+  const rows = ASSESSMENT_SCALE.filter(([k]) => byKey.has(k)).map(([k, label, key]) => ({ key: k, label, n: byKey.get(k), color: key }));
+  for (const [k, n] of byKey) if (!known.has(k)) rows.push({ key: k, label: k, n, color: "muted" });
+  return rows.map((x) => ({ label: x.label, display: fmtN(x.n),
+    segs: [{ v: x.n, key: x.color, href: null, tip: { label: x.label, value: `${fmtN(x.n)} CSRs`, share: `${share(x.n, total)} of CSRs`, key: x.color } }] }));
+}
+
+function coverageRows(m) {
+  return [...m.coverage].map((x) => ({ ...x, pct: x.csrs ? (100 * x.covered) / x.csrs : 0 }))
+    .sort((a, b) => b.pct - a.pct || b.csrs - a.csrs).map((x) => ({
+      label: countryName(x.key), display: `${Math.round(x.pct)}% (${x.covered}/${x.csrs})`, csrs: x.csrs, covered: x.covered,
+      segs: [{ v: x.pct, key: "s1", href: Object.hasOwn(COUNTRIES, x.key) ? hrefFor("csrs", { country: x.key }) : null,
+        tip: { label: countryName(x.key), value: `${Math.round(x.pct)}% of CSRs supported`, share: `${fmtN(x.covered)} of ${fmtN(x.csrs)} CSRs have a linked project` } }],
+    }));
+}
+
+/** Chart builders by slot id: (model, width) -> SVG or an empty state. */
+const DASH_CHARTS = {
+  year: (m, w) => vbarChart(yearProgrammeCols(m), w, { title: "Projects by year and programme" }),
+  country: (m, w) => hbarChart(simpleRows(m.byCountry, {
+    label: (x) => countryName(x.key), total: m.totals.projects, unit: " projects",
+    href: (x) => (Object.hasOwn(COUNTRIES, x.key) ? hrefFor("projects", { country: x.key }) : null),
+  }), w, { title: "Projects by country" }),
+  area: (m, w) => hbarChart(simpleRows(m.byArea, {
+    label: (x) => areaName(x.key), total: m.totals.projects, unit: " projects",
+    href: (x) => (Object.hasOwn(POLICY_AREAS, x.key) ? hrefFor("projects", { area: x.key }) : null),
+  }), w, { title: "Projects by policy area" }),
+  results: (m, w) => hbarChart(simpleRows(inOrder(m.byResults, ["achieved", "expected", "none"]), {
+    label: (x) => RESULT_LABELS[x.key] || x.key, total: m.totals.projects, unit: " projects",
+  }), w, { title: "Projects by results" }),
+  scores: (m, w) => (m.totals.analysed ? vbarChart(m.scores.map((x) => ({
+    label: String(x.score),
+    segs: [{ v: x.n, key: "s1", href: null, tip: { label: `Score ${x.score}/10`, value: `${fmtN(x.n)} projects`, share: `${share(x.n, m.totals.analysed)} of analysed projects` } }],
+  })), w, { height: 180, title: "Impact score distribution" }) : emptyChart()),
+  level: (m, w) => hbarChart(simpleRows(inOrder(m.byLevel, LEVEL_ORDER), {
+    label: (x) => (x.key === "none" ? "Not stated" : x.key), total: m.totals.analysed, unit: " projects",
+  }), w, { title: "Impact level" }),
+  confidence: (m, w) => hbarChart(simpleRows(inOrder(m.byConfidence, CONFIDENCE_ORDER), {
+    label: (x) => (x.key === "none" ? "Not stated" : x.key), total: m.totals.analysed, unit: " projects",
+  }), w, { title: "Confidence" }),
+  meanArea: (m, w) => hbarChart(meanRows(m.meanArea, (x) => areaName(x.key),
+    (x) => (Object.hasOwn(POLICY_AREAS, x.key) ? hrefFor("projects", { area: x.key }) : null)), w, { max: 10, title: "Mean impact score by policy area" }),
+  meanCountry: (m, w) => hbarChart(meanRows(m.meanCountry, (x) => countryName(x.key),
+    (x) => (Object.hasOwn(COUNTRIES, x.key) ? hrefFor("projects", { country: x.key }) : null)), w, { max: 10, title: "Mean impact score by country" }),
+  csrYear: (m, w) => vbarChart(m.csrYears.map((x) => ({
+    label: String(x.year),
+    segs: [{ v: x.n, key: "s1", href: hrefFor("csrs", { year: x.year }), tip: { label: String(x.year), value: `${fmtN(x.n)} CSRs`, share: `${share(x.n, m.totals.csrs)} of CSRs` } }],
+  })), w, { height: 180, title: "CSRs by year" }),
+  assessments: (m, w) => hbarChart(assessmentRows(m), w, { title: "Latest CSR assessment" }),
+  coverage: (m, w) => hbarChart(coverageRows(m), w, { max: 100, title: "CSRs supported by at least one project, by country" }),
+  links: (m, w) => hbarChart(simpleRows(inOrder(m.linksByLevel, ["direct", "partial"]), {
+    label: (x) => LINK_LABELS[x.key] || x.key, total: m.totals.links, unit: " links",
+  }), w, { title: "Project–CSR links by level" }),
+  anomalies: (m, w) => hbarChart(anomalyRows(m), w, { title: "Anomalies by type and severity" }),
+};
+
+function legend(items) {
+  return `<ul class="viz-legend">${items.map((it) => {
+    const inner = `<span class="viz-key viz-key-${esc(it.key)}" aria-hidden="true"></span>${esc(it.label)}`
+      + (it.n !== undefined ? ` <span class="muted">${esc(fmtN(it.n))}</span>` : "");
+    return `<li>${it.href ? `<a href="${esc(it.href)}">${inner}</a>` : inner}</li>`;
+  }).join("")}</ul>`;
+}
+
+function dataTable(headers, rows) {
+  return `<details class="viz-table"><summary>Table</summary>${table(headers, rows.map((r) => r.map((c, i) => td(esc(c), i ? "num" : ""))), "No data.")}</details>`;
+}
+
+function figure(id, title, { sub = "", legendHtml = "", tableHtml = "", wide = false } = {}) {
+  return `<figure class="viz${wide ? " viz-wide" : ""}"><figcaption><h4 class="viz-title">${esc(title)}</h4>`
+    + (sub ? `<p class="viz-sub">${esc(sub)}</p>` : "") + `</figcaption>${legendHtml}`
+    + `<div class="viz-slot" data-chart="${id}"></div>${tableHtml}</figure>`;
+}
+
+function tile(label, value, sub) {
+  return `<div class="kpi"><p class="kpi-label">${esc(label)}</p><p class="kpi-value">${esc(value)}</p>`
+    + (sub ? `<p class="kpi-sub">${esc(sub)}</p>` : "") + `</div>`;
+}
+
+function dashboardHtml(m, at) {
+  const t = m.totals;
+  const years = m.csrYears.length ? `${m.csrYears[0].year}–${m.csrYears[m.csrYears.length - 1].year}` : "2016–2025";
+  const tiles = `<div class="kpis">`
+    + tile("Projects", fmtN(t.projects), t.projects ? `${share(t.detail, t.projects)} with a detail page` : "")
+    + tile("Deliverables", fmtN(t.deliverables), "")
+    + tile(`CSRs (${years})`, fmtN(t.csrs), t.csrParts ? `${fmtN(t.csrParts)} sub-parts` : "")
+    + tile("Project → CSR links", fmtN(t.links), t.projects ? `${share(t.linkedProjects, t.projects)} of projects linked` : "")
+    + tile("Impact analyses", fmtN(t.reports), t.mean !== null && t.analysed ? `mean score ${t.mean.toFixed(1)}/10` : "none yet")
+    + tile("Anomalies", fmtN(t.anomalies), `${fmtN(t.anomaliesHigh)} high severity`) + `</div>`;
+
+  const cols = yearProgrammeCols(m);
+  const progTotals = Object.fromEntries(m.byProgramme.map((x) => [x.key, x.n]));
+  const progLegend = legend([...PROGRAMMES, ...Object.keys(progTotals).filter((p) => !PROGRAMMES.includes(p))]
+    .filter((p) => progTotals[p] || cols.some((c) => c.segs.some((g) => g.tip.series === p)))
+    .map((p) => ({ key: programmeKey(p), label: p === "none" ? "No programme" : p, n: progTotals[p],
+      href: PROGRAMMES.includes(p) ? hrefFor("projects", { programme: p }) : null })));
+  const progsInTable = [...PROGRAMMES, ...[...new Set(m.yearProgramme.map((x) => x.programme))].filter((p) => !PROGRAMMES.includes(p))];
+  const projects = `<section class="dash-section" aria-labelledby="dash-projects"><h3 id="dash-projects">Projects</h3><div class="dash-grid">`
+    + figure("year", "Projects by year and programme", { wide: true, sub: "Click a bar to list the projects.", legendHtml: progLegend,
+      tableHtml: dataTable(["Year", ...progsInTable, "Total"], cols.map((c) => [c.label,
+        ...progsInTable.map((p) => fmtN(m.yearProgramme.find((x) => x.year === Number(c.label) && x.programme === p)?.n || 0)), fmtN(c.total)])) })
+    + figure("country", "Projects by country", { sub: "A multi-country project counts for each country.",
+      tableHtml: dataTable(["Country", "Projects"], m.byCountry.map((x) => [countryName(x.key), fmtN(x.n)])) })
+    + figure("area", "Projects by policy area", { tableHtml: dataTable(["Policy area", "Projects"], m.byArea.map((x) => [areaName(x.key), fmtN(x.n)])) })
+    + figure("results", "Projects by results", { tableHtml: dataTable(["Results", "Projects"], inOrder(m.byResults, ["achieved", "expected", "none"]).map((x) => [RESULT_LABELS[x.key] || x.key, fmtN(x.n)])) })
+    + `</div></section>`;
+
+  let impactBody;
+  if (!t.analysed && !m.recent.length) {
+    impactBody = `<p class="empty">No impact analysis saved yet. Run one from the Impact tab of a project.</p>`;
+  } else {
+    const few = t.analysed < 5 ? `<p class="notice-few" role="note">Few analyses so far: statistics are indicative.</p>` : "";
+    const recentRows = m.recent.map((r) => [
+      td(r.project_id ? hashLink("project", r.project_id, r.title || r.project_id) : esc(r.title), "title-cell"),
+      td(Number.isFinite(r.score) ? `${esc(r.score)}/10` : "—", "num"), td(esc(r.level)), td(esc(r.confidence)),
+      td(esc(fmtDate(r.created_at)), "nowrap"), td(esc(r.source)),
+    ]);
+    impactBody = few + `<p class="muted small">Statistics use the latest analysis of each project (${fmtN(t.analysed)} project${t.analysed === 1 ? "" : "s"}).</p>`
+      + `<div class="dash-grid">`
+      + figure("scores", "Impact score distribution", { sub: "Score out of 10, projects per score.",
+        tableHtml: dataTable(["Score", "Projects"], m.scores.map((x) => [String(x.score), fmtN(x.n)])) })
+      + `<div class="viz-pair">`
+      + figure("level", "Impact level", { tableHtml: dataTable(["Level", "Projects"], inOrder(m.byLevel, LEVEL_ORDER).map((x) => [x.key, fmtN(x.n)])) })
+      + figure("confidence", "Confidence", { tableHtml: dataTable(["Confidence", "Projects"], inOrder(m.byConfidence, CONFIDENCE_ORDER).map((x) => [x.key, fmtN(x.n)])) })
+      + `</div>`
+      + figure("meanArea", "Mean score by policy area", { sub: "n = projects analysed; greyed when n < 2.",
+        tableHtml: dataTable(["Policy area", "Mean score", "n"], m.meanArea.map((x) => [areaName(x.key), x.mean.toFixed(1), String(x.n)])) })
+      + figure("meanCountry", "Mean score by country", { sub: "n = projects analysed; greyed when n < 2.",
+        tableHtml: dataTable(["Country", "Mean score", "n"], m.meanCountry.map((x) => [countryName(x.key), x.mean.toFixed(1), String(x.n)])) })
+      + `</div><h4 class="viz-title">Latest analyses</h4>`
+      + table(["Project", "Score", "Level", "Confidence", "Date", "Source"], recentRows, "No analysis yet.");
+  }
+  const impact = `<section class="dash-section" aria-labelledby="dash-impact"><h3 id="dash-impact">Impact analyses <span class="ai-note">AI-generated</span></h3>${impactBody}</section>`;
+
+  const sevTotals = Object.fromEntries(SEVERITY_KEYS.map(([s]) => [s, m.anomalies.filter((x) => x.severity === s).reduce((a, x) => a + x.n, 0)]));
+  const anomalyTypes = anomalyRows(m);
+  const csrs = `<section class="dash-section" aria-labelledby="dash-csrs"><h3 id="dash-csrs">CSRs and lineage</h3><div class="dash-grid">`
+    + figure("csrYear", "CSRs by year", { sub: "Click a bar to list that year's CSRs.", tableHtml: dataTable(["Year", "CSRs"], m.csrYears.map((x) => [String(x.year), fmtN(x.n)])) })
+    + figure("assessments", "Latest CSR assessment", { sub: "From full implementation to no progress.",
+      tableHtml: dataTable(["Assessment", "CSRs"], assessmentRows(m).map((r) => [r.label, r.display])) })
+    + figure("coverage", "CSRs supported by a project, by country", { wide: true, sub: "Share of the country's CSRs with at least one linked project (AI-assessed links). Click to list them.",
+      tableHtml: dataTable(["Country", "CSRs", "With a project", "Share"], coverageRows(m).map((r) => [r.label, fmtN(r.csrs), fmtN(r.covered), share(r.covered, r.csrs)])) })
+    + figure("links", "Project–CSR links by level", { tableHtml: dataTable(["Level", "Links"], inOrder(m.linksByLevel, ["direct", "partial"]).map((x) => [LINK_LABELS[x.key] || x.key, fmtN(x.n)])) })
+    + `</div></section>`;
+  const quality = `<section class="dash-section" aria-labelledby="dash-quality"><h3 id="dash-quality">Data quality</h3><div class="dash-grid">`
+    + figure("anomalies", "Anomalies by type and severity", { wide: true, sub: "Click a segment to list those anomalies.",
+      legendHtml: legend(SEVERITY_KEYS.map(([s, label]) => ({ key: `sev-${s}`, label, n: sevTotals[s], href: hrefFor("anomalies", { severity: s }) }))),
+      tableHtml: dataTable(["Type", ...SEVERITY_KEYS.map(([, l]) => l), "Total"], anomalyTypes.map((r) => [r.label,
+        ...SEVERITY_KEYS.map(([s]) => fmtN(m.anomalies.find((x) => x.type === r.type && x.severity === s)?.n || 0)), r.display])) })
+    + `</div></section>`;
+  const when = at instanceof Date ? at.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "";
+  return `<div id="dash" class="dash"><div class="toolbar"><span class="muted small">Figures across all projects and CSRs${when ? ` · loaded at ${esc(when)}` : ""}.</span>`
+    + `<span class="toolbar-actions"><span id="dash-status" class="muted small" role="status"></span>`
+    + `<button type="button" class="btn btn-secondary" id="dash-refresh">Refresh</button></span></div>`
+    + tiles + projects + impact + csrs + quality
+    + `<div id="dash-tip" class="viz-tip" role="tooltip" hidden></div></div>`;
+}
+
+function paintDashCharts() {
+  const root = $("dash");
+  if (!root || !dashCache) return;
+  dashWidth = root.clientWidth;
+  root.querySelectorAll(".viz-slot").forEach((slot) => {
+    const build = DASH_CHARTS[slot.dataset.chart];
+    slot.innerHTML = build ? build(dashCache.model, slot.clientWidth) : "";
+  });
+}
+
+/** One tooltip for the whole dashboard: value first, then category and share; same on hover and keyboard focus. */
+function bindDashTips(root) {
+  const tip = $("dash-tip");
+  if (!tip) return;
+  const hide = () => { tip.hidden = true; };
+  const show = (mark, x, y) => {
+    const ds = mark.dataset;
+    const value = document.createElement("strong");
+    value.textContent = ds.tipValue || "";
+    const label = document.createElement("div");
+    if (ds.tipKey && /^[a-z0-9-]+$/.test(ds.tipKey)) {
+      const key = document.createElement("span");
+      key.className = `viz-line viz-key-${ds.tipKey}`;
+      label.append(key);
+    }
+    label.append(document.createTextNode([ds.tipSeries, ds.tipLabel].filter(Boolean).join(" · ")));
+    tip.replaceChildren(value, label);
+    if (ds.tipShare) {
+      const s = document.createElement("div");
+      s.className = "muted";
+      s.textContent = ds.tipShare;
+      tip.append(s);
+    }
+    tip.hidden = false;
+    const box = root.getBoundingClientRect();
+    const tw = tip.offsetWidth;
+    const th = tip.offsetHeight;
+    let left = x - box.left + 12;
+    if (left + tw > box.width) left = Math.max(0, x - box.left - tw - 12);
+    let top = y - box.top - th - 10;
+    if (top < 0) top = y - box.top + 18;
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
+  };
+  const markOf = (el) => (el instanceof Element ? el.closest("[data-tip-value]") : null);
+  root.addEventListener("pointermove", (e) => {
+    const m = markOf(e.target);
+    if (m && root.contains(m)) show(m, e.clientX, e.clientY); else hide();
+  });
+  root.addEventListener("pointerleave", hide);
+  root.addEventListener("focusin", (e) => {
+    const m = markOf(e.target);
+    if (!m) return hide();
+    const r = m.getBoundingClientRect();
+    show(m, r.left + Math.min(r.width / 2, 160), r.top);
+  });
+  root.addEventListener("focusout", hide);
+}
+
+async function fetchDashboard() {
+  const { data, error } = await sb.rpc("tsi_dashboard");
+  if (error) return { error };
+  let raw = data;
+  if (typeof raw === "string") {
+    try { raw = JSON.parse(raw); } catch { raw = null; }
+  }
+  return { model: dashModel(raw) };
+}
+
+function paintDashboard() {
+  view(heading("Dashboard") + dashboardHtml(dashCache.model, dashCache.at));
+  const root = $("dash");
+  bindDashTips(root);
+  $("dash-refresh").addEventListener("click", refreshDashboard);
+  paintDashCharts();
+}
+
+/** Refresh keeps the current render (dimmed) until the new figures arrive. */
+async function refreshDashboard() {
+  const seq = ++renderSeq;
+  const root = $("dash");
+  const button = $("dash-refresh");
+  root?.classList.add("is-refreshing");
+  if (button) button.disabled = true;
+  $("dash-status").textContent = "Refreshing…";
+  let res;
+  try {
+    res = await fetchDashboard();
+  } catch (e) {
+    res = { error: e };
+  }
+  if (stale(seq) || !$("dash")) return;
+  if (res.error) {
+    root.classList.remove("is-refreshing");
+    button.disabled = false;
+    $("dash-status").textContent = `Could not refresh: ${res.error.message || res.error}`;
+    return;
+  }
+  dashCache = { uid: currentUid, model: res.model, at: new Date() };
+  paintDashboard();
+  $("dash-status").textContent = "Figures updated.";
+  $("dash-refresh").focus();
+}
+
+async function renderDashboard(seq) {
+  if (!dashCache || dashCache.uid !== currentUid) {
+    const res = await fetchDashboard();
+    if (stale(seq)) return;
+    if (res.error) return showError(res.error, "Could not load the dashboard");
+    dashCache = { uid: currentUid, model: res.model, at: new Date() };
+  }
+  paintDashboard();
 }
 
 // ---------- auth and routing ----------
@@ -941,12 +1615,13 @@ async function isTester(session) {
 async function route(seq) {
   const { route: r, id, params: p } = params();
   const viewKey = ["project", "csr", "impact"].includes(r) && id ? `${r}/${id}`
-    : (["csrs", "anomalies", "chat", "impact"].includes(r) ? r : "projects");
+    : (["dashboard", "csrs", "anomalies", "chat", "impact"].includes(r) ? r : "projects");
   setActiveTab(r);
   loading();
   try {
     if (r === "project" && id) await renderProject(id, seq);
     else if (r === "csr" && id) await renderCsr(id, seq);
+    else if (r === "dashboard") await renderDashboard(seq);
     else if (r === "csrs") await renderCsrs(p, seq);
     else if (r === "anomalies") await renderAnomalies(p, seq);
     else if (r === "chat") await renderChat(seq);
@@ -1127,6 +1802,19 @@ async function init() {
     wantsPasswordChange = false;
     await sb.auth.signOut({ scope: "local" }); // SIGNED_OUT re-renders (user id changes)
     history.replaceState(null, "", location.pathname + location.search + "#projects");
+  });
+  // One Escape handler for the whole page: hides the dashboard tooltip when one is shown.
+  document.addEventListener("keydown", (e) => {
+    const tip = $("dash-tip");
+    if (e.key === "Escape" && tip) tip.hidden = true;
+  });
+  let resizeTimer = 0;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      const root = $("dash");
+      if (root && root.clientWidth !== dashWidth) paintDashCharts();
+    }, 150);
   });
   window.addEventListener("hashchange", () => {
     if (/^#?access_token=/.test(location.hash)) return; // handled by supabase-js

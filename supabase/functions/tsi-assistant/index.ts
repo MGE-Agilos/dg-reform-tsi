@@ -1,11 +1,13 @@
 // Supabase Edge Function "tsi-assistant": serves the explorer's Chat and Impact tabs with Claude (Anthropic Messages API).
-// Same contract as haystack-proxy: POST {service: "chat"|"impact", messages} with the tester's session token -> {answer}.
+// Same contract as haystack-proxy: POST {service: "chat"|"impact", messages} with the tester's session token -> {answer, saved}.
 // Claude's client tools query the Supabase tables through PostgREST WITH THE TESTER'S TOKEN (RLS applies); the impact
 // analysis also uses Anthropic's server web search tool.
 // Single self-contained file, no imports: paste it into Supabase (Edge Functions > Via Editor), keep "Verify JWT" on.
 // Secrets (Edge Functions > Secrets): TSI_ANTHROPIC_API_KEY (preferred) or ANTHROPIC_API_KEY; optional TSI_MODEL (default claude-sonnet-5-5), ALLOWED_ORIGINS.
 // SUPABASE_URL and SUPABASE_ANON_KEY are provided (if SUPABASE_ANON_KEY is missing, the caller's apikey header, i.e. the
 // public anon key, is used). Needs supabase/migrations/002_search.sql (tsi_search_projects, tsi_search_csrs).
+// Impact analyses are kept (best effort) in public.impact_reports (003_dashboard.sql) with SUPABASE_SERVICE_ROLE_KEY
+// (provided by Supabase); the response is {answer, saved}.
 // The pure logic is exported and tested with Node: node --experimental-strip-types --test supabase/functions/tsi-assistant/index.test.ts
 // Never logs message contents, tool inputs nor keys: only service, status, duration, steps, token usage, the is_tester
 // status on failure and the Anthropic error status/type.
@@ -672,6 +674,136 @@ export async function agentLoop(
   return { answer, steps: stats.steps, stats };
 }
 
+// ---------- impact reports kept in public.impact_reports (best effort) ----------
+
+export type ImpactScore = { score: number; level: "strong" | "moderate" | "weak"; confidence: "high" | "medium" | "low" };
+
+const IMPACT_LINE = /impact\s*score\s*:\s*(\d{1,2})\s*\/\s*10\s*\(\s*(strong|moderate|weak)\s*\)\s*[—–-]\s*confidence\s*:\s*(high|medium|low)\b/i;
+
+/** Score line "Impact score: X/10 (strong|moderate|weak) — Confidence: high|medium|low" (the last one in the answer;
+ * "-" or "–" accepted for "—", any case, extra spaces, Markdown emphasis ignored), or null. */
+export function parseImpact(answer: string): ImpactScore | null {
+  const lines = String(answer ?? "").split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = IMPACT_LINE.exec(lines[i].replace(/[*_`]/g, ""));
+    if (!m) continue;
+    const score = Number(m[1]);
+    if (score > 10) return null;
+    return { score, level: m[2].toLowerCase() as ImpactScore["level"], confidence: m[3].toLowerCase() as ImpactScore["confidence"] };
+  }
+  return null;
+}
+
+const VERDICT_LINE = /^\s*(?:#{1,6}\s*)?[*_]*\s*overall verdict\s*[*_]*\s*:?\s*[*_]*\s*(.*)$/i;
+const VERDICT_MAX = 2000;
+
+/** Text of the "Overall verdict" section (inline after the label, or the following paragraph), or null. */
+export function extractVerdict(answer: string): string | null {
+  const lines = String(answer ?? "").split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const m = VERDICT_LINE.exec(lines[i]);
+    if (!m) continue;
+    const parts: string[] = [];
+    if (m[1].trim()) parts.push(m[1].trim());
+    else {
+      for (let j = i + 1; j < lines.length; j++) {
+        const line = lines[j].trim();
+        if (!line) {
+          if (parts.length) break;
+          continue;
+        }
+        if (line.startsWith("#") || IMPACT_LINE.test(line.replace(/[*_`]/g, ""))) break;
+        parts.push(line);
+      }
+    }
+    const text = parts.join(" ").replace(/\s+/g, " ").trim();
+    return text ? text.slice(0, VERDICT_MAX) : null;
+  }
+  return null;
+}
+
+/** Project analysed, from the page's message "Project: <title> (id <project_id>; ...)"; null without an id. */
+export function extractProject(messages: Message[]): { project_id: string; title: string } | null {
+  for (const m of messages) {
+    if (m.role !== "user") continue;
+    const match = /Project:\s*(.+?)\s*\(id\s+([^;)\s]+)\s*[;)]/.exec(m.content);
+    if (match) return { project_id: match[2].slice(0, 200), title: match[1].trim().slice(0, 500) };
+  }
+  return null;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** `sub` (uuid) of the user's JWT, for information only: the payload is decoded WITHOUT verifying the signature (the
+ * token was already checked by the gateway and by is_tester). Null if absent or not a uuid. */
+export function jwtSub(authorization: string): string | null {
+  try {
+    const parts = authorization.replace(/^Bearer\s+/i, "").trim().split(".");
+    if (parts.length !== 3) return null;
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const payload = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)));
+    const sub = payload && typeof payload === "object" ? payload.sub : null;
+    return typeof sub === "string" && UUID.test(sub) ? sub : null;
+  } catch {
+    return null;
+  }
+}
+
+export const SAVE_TIMEOUT_MS = 5000; // per call (project check, insert)
+export const SAVE_DEADLINE_MS = 145000; // from the start of the request: the page gives up at 160 s
+
+/** Inserts the impact report with the service_role key (RLS: no insert for testers), only when the answer has a score
+ * line and the project exists for the user (checked with the user's token; the stored title is the database's).
+ * Each call is bounded by min(SAVE_TIMEOUT_MS, time left before handlerStart + SAVE_DEADLINE_MS), at least 1 s.
+ * Never throws; failures are logged without content. Returns whether the row was saved. */
+async function saveImpact(answer: string, messages: Message[], env: Env, fetchImpl: FetchImpl, authorization: string,
+  apikey: string, handlerStart: number, now: () => number): Promise<boolean> {
+  const key = env.SUPABASE_SERVICE_ROLE_KEY;
+  const project = extractProject(messages);
+  const impact = parseImpact(answer);
+  if (!key || !env.SUPABASE_URL || !project || !impact) return false;
+  const timeout = () => Math.max(1000, Math.min(SAVE_TIMEOUT_MS, handlerStart + SAVE_DEADLINE_MS - now()));
+  try {
+    const check = await fetchImpl(`${env.SUPABASE_URL}/rest/v1/projects?project_id=${eq(project.project_id)}&select=title`, {
+      method: "GET", headers: { "apikey": apikey, "Authorization": authorization, "Accept": "application/json" },
+      signal: AbortSignal.timeout(timeout()),
+    });
+    if (!check.ok) {
+      console.log(JSON.stringify({ impactSave: "project check failed", status: check.status }));
+      return false;
+    }
+    const found = await check.json() as { title?: unknown }[];
+    if (!Array.isArray(found) || !found.length) {
+      console.log(JSON.stringify({ impactSave: "project not found" }));
+      return false;
+    }
+    if (typeof found[0]?.title === "string" && found[0].title) project.title = found[0].title;
+  } catch (e) {
+    console.log(JSON.stringify({ impactSave: isTimeout(e) ? "timeout" : "unreachable" }));
+    return false;
+  }
+  const headers: Record<string, string> = { "apikey": key, "Content-Type": "application/json", "Prefer": "return=minimal" };
+  if (!key.startsWith("sb_secret_")) headers["Authorization"] = `Bearer ${key}`; // sb_secret_ keys: apikey only
+  const row = {
+    project_id: project.project_id, title: project.title, score: impact.score, level: impact.level,
+    confidence: impact.confidence, verdict: extractVerdict(answer), report: answer,
+    model: env.TSI_MODEL || DEFAULT_MODEL, source: "web", created_by: jwtSub(authorization),
+  };
+  try {
+    const res = await fetchImpl(`${env.SUPABASE_URL}/rest/v1/impact_reports`, {
+      method: "POST", headers, body: JSON.stringify(row), signal: AbortSignal.timeout(timeout()),
+    });
+    if (!res.ok) {
+      console.log(JSON.stringify({ impactSave: res.status }));
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.log(JSON.stringify({ impactSave: isTimeout(e) ? "timeout" : "unreachable" }));
+    return false;
+  }
+}
+
 // ---------- HTTP handler (same contract and checks as haystack-proxy) ----------
 
 export function allowedOrigins(env: Env): string[] {
@@ -743,6 +875,7 @@ export async function handle(req: Request, env: Env, fetchImpl: FetchImpl, now: 
   if (!/^Bearer\s+\S+/i.test(authorization)) return reply(401, { error: "Missing bearer token" });
 
   const started = Date.now();
+  const handlerStart = now();
   let service = "?";
   let status = 500;
   const stats = emptyStats();
@@ -764,8 +897,11 @@ export async function handle(req: Request, env: Env, fetchImpl: FetchImpl, now: 
     service = valid.service;
     const result = await agentLoop(valid.service, valid.messages, env, fetchImpl, now,
       { supabaseUrl: env.SUPABASE_URL, apikey, userAuth: authorization }, stats);
+    const saved = valid.service === "impact"
+      ? await saveImpact(result.answer, valid.messages, env, fetchImpl, authorization, apikey, handlerStart, now)
+      : false;
     status = 200;
-    return reply(200, { answer: result.answer });
+    return reply(200, { answer: result.answer, saved });
   } catch (e) {
     if (e instanceof HttpError) {
       status = e.status;

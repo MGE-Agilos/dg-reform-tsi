@@ -3,16 +3,20 @@
 Remplacement complet : suppression des tables dans l'ordre des dependances, puis insertion par lots. La cle
 service_role vient de l'environnement ou de `.env` (SUPABASE_URL, SUPABASE_SERVICE_KEY) : jamais d'un fichier
 suivi par git. La table `testers` n'est jamais touchee.
+
+Les analyses d'impact (`impact_reports`) sont gerees a part : seules les lignes `source = 'local'` (rapports
+output/impact/*.md) sont remplacees ; les analyses lancees depuis la page (`source = 'web'`) ne sont jamais supprimees.
 """
 
 import json
 import os
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
+import yaml
 
 from tsi_agent.anomalies import detect, load_csr_links, load_projects, load_publications
 from tsi_agent.chunking import INTRO, SUMMARY, split_sections
@@ -28,6 +32,9 @@ INSERT_ORDER = ("projects", "csrs", "csr_parts", "project_csr_links", "anomalies
 DELETE_FILTER = {"projects": "project_id=not.is.null", "csrs": "csr_id=not.is.null",
                  "csr_parts": "part_id=not.is.null", "project_csr_links": "project_id=not.is.null",
                  "anomalies": "id=not.is.null"}
+IMPACT_TABLE = "impact_reports"
+IMPACT_LEVELS = ("strong", "moderate", "weak")
+IMPACT_CONFIDENCE = ("high", "medium", "low")
 BATCH = 500
 SUMMARY_CHARS = 1500
 
@@ -52,8 +59,71 @@ def _int(value: Any) -> int:
         return 0
 
 
+def _choice(value: Any, allowed: tuple[str, ...]) -> str | None:
+    text = str(value or "").strip().lower()
+    return text if text in allowed else None
+
+
+def _score(value: Any) -> int | None:
+    """Score entier de 0 a 10 (int ou texte entier), sinon None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        score = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        score = int(value.strip())
+    else:
+        return None
+    return score if 0 <= score <= 10 else None
+
+
+def _iso_date(value: Any) -> str | None:
+    """`generated` (date ou datetime, objet YAML ou texte ISO) en texte ISO ; None si illisible."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    for parse in (date.fromisoformat, datetime.fromisoformat):
+        try:
+            return parse(text).isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def impact_rows(output_dir: Path) -> list[dict[str, Any]]:
+    """Lignes `impact_reports` (source 'local') depuis output/impact/*.md : front matter et corps du rapport.
+
+    Fichiers illisibles et rapports sans score valide ignores. Toutes les lignes ont les memes cles (insertion
+    groupee PostgREST) ; created_at = `generated`, sinon la date de modification du fichier.
+    """
+    rows = []
+    for path in sorted((output_dir / "impact").glob("*.md")):
+        try:
+            fm, body = parse_front_matter(path.read_text(encoding="utf-8").replace("\r\n", "\n"))
+            mtime = path.stat().st_mtime
+        except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError):
+            continue
+        if not isinstance(fm, dict) or not fm.get("project_id"):
+            continue
+        score = _score(fm.get("impact_score"))
+        if score is None:
+            continue
+        generated = _iso_date(fm.get("generated"))
+        rows.append({"project_id": str(fm["project_id"]), "title": str(fm["title"]) if fm.get("title") else None,
+                     "score": score, "level": _choice(fm.get("impact_level"), IMPACT_LEVELS),
+                     "confidence": _choice(fm.get("confidence"), IMPACT_CONFIDENCE),
+                     "verdict": str(fm["overall_verdict"]) if fm.get("overall_verdict") else None,
+                     "report": body, "model": str(fm["model"]) if fm.get("model") else None, "source": "local",
+                     "created_at": generated or datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()})
+    return rows
+
+
 def build_rows(output_dir: Path, current_year: int | None = None) -> dict[str, list[dict[str, Any]]]:
-    """Lignes de chaque table, depuis output/ (sans reseau)."""
+    """Lignes de chaque table, depuis output/ (sans reseau), plus `impact_reports` (rapports d'impact locaux)."""
     projects = []
     for path in sorted((output_dir / "projects").glob("*.md")):
         try:
@@ -95,7 +165,7 @@ def build_rows(output_dir: Path, current_year: int | None = None) -> dict[str, l
                  for a in detect(load_projects(output_dir), load_publications(output_dir),
                                  current_year or date.today().year, csr_links=load_csr_links(output_dir))]
     return {"projects": projects, "csrs": csr_rows, "csr_parts": part_rows, "project_csr_links": links,
-            "anomalies": anomalies}
+            "anomalies": anomalies, IMPACT_TABLE: impact_rows(output_dir)}
 
 
 class SyncError(RuntimeError):
@@ -122,6 +192,9 @@ def push(rows: dict[str, list[dict[str, Any]]], url: str, key: str, *, client: h
          backup: Path | None = None) -> dict[str, int]:
     """Remplace le contenu des tables (sauf testers) ; sauvegarde JSON des lignes avant toute suppression.
 
+    Si `rows` contient `impact_reports` : apres les autres tables, suppression des seules lignes source=local puis
+    insertion des rapports locaux ; les analyses 'web' ne sont jamais supprimees.
+
     Non transactionnel : en cas d'echec, les tables peuvent rester vides ou partielles -> relancer supabase-sync.
     """
     if backup is not None:
@@ -140,7 +213,18 @@ def push(rows: dict[str, list[dict[str, Any]]], url: str, key: str, *, client: h
             for start in range(0, len(data), BATCH):
                 _check(client.post(f"{url}/rest/v1/{table}", headers=headers,
                                    content=json.dumps(data[start:start + BATCH], ensure_ascii=False)), table, "insert")
+        if IMPACT_TABLE in rows:
+            _check(client.delete(f"{url}/rest/v1/{IMPACT_TABLE}?source=eq.local", headers=headers), IMPACT_TABLE,
+                   "delete")
+            data = rows.get(IMPACT_TABLE) or []
+            for start in range(0, len(data), BATCH):
+                _check(client.post(f"{url}/rest/v1/{IMPACT_TABLE}", headers=headers,
+                                   content=json.dumps(data[start:start + BATCH], ensure_ascii=False)), IMPACT_TABLE,
+                       "insert")
     finally:
         if own:
             client.close()
-    return {table: len(rows.get(table) or []) for table in INSERT_ORDER}
+    summary = {table: len(rows.get(table) or []) for table in INSERT_ORDER}
+    if IMPACT_TABLE in rows:
+        summary[IMPACT_TABLE] = len(rows.get(IMPACT_TABLE) or [])
+    return summary
