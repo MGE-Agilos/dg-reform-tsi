@@ -17,7 +17,8 @@ from haystack.dataclasses import ChatMessage, ChatRole, ToolCall
 from haystack.tools import Tool, flatten_tools_or_toolsets
 
 DEFAULT_SYSTEM_PROMPT = "You are a precise assistant. Follow the user's instructions exactly."
-_QUOTA = re.compile(r"rate.?limit|usage limit|limit reached|quota|too many requests|\b429\b", re.IGNORECASE)
+_QUOTA = re.compile(r"rate.?limit|usage limit|limit reached|quota|too many requests|\b429\b|credit balance",
+                    re.IGNORECASE)
 # Avec --json-schema, le CLI ne donne au modele qu'un seul outil natif, StructuredOutput : il ne peut pas
 # appeler nos "outils" directement. On les lui presente comme des actions externes a demander via cet outil,
 # et on insiste pour qu'il ne le rappelle pas une fois qu'il a "reussi" (le modele peut sinon croire que l'appel
