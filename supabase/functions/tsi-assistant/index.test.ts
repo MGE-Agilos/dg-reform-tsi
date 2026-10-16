@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   handle, agentLoop, runTool, validate, allowedOrigins, corsHeaders, answerText, csrMatches, normalizeCsr, canonicalCsrId,
   HttpError, CHAT_SYSTEM, impactSystem, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
-  withCacheBreakpoint, emptyStats,
+  withCacheBreakpoint, emptyStats, parseImpact, extractVerdict, extractProject, jwtSub, SAVE_TIMEOUT_MS,
 } from "./index.ts";
 
 const ORIGIN = "https://mge-agilos.github.io";
@@ -165,7 +165,7 @@ test("chat loop: list_projects tool_use, tool_result sent back, PostgREST called
   const res = await handle(post(chatBody), ENV, f.impl);
   assert.equal(res.status, 200);
   const text = await res.text();
-  assert.deepEqual(JSON.parse(text), { answer: "Croatia has **2** projects." });
+  assert.deepEqual(JSON.parse(text), { answer: "Croatia has **2** projects.", saved: false });
   assert.ok(!text.includes("sk-ant-secret-test"));
 
   const [first, second] = f.modelCalls();
@@ -563,4 +563,118 @@ test("prompts: chat rules and filter values, impact scoring rubric", () => {
   assert.match(impactSystem(), /Call get_project/);
   assert.match(impactSystem(), /At most 4 searches/);
   assert.match(impactSystem(), /9-10 \(strong\)/);
+});
+
+// ---------- impact reports kept (impact_reports) ----------
+
+const USER_ID = "3f2b8c1e-7a4d-4e5f-9b6a-0c1d2e3f4a5b";
+const b64url = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
+const USER_JWT = `${b64url({ alg: "HS256", typ: "JWT" })}.${b64url({ sub: USER_ID, role: "authenticated" })}.signature`;
+const SAVE_ENV = { ...ENV, SUPABASE_SERVICE_ROLE_KEY: "service-role-test" };
+const REPORT = "**Project overview** The project.\n\n**Overall verdict:** The reform was adopted and is used.\n\n"
+  + "Impact score: 7/10 (strong) — Confidence: medium";
+const saveCalls = (f: ReturnType<typeof fakeFetch>) => f.calls.filter((c) => c.url.endsWith("/rest/v1/impact_reports"));
+
+test("parseImpact: final score line, dash variants, case and spaces; null otherwise", () => {
+  assert.deepEqual(parseImpact("Report\n\nImpact score: 5/10 (moderate) — Confidence: medium"), { score: 5, level: "moderate", confidence: "medium" });
+  assert.deepEqual(parseImpact("x\nIMPACT SCORE : 10 / 10 ( Strong ) - confidence:HIGH\n"), { score: 10, level: "strong", confidence: "high" });
+  assert.deepEqual(parseImpact("**Impact score: 0/10 (weak) – Confidence: low**"), { score: 0, level: "weak", confidence: "low" });
+  assert.deepEqual(parseImpact("Impact score: 2/10 (weak) — Confidence: low\nImpact score: 8/10 (strong) — Confidence: high\n\n[answer truncated]"),
+    { score: 8, level: "strong", confidence: "high" }, "the last score line wins");
+  for (const bad of ["", "No score here", "Impact score: 11/10 (strong) — Confidence: high", "Impact score: 5/10 (great) — Confidence: medium",
+    "Impact score: 5/10 (moderate) — Confidence: unsure"]) {
+    assert.equal(parseImpact(bad), null, bad);
+  }
+});
+
+test("extractVerdict, extractProject and jwtSub", () => {
+  assert.equal(extractVerdict(REPORT), "The reform was adopted and is used.");
+  assert.equal(extractVerdict("## Overall verdict\n\nAdopted, early results.\nStill partial.\n\nImpact score: 5/10 (moderate) — Confidence: low"),
+    "Adopted, early results. Still partial.");
+  assert.equal(extractVerdict("**Overall verdict**\nNot adopted.\nImpact score: 1/10 (weak) — Confidence: high"), "Not adopted.");
+  assert.equal(extractVerdict("No verdict section"), null);
+  assert.deepEqual(extractProject([{ role: "user", content: "Project: Health reform (phase 2) in Croatia (id p1; TSI 2023; countries HR)" }]),
+    { project_id: "p1", title: "Health reform (phase 2) in Croatia" });
+  assert.equal(extractProject([{ role: "user", content: "Assess the Croatian health reform" }]), null);
+  assert.equal(jwtSub(`Bearer ${USER_JWT}`), USER_ID);
+  assert.equal(jwtSub("Bearer user-jwt"), null);
+  assert.equal(jwtSub(`Bearer ${b64url({})}.${b64url({ sub: "not-a-uuid" })}.s`), null);
+});
+
+test("impact: the report is saved with the service_role key and the expected fields; response {answer, saved: true}", async () => {
+  const f = fakeFetch({ model: [textReply(REPORT)] });
+  const res = await handle(post(impactBody, { token: USER_JWT }), { ...SAVE_ENV, TSI_MODEL: "claude-test-model" }, f.impl);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { answer: REPORT, saved: true });
+  const [save] = saveCalls(f);
+  assert.ok(save, "insert called");
+  assert.equal(save.url, "https://project.supabase.co/rest/v1/impact_reports");
+  assert.equal(save.init.method, "POST");
+  const h = new Headers(save.init.headers);
+  assert.equal(h.get("apikey"), "service-role-test");
+  assert.equal(h.get("Authorization"), "Bearer service-role-test");
+  assert.equal(h.get("Prefer"), "return=minimal");
+  assert.equal(h.get("Content-Type"), "application/json");
+  assert.ok(save.init.signal, "a timeout signal is set");
+  assert.equal(SAVE_TIMEOUT_MS, 10000);
+  assert.deepEqual(sent(save), {
+    project_id: "p1", title: "Health reform in Croatia", score: 7, level: "strong", confidence: "medium",
+    verdict: "The reform was adopted and is used.", report: REPORT, model: "claude-test-model", source: "web", created_by: USER_ID,
+  });
+});
+
+test("impact: insert failure or exception is only logged (no content) and the response stays 200 with saved: false", async () => {
+  for (const failing of ["status", "throw"]) {
+    const base = fakeFetch({ model: [textReply(REPORT)] });
+    const impl = async (url: string, init: RequestInit) => {
+      if (url.endsWith("/rest/v1/impact_reports")) {
+        if (failing === "throw") throw new DOMException("The operation timed out.", "TimeoutError");
+        return json({ message: "permission denied" }, 403);
+      }
+      return base.impl(url, init);
+    };
+    const logs: string[] = [];
+    const orig = console.log;
+    console.log = (s: string) => { logs.push(s); };
+    let res: Response;
+    try {
+      res = await handle(post(impactBody, { token: USER_JWT }), SAVE_ENV, impl);
+    } finally {
+      console.log = orig;
+    }
+    assert.equal(res.status, 200, failing);
+    assert.deepEqual(await res.json(), { answer: REPORT, saved: false });
+    const all = logs.join("\n");
+    assert.match(all, /impactSave/);
+    assert.ok(!all.includes("reform was adopted") && !all.includes("service-role-test") && !all.includes("Croatia"));
+  }
+});
+
+test("impact reports are not saved for chat, without a project id, or without the service_role key", async () => {
+  const chat = fakeFetch({ model: [textReply(REPORT)] });
+  const resChat = await handle(post(chatBody, { token: USER_JWT }), SAVE_ENV, chat.impl);
+  assert.deepEqual(await resChat.json(), { answer: REPORT, saved: false });
+  assert.equal(saveCalls(chat).length, 0);
+
+  const noId = fakeFetch({ model: [textReply(REPORT)] });
+  const body = { service: "impact", messages: [{ role: "user", content: "Health reform in Croatia" }] };
+  const resNoId = await handle(post(body, { token: USER_JWT }), SAVE_ENV, noId.impl);
+  assert.deepEqual(await resNoId.json(), { answer: REPORT, saved: false });
+  assert.equal(saveCalls(noId).length, 0);
+
+  const noKey = fakeFetch({ model: [textReply(REPORT)] });
+  const resNoKey = await handle(post(impactBody, { token: USER_JWT }), ENV, noKey.impl);
+  assert.deepEqual(await resNoKey.json(), { answer: REPORT, saved: false });
+  assert.equal(saveCalls(noKey).length, 0);
+});
+
+test("impact report saved with created_by null when the token has no uuid sub; sb_secret_ key sent as apikey only", async () => {
+  const f = fakeFetch({ model: [textReply(REPORT)] });
+  const res = await handle(post(impactBody), { ...ENV, SUPABASE_SERVICE_ROLE_KEY: "sb_secret_test" }, f.impl);
+  assert.deepEqual(await res.json(), { answer: REPORT, saved: true });
+  const [save] = saveCalls(f);
+  assert.equal(sent(save).created_by, null);
+  const h = new Headers(save.init.headers);
+  assert.equal(h.get("apikey"), "sb_secret_test");
+  assert.equal(h.get("Authorization"), null);
 });
