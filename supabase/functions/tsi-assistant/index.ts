@@ -749,25 +749,49 @@ export function jwtSub(authorization: string): string | null {
   }
 }
 
-export const SAVE_TIMEOUT_MS = 10000;
+export const SAVE_TIMEOUT_MS = 5000; // per call (project check, insert)
+export const SAVE_DEADLINE_MS = 145000; // from the start of the request: the page gives up at 160 s
 
-/** Inserts the impact report with the service_role key (RLS: no insert for testers). Never throws; failures are logged
- * without content. Returns whether the row was saved. */
-async function saveImpact(answer: string, messages: Message[], env: Env, fetchImpl: FetchImpl, authorization: string): Promise<boolean> {
+/** Inserts the impact report with the service_role key (RLS: no insert for testers), only when the answer has a score
+ * line and the project exists for the user (checked with the user's token; the stored title is the database's).
+ * Each call is bounded by min(SAVE_TIMEOUT_MS, time left before handlerStart + SAVE_DEADLINE_MS), at least 1 s.
+ * Never throws; failures are logged without content. Returns whether the row was saved. */
+async function saveImpact(answer: string, messages: Message[], env: Env, fetchImpl: FetchImpl, authorization: string,
+  apikey: string, handlerStart: number, now: () => number): Promise<boolean> {
   const key = env.SUPABASE_SERVICE_ROLE_KEY;
   const project = extractProject(messages);
-  if (!key || !env.SUPABASE_URL || !project) return false;
   const impact = parseImpact(answer);
+  if (!key || !env.SUPABASE_URL || !project || !impact) return false;
+  const timeout = () => Math.max(1000, Math.min(SAVE_TIMEOUT_MS, handlerStart + SAVE_DEADLINE_MS - now()));
+  try {
+    const check = await fetchImpl(`${env.SUPABASE_URL}/rest/v1/projects?project_id=${eq(project.project_id)}&select=title`, {
+      method: "GET", headers: { "apikey": apikey, "Authorization": authorization, "Accept": "application/json" },
+      signal: AbortSignal.timeout(timeout()),
+    });
+    if (!check.ok) {
+      console.log(JSON.stringify({ impactSave: "project check failed", status: check.status }));
+      return false;
+    }
+    const found = await check.json() as { title?: unknown }[];
+    if (!Array.isArray(found) || !found.length) {
+      console.log(JSON.stringify({ impactSave: "project not found" }));
+      return false;
+    }
+    if (typeof found[0]?.title === "string" && found[0].title) project.title = found[0].title;
+  } catch (e) {
+    console.log(JSON.stringify({ impactSave: isTimeout(e) ? "timeout" : "unreachable" }));
+    return false;
+  }
   const headers: Record<string, string> = { "apikey": key, "Content-Type": "application/json", "Prefer": "return=minimal" };
   if (!key.startsWith("sb_secret_")) headers["Authorization"] = `Bearer ${key}`; // sb_secret_ keys: apikey only
   const row = {
-    project_id: project.project_id, title: project.title, score: impact?.score ?? null, level: impact?.level ?? null,
-    confidence: impact?.confidence ?? null, verdict: extractVerdict(answer), report: answer,
+    project_id: project.project_id, title: project.title, score: impact.score, level: impact.level,
+    confidence: impact.confidence, verdict: extractVerdict(answer), report: answer,
     model: env.TSI_MODEL || DEFAULT_MODEL, source: "web", created_by: jwtSub(authorization),
   };
   try {
     const res = await fetchImpl(`${env.SUPABASE_URL}/rest/v1/impact_reports`, {
-      method: "POST", headers, body: JSON.stringify(row), signal: AbortSignal.timeout(SAVE_TIMEOUT_MS),
+      method: "POST", headers, body: JSON.stringify(row), signal: AbortSignal.timeout(timeout()),
     });
     if (!res.ok) {
       console.log(JSON.stringify({ impactSave: res.status }));
@@ -851,6 +875,7 @@ export async function handle(req: Request, env: Env, fetchImpl: FetchImpl, now: 
   if (!/^Bearer\s+\S+/i.test(authorization)) return reply(401, { error: "Missing bearer token" });
 
   const started = Date.now();
+  const handlerStart = now();
   let service = "?";
   let status = 500;
   const stats = emptyStats();
@@ -873,7 +898,7 @@ export async function handle(req: Request, env: Env, fetchImpl: FetchImpl, now: 
     const result = await agentLoop(valid.service, valid.messages, env, fetchImpl, now,
       { supabaseUrl: env.SUPABASE_URL, apikey, userAuth: authorization }, stats);
     const saved = valid.service === "impact"
-      ? await saveImpact(result.answer, valid.messages, env, fetchImpl, authorization)
+      ? await saveImpact(result.answer, valid.messages, env, fetchImpl, authorization, apikey, handlerStart, now)
       : false;
     status = 200;
     return reply(200, { answer: result.answer, saved });

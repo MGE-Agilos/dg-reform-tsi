@@ -77,6 +77,23 @@ def _score(value: Any) -> int | None:
     return score if 0 <= score <= 10 else None
 
 
+def _iso_date(value: Any) -> str | None:
+    """`generated` (date ou datetime, objet YAML ou texte ISO) en texte ISO ; None si illisible."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    for parse in (date.fromisoformat, datetime.fromisoformat):
+        try:
+            return parse(text).isoformat()
+        except ValueError:
+            continue
+    return None
+
+
 def impact_rows(output_dir: Path) -> list[dict[str, Any]]:
     """Lignes `impact_reports` (source 'local') depuis output/impact/*.md : front matter et corps du rapport.
 
@@ -95,7 +112,7 @@ def impact_rows(output_dir: Path) -> list[dict[str, Any]]:
         score = _score(fm.get("impact_score"))
         if score is None:
             continue
-        generated = str(fm.get("generated") or "").strip()
+        generated = _iso_date(fm.get("generated"))
         rows.append({"project_id": str(fm["project_id"]), "title": str(fm["title"]) if fm.get("title") else None,
                      "score": score, "level": _choice(fm.get("impact_level"), IMPACT_LEVELS),
                      "confidence": _choice(fm.get("confidence"), IMPACT_CONFIDENCE),

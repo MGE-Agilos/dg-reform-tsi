@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 import httpx
 import openpyxl
@@ -217,6 +218,25 @@ def test_impact_rows_reads_local_reports(tmp_path):
     assert rows[1]["level"] is None and rows[1]["created_at"]  # niveau inconnu -> null ; date de fichier a defaut
     assert all(set(r) == set(p1) for r in rows)  # memes cles pour l'insertion groupee PostgREST
     assert impact_rows(tmp_path / "missing") == []
+
+
+def test_impact_rows_generated_parsed_as_date_or_datetime_else_file_time(tmp_path):
+    from tsi_agent.supabase_sync import impact_rows
+    out = tmp_path / "output"
+    (out / "impact").mkdir(parents=True)
+    cases = {"a": "generated: 2026-10-07", "b": "generated: '2026-10-07T14:54:46+02:00'",
+             "c": "generated: 2026-10-07 14:54:46", "d": "generated: 'last tuesday'", "e": "generated: 12"}
+    for name, line in cases.items():
+        (out / "impact" / f"{name}.md").write_text(IMPACT.replace("p1", name).replace("generated: '2026-10-07'", line),
+                                                   encoding="utf-8")
+    got = {r["project_id"]: r["created_at"] for r in impact_rows(out)}
+    assert got["a"] == "2026-10-07"
+    assert got["b"] == "2026-10-07T14:54:46+02:00"
+    assert got["c"].startswith("2026-10-07T14:54:46")
+    for name in ("d", "e"):  # texte non date : date du fichier (ISO, UTC), jamais le texte brut
+        assert got[name] not in ("last tuesday", "12")
+        datetime.fromisoformat(got[name])
+        assert got[name].endswith("+00:00")
 
 
 def test_build_rows_includes_impact_reports(tmp_path):

@@ -603,9 +603,18 @@ test("extractVerdict, extractProject and jwtSub", () => {
 
 test("impact: the report is saved with the service_role key and the expected fields; response {answer, saved: true}", async () => {
   const f = fakeFetch({ model: [textReply(REPORT)] });
-  const res = await handle(post(impactBody, { token: USER_JWT }), { ...SAVE_ENV, TSI_MODEL: "claude-test-model" }, f.impl);
+  const body = { service: "impact", messages: [{ role: "user", content: "Project: Title typed in the page (id p1; TSI 2023; countries HR)" }] };
+  const res = await handle(post(body, { token: USER_JWT }), { ...SAVE_ENV, TSI_MODEL: "claude-test-model" }, f.impl);
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { answer: REPORT, saved: true });
+  const check = f.calls.find((c) => c.url.includes("/rest/v1/projects?"));
+  assert.ok(check, "project verified before saving");
+  assert.equal(check.url, "https://project.supabase.co/rest/v1/projects?project_id=eq.p1&select=title");
+  const ch = new Headers(check.init.headers);
+  assert.equal(ch.get("Authorization"), `Bearer ${USER_JWT}`, "verified with the user's token (RLS)");
+  assert.equal(ch.get("apikey"), "anon-test");
+  assert.ok(check.init.signal);
+  assert.ok(f.calls.indexOf(check) < f.calls.indexOf(saveCalls(f)[0]));
   const [save] = saveCalls(f);
   assert.ok(save, "insert called");
   assert.equal(save.url, "https://project.supabase.co/rest/v1/impact_reports");
@@ -616,8 +625,8 @@ test("impact: the report is saved with the service_role key and the expected fie
   assert.equal(h.get("Prefer"), "return=minimal");
   assert.equal(h.get("Content-Type"), "application/json");
   assert.ok(save.init.signal, "a timeout signal is set");
-  assert.equal(SAVE_TIMEOUT_MS, 10000);
-  assert.deepEqual(sent(save), {
+  assert.equal(SAVE_TIMEOUT_MS, 5000);
+  assert.deepEqual(sent(save), { // title from the database, not from the message
     project_id: "p1", title: "Health reform in Croatia", score: 7, level: "strong", confidence: "medium",
     verdict: "The reform was adopted and is used.", report: REPORT, model: "claude-test-model", source: "web", created_by: USER_ID,
   });
@@ -677,4 +686,42 @@ test("impact report saved with created_by null when the token has no uuid sub; s
   const h = new Headers(save.init.headers);
   assert.equal(h.get("apikey"), "sb_secret_test");
   assert.equal(h.get("Authorization"), null);
+});
+
+test("impact report not saved without a score line, nor when the project is not found with the user's token", async () => {
+  const noScore = fakeFetch({ model: [textReply("**Overall verdict:** Unclear.")] });
+  const res1 = await handle(post(impactBody, { token: USER_JWT }), SAVE_ENV, noScore.impl);
+  assert.deepEqual(await res1.json(), { answer: "**Overall verdict:** Unclear.", saved: false });
+  assert.equal(saveCalls(noScore).length, 0);
+
+  const unknown = fakeFetch({ model: [textReply(REPORT)], projects: [] });
+  const res2 = await handle(post(impactBody, { token: USER_JWT }), SAVE_ENV, unknown.impl);
+  assert.equal(res2.status, 200);
+  assert.deepEqual(await res2.json(), { answer: REPORT, saved: false });
+  assert.ok(unknown.calls.some((c) => c.url.includes("/rest/v1/projects?project_id=eq.p1")));
+  assert.equal(saveCalls(unknown).length, 0);
+});
+
+test("impact save bounded by the time left: min(5 s, start + 145 s - now), at least 1 s", async () => {
+  const orig = AbortSignal.timeout;
+  for (const [elapsed, expected] of [[0, 5000], [143000, 2000], [144800, 1000]]) {
+    let t = 0;
+    let lastMs = -1;
+    AbortSignal.timeout = (ms: number) => { lastMs = ms; return orig.call(AbortSignal, ms); };
+    const timeouts: Record<string, number> = {};
+    const base = fakeFetch({ model: [textReply(REPORT)] });
+    const impl = async (url: string, init: RequestInit) => {
+      if (url.startsWith("https://api.anthropic.com")) t = elapsed; // the analysis took `elapsed` ms
+      if (url.includes("/rest/v1/projects?")) timeouts.check = lastMs;
+      if (url.endsWith("/rest/v1/impact_reports")) timeouts.save = lastMs;
+      return base.impl(url, init);
+    };
+    try {
+      const res = await handle(post(impactBody, { token: USER_JWT }), SAVE_ENV, impl, () => t);
+      assert.deepEqual(await res.json(), { answer: REPORT, saved: true });
+    } finally {
+      AbortSignal.timeout = orig;
+    }
+    assert.deepEqual(timeouts, { check: expected, save: expected }, `elapsed ${elapsed}`);
+  }
 });
