@@ -130,12 +130,14 @@ def test_workflow_is_valid_yaml_with_expected_triggers_and_secrets():
     text = WORKFLOW.read_text(encoding="utf-8")
     wf = yaml.safe_load(text)
     on = wf[True] if True in wf else wf["on"]  # PyYAML lit la cle `on` comme un booleen
-    assert on["schedule"] == [{"cron": "0 3 1 * *"}]
+    # Plus de declenchement planifie : le site repond 429 aux runners GitHub sur le sitemap ; la mise a jour
+    # mensuelle tourne sur un PC (deploy/updater/register-task.ps1), le workflow reste un secours manuel.
+    assert set(on) == {"workflow_dispatch"} and "schedule" not in text
     inputs = on["workflow_dispatch"]["inputs"]
     assert {k: v["default"] for k, v in inputs.items()} == {
         "full": False, "recheck_all": False, "detail_only": True, "skip_deliverables": False, "publish_release": True,
         "sync_supabase": True}
-    assert wf["permissions"] == {"contents": "write", "actions": "write"}
+    assert wf["permissions"] == {"contents": "write"}
     job = wf["jobs"]["update"]
     assert job["timeout-minutes"] == 350 and job["runs-on"] == "ubuntu-latest"
     steps = job["steps"]
@@ -170,9 +172,8 @@ def test_workflow_is_valid_yaml_with_expected_triggers_and_secrets():
     # Supabase : une nouvelle tentative apres 60 s.
     sync = next(s for s in steps if "supabase-sync" in s.get("run", ""))
     assert sync["env"]["STEP_RETRY_AFTER_S"] == "60"
-    # Maintien du planning (desactive apres 60 jours sans activite).
-    keep = next(s for s in steps if "workflows/update-data.yml/enable" in s.get("run", ""))
-    assert str(keep["if"]).startswith("always()") and keep["continue-on-error"] is True
+    # Plus de maintien du planning ni de verification trimestrielle automatique (entree recheck_all gardee).
+    assert "workflows/update-data.yml/enable" not in text and "date -u +%m" not in text
     assert wf["concurrency"]["group"] == "update-data"
     uses = [s["uses"] for s in job["steps"] if "uses" in s]
     for action in ("actions/checkout@v4", "actions/setup-python@v5", "actions/setup-node@v4",
