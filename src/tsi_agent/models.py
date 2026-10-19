@@ -9,7 +9,9 @@ from tsi_agent.ids import sha256_text
 
 # SRSS : assistance technique a la Grece anterieure au SRSP (2012-2016, annexe du PDF SRSP).
 Programme = Literal["TSI", "SRSP", "SRSS"]
-PageKind = Literal["factsheet", "spotlight", "policy_area", "srsp_pdf", "programme_doc", "sitemap"]
+# "sitemap_stale" : copie ancienne du sitemap (cache HTTP d'un enfant, instantane de l'etat) ; decouverte seulement,
+# ses dates ne servent jamais a ne pas relire une page.
+PageKind = Literal["factsheet", "spotlight", "policy_area", "srsp_pdf", "programme_doc", "sitemap", "sitemap_stale"]
 
 
 class RawPage(BaseModel):

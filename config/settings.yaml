@@ -4,7 +4,12 @@ logs_dir: logs
 cache_dir: .cache/http
 user_agent: "TSI-Extraction-Agent/0.1 (DG REFORM project; polite crawler)"
 min_interval_s: 2.0   # le site renvoie des 429 au-delà d'environ 1 req/s soutenue
-sitemap_retry_wait_s: 180   # sitemap incomplet (HTTP 429) : attente avant une nouvelle lecture (une fois par run)
+sitemap_retry_wait_s: 180   # sitemap incomplet (HTTP 429) : attente avant une nouvelle lecture complete (une fois par run)
+sitemap_interval_s: 10   # entre deux requetes du sitemap (index, enfants)
+sitemap_attempts: 4   # tentatives par page du sitemap sur HTTP 429
+sitemap_backoff_s: [60, 120, 240]   # attentes entre ces tentatives (Retry-After si plus long)
+sitemap_budget_s: 1200   # toute la lecture, attentes comprises (pire cas ~22 min) ; ensuite copies anciennes pour la decouverte
+sitemap_failure_memory_s: 21600   # deliverables apres un run dont la lecture a echoue depuis moins de 6 h : une tentative rapide
 model: sonnet
 llm_timeout_s: 180
 max_concurrency: 2

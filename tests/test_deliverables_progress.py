@@ -184,3 +184,78 @@ def test_run_interrupted_mid_run_keeps_the_dates_of_completed_chunks(tmp_path):
     recorded = [e for e in LocalProjectStore(s.output_dir).all().values() if e.sitemap_lastmod]
     assert len(recorded) >= 20  # le 1er lot complet est enregistre
     assert len(recorded) < len([u for u in urls if is_canonical_detail(u)])
+
+
+# --- sans sitemap frais : publications connues et datees non relues ------------------------------------------------
+
+class ThrottledSite(CountingSite):
+    """Sitemap toujours en HTTP 429."""
+
+    def __init__(self, dates):
+        super().__init__(dates)
+        self.sitemap_calls = 0
+
+    def get(self, url, cache=True):
+        if url == SITEMAP:
+            self.sitemap_calls += 1
+            from tsi_agent.http import FetchError
+            raise FetchError(url, "HTTP 429", 429)
+        return super().get(url, cache)
+
+
+def dated_state(tmp_path):
+    store = seed_state(tmp_path)
+    run_deliverables(settings_for(tmp_path), sitemap_url=SITEMAP, run_id="d0",
+                     pipeline_factory=factory(tmp_path, CountingSite(DATES), store))
+    ds = DeliverableStore(tmp_path)
+    for pid, e in ds.all().items():  # au-dela de recheck_days
+        ds.put(e.model_copy(update={"processed": OLD}))
+    ds.save()
+    assert len(dated(tmp_path)) == N
+    return store
+
+
+def test_unavailable_sitemap_keeps_known_dated_publications_without_fetching(tmp_path):
+    from tsi_agent import __main__ as cli
+    store = dated_state(tmp_path)
+    before = {pid: e.sitemap_lastmod for pid, e in DeliverableStore(tmp_path).all().items()}
+    site = ThrottledSite(DATES)
+    summary = run_deliverables(settings_for(tmp_path), sitemap_url=SITEMAP, run_id="d1",
+                               pipeline_factory=factory(tmp_path, site, store))
+    assert site.pub_calls == [] and summary["skipped_no_sitemap"] == N
+    assert summary["sitemap_status"] == "stale" and summary["sitemap_read"] is False  # instantane de d0
+    assert summary["counts"]["classify:unchanged_no_sitemap"] == N
+    assert {pid: e.sitemap_lastmod for pid, e in DeliverableStore(tmp_path).all().items()} == before
+    assert cli.run_exit_code(summary) == 3
+
+
+def test_unavailable_sitemap_still_fetches_undated_publications_and_recheck_all(tmp_path):
+    store = dated_state(tmp_path)
+    ds = DeliverableStore(tmp_path)
+    ds.put(ds.get("pub-00").model_copy(update={"sitemap_lastmod": None}))
+    ds.save()
+    site = ThrottledSite(DATES)
+    summary = run_deliverables(settings_for(tmp_path), sitemap_url=SITEMAP, run_id="d1",
+                               pipeline_factory=factory(tmp_path, site, store))
+    assert site.pub_calls == [pub_url(0)] and summary["skipped_no_sitemap"] == N - 1
+    site = ThrottledSite(DATES)
+    run_deliverables(settings_for(tmp_path), sitemap_url=SITEMAP, run_id="d2", recheck_all=True,
+                     pipeline_factory=factory(tmp_path, site, store))
+    assert len(site.pub_calls) == N
+
+
+@pytest.mark.parametrize("recent, calls", [(True, 1), (False, None)])
+def test_deliverables_skips_the_patient_read_right_after_a_failed_run_read(tmp_path, recent, calls):
+    import json
+    import time
+    from tsi_agent.components.listing import STATUS_PATH
+    store = dated_state(tmp_path)
+    marker = tmp_path / STATUS_PATH
+    marker.write_text(json.dumps({"status": "unavailable", "at": time.time() - (60 if recent else 10 * 3600)}),
+                      encoding="utf-8")
+    s = settings_for(tmp_path)
+    site = ThrottledSite(DATES)
+    run_deliverables(s, sitemap_url=SITEMAP, run_id="d1", pipeline_factory=factory(tmp_path, site, store))
+    # Quelques minutes apres l'echec de `run` : une seule tentative ; sinon lecture patiente (+ nouvelle lecture).
+    assert site.sitemap_calls == (calls if calls is not None else 2 * s.sitemap_attempts)
+    assert json.loads(marker.read_text(encoding="utf-8"))["status"] == "stale"

@@ -31,11 +31,12 @@ class FetchResult:
 
 
 class FetchError(Exception):
-    def __init__(self, url: str, reason: str, status: int | None = None):
+    def __init__(self, url: str, reason: str, status: int | None = None, retry_after: float | None = None):
         super().__init__(f"{url}: {reason}")
         self.url = url
         self.reason = reason
         self.status = status
+        self.retry_after = retry_after  # en-tete Retry-After (s) de la derniere reponse 429, s'il y en avait un
 
 
 def _retry_after(resp: httpx.Response) -> float | None:
@@ -91,6 +92,7 @@ class PoliteFetcher:
                 headers["If-Modified-Since"] = meta["last_modified"]
         last_error = "unknown error"
         last_status: int | None = None
+        last_retry_after: float | None = None
         wait_s = self.backoff_s
         for attempt in range(1, self.retries + 1):
             t0 = time.monotonic()
@@ -123,13 +125,14 @@ class PoliteFetcher:
                 if resp.status_code == 429:
                     self._success_streak = 0
                     self._on_rate_limited(url)
-                    wait_s = max(wait_s, self.rate_limit_backoff_s, _retry_after(resp) or 0)
+                    last_retry_after = _retry_after(resp)
+                    wait_s = max(wait_s, self.rate_limit_backoff_s, last_retry_after or 0)
             if attempt < self.retries:
                 runlog.event(COMPONENT, "fetch", url, "retry", attempt=attempt, wait_s=wait_s, error=last_error)
                 self._sleep(wait_s)
                 wait_s *= 2
         runlog.event(COMPONENT, "fetch", url, "error", error=last_error, attempts=self.retries)
-        raise FetchError(url, last_error, last_status)
+        raise FetchError(url, last_error, last_status, retry_after=last_retry_after)
 
     # --- internes -----------------------------------------------------------------------
     def _request(self, url: str, headers: dict[str, str]) -> httpx.Response:

@@ -137,7 +137,10 @@ one, the English meaning is given in parentheses.
 | 7 | `prod-export` | writes one file per project, programme, publication and CSR, with its metadata, into `deploy\prod\build\files`, and the manifest | no |
 
 Exit codes: `0` done; `1` LLM quota reached (the next run resumes where it stopped); `2` fatal error (details in
-the `ERREUR` (error) message and in `logs\runs\`).
+the `ERREUR` (error) message and in `logs\runs\`); `3` (`run`, `deliverables`) the site sitemap could not be read (HTTP
+429): the step finished without it, known pages with a recorded date were not re-read and no date from an old copy
+was recorded; `update.ps1`
+continues with the next steps and ends with exit code `3`: run the update again later.
 
 **LLM check before any work.** `run`, `deliverables`, `csr-link` and `llm-check` first check the provider: known
 `llm_provider` setting, key present and, in `openai` mode, a very small test call. A refused key, URL
@@ -245,7 +248,8 @@ the run says so. A step that reaches its budget is interrupted; what it has writ
 included), the following steps run, and the next run continues the work.
 
 **Errors.** A step that stops on the LLM quota (exit code 1: `run`, `deliverables`, `csr-link`), reaches its time
-budget, a failed `csr-fetch` (ECFIN site down: the previous CSR export is kept) or a failed `supabase-sync` does
+budget, a `run` that could not read the sitemap (exit code 3: known detail pages not re-read, see the warning of
+the summary), a failed `csr-fetch` (ECFIN site down: the previous CSR export is kept) or a failed `supabase-sync` does
 not stop the following steps: the release is still published with what was done, then the job ends **in
 failure** so that GitHub sends an e-mail. Run the workflow again later: each step resumes where it stopped. A
 configuration error (exit code 2, for example a refused key) or a failed `csr-build`, `anomalies`, `prod-export`

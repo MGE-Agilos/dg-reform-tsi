@@ -9,7 +9,7 @@ from haystack import Pipeline
 
 from tsi_agent import runlog
 from tsi_agent.components.deliverables import META_FIELDS, project_meta
-from tsi_agent.config import Settings
+from tsi_agent.config import Settings, sitemap_options
 from tsi_agent.deliverables_state import DeliverableStore
 from tsi_agent.deliverables_pipeline import build_deliverables_pipeline
 from tsi_agent.index_pipeline import build_index_pipeline
@@ -92,11 +92,14 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
         llm_pages = 0
         skipped_by_sitemap = 0  # pages detail connues non relues : date du sitemap inchangee
         undated = fetch_failed = extract_failed = 0
-        sitemap_read = True  # sitemap complet lu a chaque lot (sinon : pages trouvees par lui ni vues ni dé-listees)
+        sitemap_read = True  # sitemap complet lu (une fois par run) ; sinon ses pages ni vues ni dé-listees
+        sitemap_status = "not_requested"
+        no_sitemap = 0  # pages detail connues non relues faute de sitemap frais
         while True:
             chunk_limit = None if dry_run else (chunk if budget is None else min(chunk, budget))
             data: dict[str, Any] = {
                 "listing": {"countries": countries},
+                "discoverer": {"refresh_sitemap_pages": recheck_all or full},
                 "detector": {"run_id": run.run_id, "full": full, "limit": chunk_limit,
                              "sitemap_skip": not recheck_all},
             }
@@ -106,10 +109,13 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
             out = pipeline.run(data, include_outputs_from={"discoverer", "judge", "detector", "detail_fetcher",
                                                           "extractor", "writer"})
             chunks += 1
-            sitemap_read = sitemap_read and bool(out.get("discoverer", {}).get("scope", {}).get("sitemap"))
-            run.extra["sitemap_read"] = sitemap_read
+            scope = out.get("discoverer", {}).get("scope", {})
+            sitemap_read = sitemap_read and bool(scope.get("sitemap"))
+            sitemap_status = scope.get("sitemap_status", sitemap_status)
+            run.extra.update({"sitemap_read": sitemap_read, "sitemap_status": sitemap_status})
             det = out["detector"]
-            skipped_by_sitemap += len(det.get("skipped", []))
+            no_sitemap += det.get("unchanged_no_sitemap", 0)
+            skipped_by_sitemap += len(det.get("skipped", [])) - det.get("unchanged_no_sitemap", 0)
             undated += det.get("undated", 0)
             if dry_run:
                 run.extra["dry_run"] = {"detail_candidates": len(det["detail"]), "thin_to_write": len(det["thin"]),
@@ -133,6 +139,7 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
                 break
         run.extra.update({"chunks": chunks, "quota_exceeded": quota, "written": written, "llm_pages": llm_pages,
                           "skipped_by_sitemap": skipped_by_sitemap, "detail_without_sitemap_date": undated,
+                          "skipped_no_sitemap": no_sitemap,
                           "duplicates_removed": written.get("duplicates_removed", 0),
                           "failed": fetch_failed + extract_failed, "fetch_failed": fetch_failed,
                           "extract_failed": extract_failed})
@@ -154,7 +161,7 @@ def seed_sitemap_lastmod(settings: Settings, sources: dict[str, Any], *, fetcher
             raise RuntimeError("sitemap_url absent de la configuration des sources")
         listing = SourceListingFetcher(sources=sources, cache_dir=settings.cache_dir,
                                        min_interval_s=settings.min_interval_s, user_agent=settings.user_agent,
-                                       sitemap_retry_wait_s=settings.sitemap_retry_wait_s)
+                                       **sitemap_options(settings))
         if fetcher is not None:
             listing._fetcher = fetcher
         pages = listing.fetch_sitemap()
@@ -219,19 +226,22 @@ def run_deliverables(settings: Settings, *, full: bool = False, limit: int | Non
         budget = limit
         chunks = 0
         quota = False
-        remaining = skipped = undated = fetched = 0
+        remaining = skipped = undated = fetched = no_sitemap = 0
+        sitemap_status = "not_requested"
         written: dict[str, int] = {}
         failed: list[str] = []
         while True:
             n = chunk if budget is None else min(chunk, budget)
             out = pipeline.run({"publications": {"full": full, "limit": n, "recheck_all": recheck_all,
                                                  "fetch_limit": settings.deliverables_fetch_chunk}},
-                               include_outputs_from={"publications", "texts", "summarizer", "writer"})
+                               include_outputs_from={"discoverer", "publications", "texts", "summarizer", "writer"})
             chunks += 1
             skipped += out["publications"].get("skipped", 0)
             undated += out["publications"].get("undated", 0)
             sent = len(out["publications"]["to_process"])
             chunk_fetched = out["publications"].get("fetched", 0)
+            no_sitemap += out["publications"].get("skipped_no_sitemap", 0)
+            sitemap_status = out.get("discoverer", {}).get("sitemap_status", sitemap_status)
             fetched += chunk_fetched
             remaining = out["publications"]["remaining"]
             for key, value in out["writer"]["stats"].items():
@@ -243,7 +253,9 @@ def run_deliverables(settings: Settings, *, full: bool = False, limit: int | Non
             if quota or remaining == 0 or (sent == 0 and chunk_fetched == 0) or (budget is not None and budget <= 0):
                 break
         run.extra.update({"mode": "deliverables", "chunks": chunks, "quota_exceeded": quota, "written": written,
-                          "publication_pages_fetched": fetched,
+                          "publication_pages_fetched": fetched, "skipped_no_sitemap": no_sitemap,
+                          "sitemap_status": sitemap_status,
+                          "sitemap_read": sitemap_status in ("fresh", "not_requested"),
                           "remaining_publications": remaining, "failed": sorted(set(failed)),
                           "skipped_by_sitemap": skipped, "publication_without_sitemap_date": undated})
     return run.final_summary

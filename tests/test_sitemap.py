@@ -90,8 +90,11 @@ def test_listing_skips_sitemap_in_pilot_runs_and_when_a_page_fails(tmp_path):
     fetcher = FakeFetcher(pages={SITEMAP: fixture_bytes("sitemap_index.xml"),
                                  PAGE1: fixture_bytes("sitemap_page.xml")}, default=default)
     with runlog.open_run(str(tmp_path), "r1"):
-        pages = listing(fetcher).run()["pages"]
-    assert not [p for p in pages if p.kind == "sitemap"]  # sitemap incomplet : rien plutot qu'une vue partielle
+        out = listing(fetcher).run()
+    # Sitemap incomplet : signale comme tel ; seul l'enfant lu maintenant est transmis (decouverte et dates sures de
+    # ses pages), sans que le sitemap compte comme lu (ni dé-listing, ni relecture de tout le corpus).
+    assert out["sitemap_status"] == "unavailable"
+    assert [p.url for p in out["pages"] if p.kind.startswith("sitemap")] == [PAGE1]
     events = (tmp_path / "runs" / "r1.jsonl").read_text(encoding="utf-8")
     assert "sitemap_incomplete" in events
 

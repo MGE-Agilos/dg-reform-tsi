@@ -8,7 +8,7 @@ from tsi_agent.chat.generator import LoggedChatGenerator
 from tsi_agent.components import (ChangeDetector, DetailPageFetcher, MarkdownProjectWriter, ProjectDiscoverer,
                                   ProjectExtractor, SourceListingFetcher)
 from tsi_agent.components.merge_judge import JUDGE_MODEL, JUDGE_SCHEMA, JUDGE_TIMEOUT_S, SitemapMergeJudge
-from tsi_agent.config import Settings
+from tsi_agent.config import Settings, sitemap_options
 from tsi_agent.llm import make_json_generator
 from tsi_agent.models import ProjectContent
 
@@ -32,8 +32,7 @@ def build_pipeline(settings: Settings, sources: dict[str, Any], *, dry_run: bool
     http = {"cache_dir": settings.cache_dir, "min_interval_s": settings.min_interval_s,
             "user_agent": settings.user_agent}
     p = Pipeline()
-    p.add_component("listing", SourceListingFetcher(sources=sources, sitemap_retry_wait_s=settings.sitemap_retry_wait_s,
-                                                    **http))
+    p.add_component("listing", SourceListingFetcher(sources=sources, **sitemap_options(settings), **http))
     p.add_component("discoverer", ProjectDiscoverer(sitemap_excluded_areas=sources.get("sitemap_excluded_areas"),
                                                     output_dir=settings.output_dir, **http))
     p.add_component("judge", SitemapMergeJudge(chat_generator=judge_generator or default_judge_generator(settings),
@@ -41,6 +40,7 @@ def build_pipeline(settings: Settings, sources: dict[str, Any], *, dry_run: bool
                                                **http))
     p.add_component("detector", ChangeDetector(output_dir=settings.output_dir))
     p.connect("listing.pages", "discoverer.pages")
+    p.connect("listing.sitemap_status", "discoverer.sitemap_status")
     p.connect("discoverer.refs", "judge.refs")
     p.connect("discoverer.report", "judge.report")
     p.connect("discoverer.excluded_thin_ids", "judge.excluded_thin_ids")

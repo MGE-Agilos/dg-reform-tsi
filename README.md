@@ -96,9 +96,30 @@ Déclarées dans `config/sources.yaml` :
 | Sitemap du site (`sitemap_url`) | Pages détail qu'aucun listing ne référence |
 | Documents programme (`programme_docs`) | Textes programme (performance TSI) |
 
-**Étape sitemap.** L'index `sitemap.xml` et ses pages (`sitemap.xml_en?page=N`) sont lus à chaque run
-complet (pas dans les runs pilotes `--countries`, comme le PDF SRSP ; tout ou rien : un sitemap incomplet est
-ignoré). Seules les URLs `.../technical-support-instrument-0/<domaine>/<slug>_en` sont retenues, hors rubriques
+**Étape sitemap.** L'index `sitemap.xml` et ses pages (`sitemap.xml_en?page=N`) sont lus une seule fois par
+run complet, au début, avant les listings (pas dans les runs pilotes `--countries`, comme le PDF SRSP) ; le
+résultat, échec compris, sert à tous les lots. Le site répond souvent HTTP 429 sur ces pages : requêtes espacées
+(`sitemap_interval_s`, 10 s), tentatives patientes (`sitemap_attempts` 4, attentes `sitemap_backoff_s` 60, 120,
+240 s ou `Retry-After`), puis une nouvelle lecture complète après `sitemap_retry_wait_s` (180 s). Chaque requête
+du sitemap est une seule tentative, sans attente cachée dans le client HTTP : toutes les attentes tiennent dans
+`sitemap_budget_s` (1200 s ; aucune requête après, `Retry-After` borné au budget restant), soit au pire environ
+22 min avec la durée des requêtes elles-mêmes. Le résultat est noté dans `output/state/sitemap_status.json` ;
+`deliverables`, lancé juste après dans le même job, ne refait pas la lecture patiente si celle de `run` a échoué
+il y a moins de `sitemap_failure_memory_s` (6 h) : une seule tentative rapide. Sans sitemap frais, `deliverables`
+garde de même les publications connues et datées sans relire leur page (`skipped_no_sitemap`) et sort avec le
+code 3. Une lecture complète est enregistrée dans `output/state/sitemap_snapshot.json`
+(URL -> `<lastmod>`, date de lecture). Si le sitemap reste incomplet, un enfant illisible est repris de sa copie
+du cache HTTP, sinon l'instantané est utilisé : ces copies anciennes servent **à la découverte seulement** (leurs
+dates ne servent jamais à ne pas relire une page, et un sitemap incomplet ne dé-liste rien). Sans sitemap frais,
+un run incrémental ne relit pas tout le corpus : les pages détail connues et datées sont gardées telles quelles
+(`classify:unchanged_no_sitemap`, `skipped_no_sitemap` dans le résumé), seules les pages nouvelles ou sans date
+sont lues, aucune date n'est enregistrée ; le résumé dit `sitemap_read: false` et `run` sort avec le code 3 (le
+workflow GitHub continue puis échoue à la fin, ce qui envoie un e-mail ; `--full` et `--recheck-all` relisent
+tout comme d'habitude). Une page du sitemap déjà connue comme page détail listée dans l'état n'est pas téléchargée
+pour la découverte (titre, programme et année de l'état) ; elle est relue si sa date change, et `--recheck-all` /
+`--full` la téléchargent quand même (une page disparue mais encore dans le sitemap est ainsi repérée). Une page
+dé-listée n'est jamais reprise de l'état.
+Seules les URLs `.../technical-support-instrument-0/<domaine>/<slug>_en` sont retenues, hors rubriques
 de `sitemap_excluded_areas` (pages de navigation `our-projects`, `our-projects-0`, `what-we-do`,
 `other-eu-support-opportunities`, `our-partners`, et `flagship-technical-support-projects` : ce sont des
 descriptions d'appels flagship, sans programme ni année, pas des pages projet). Chaque URL qui n'est la page

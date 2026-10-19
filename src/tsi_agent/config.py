@@ -11,7 +11,14 @@ class Settings(BaseModel):
     cache_dir: str = ".cache/http"
     user_agent: str = "TSI-Extraction-Agent/0.1 (DG REFORM project; polite crawler)"
     min_interval_s: float = 2.0
-    sitemap_retry_wait_s: float = 180  # sitemap incomplet (HTTP 429) : attente avant une nouvelle lecture
+    # Lecture du sitemap (une fois par run) : le site renvoie souvent des HTTP 429 sur ses pages.
+    sitemap_retry_wait_s: float = 180  # sitemap incomplet : attente avant une nouvelle lecture complete
+    sitemap_interval_s: float = 10  # entre deux requetes du sitemap (index, enfants)
+    sitemap_attempts: int = 4  # tentatives par page du sitemap sur HTTP 429
+    sitemap_backoff_s: list[float] = Field(default_factory=lambda: [60.0, 120.0, 240.0])  # Retry-After si plus long
+    sitemap_budget_s: float = 1200  # toute la lecture (attentes comprises) ; ensuite copies anciennes
+    # `deliverables` apres un `run` dont la lecture a echoue depuis moins de N s : une tentative rapide seulement.
+    sitemap_failure_memory_s: float = 21600
     model: str = "sonnet"
     llm_timeout_s: int = 180
     max_concurrency: int = 2
@@ -61,6 +68,13 @@ class Settings(BaseModel):
     impact_llm_timeout_s: int = 600  # le rapport final est long
     web_search_model: str = "haiku"
     web_search_timeout_s: int = 180
+
+
+def sitemap_options(settings: Settings) -> dict[str, Any]:
+    """Parametres de lecture du sitemap de SourceListingFetcher (instantane dans le dossier de l'etat)."""
+    return {"sitemap_retry_wait_s": settings.sitemap_retry_wait_s, "sitemap_interval_s": settings.sitemap_interval_s,
+            "sitemap_attempts": settings.sitemap_attempts, "sitemap_backoff_s": list(settings.sitemap_backoff_s),
+            "sitemap_budget_s": settings.sitemap_budget_s, "output_dir": settings.output_dir}
 
 
 def load_settings(path: str | Path = "config/settings.yaml") -> Settings:
