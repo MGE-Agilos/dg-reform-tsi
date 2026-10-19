@@ -97,6 +97,62 @@ function hashLink(route, id, label) {
   return `<a href="#${route}/${encodeURIComponent(id)}">${esc(label)}</a>`;
 }
 
+function deslug(text) {
+  const t = String(text ?? "").replace(/[-_]+/g, " ").trim();
+  return t ? t[0].toUpperCase() + t.slice(1) : "";
+}
+
+/**
+ * What a project's source URL is: a real project page, or the listing where only its title appears
+ * (TSI country factsheet, SRSP PDF list of approved requests, policy-area or other listing page).
+ * listing: true forces the listing reading (project without a detail page). Returns null for a non-https URL.
+ */
+function sourceInfo(url, { listing = false } = {}) {
+  const u = safeUrl(url);
+  if (!u) return null;
+  let path;
+  try { path = new URL(u).pathname; } catch { return null; }
+  let last = path.split("/").filter(Boolean).pop() || "";
+  try { last = decodeURIComponent(last); } catch { /* keep raw */ }
+  last = last.replace(/\.pdf$/i, "").replace(/_[a-z]{2}$/, "");
+  const sheet = /\/tsi-country-factsheets\/([^/]+?)(?:_[a-z]{2})?\/?$/i.exec(path);
+  if (sheet) {
+    const slug = sheet[1].toLowerCase();
+    const name = Object.values(COUNTRIES).find((n) => n.toLowerCase().replace(/\s+/g, "-") === slug) || slug;
+    return { url: u, listing: true, label: `Listed in: ${name} country factsheet` };
+  }
+  if (/\.pdf$/i.test(path)) return { url: u, listing: true, label: "Listed in: SRSP list of approved requests (PDF)" };
+  const area = Object.hasOwn(POLICY_AREAS, last);
+  if (area || /\/our-projects\//.test(path) || listing) {
+    return { url: u, listing: true, label: `Listed in: ${area ? POLICY_AREAS[last] : deslug(last) || "listing"} page` };
+  }
+  return { url: u, listing: false, label: "Project page" };
+}
+
+function sourceLink(info) {
+  return info ? `${extLink(info.url, info.label)} ↗` : "";
+}
+
+/** Project page: the Commission's page, or (no detail page) the listing it is known from. */
+function projectSourceHtml(r) {
+  const src = sourceInfo(r.url, { listing: !r.detail_page });
+  if (!src) return "";
+  if (!src.listing) return `<p>${extLink(src.url, "Project page")} ↗</p>`;
+  return `<p>${sourceLink(src)}${r.detail_page ? ""
+    : `<br><span class="muted small">No project page published by the Commission; known only from this listing.</span>`}</p>`;
+}
+
+/** Anomalies table, title cell: a listing URL is shown as the source, not as the project's link. */
+function anomalyTitleCell(r) {
+  const src = sourceInfo(r.url);
+  if (!src?.listing) {
+    return r.project_id ? hashLink("project", r.project_id, r.title || r.project_id) : extLink(r.url, r.title || r.url || "—");
+  }
+  const title = r.project_id ? hashLink("project", r.project_id, r.title || r.project_id) : esc(r.title || "—");
+  const note = ["tsi_not_published", "srsp_title_only"].includes(r.type) ? ` <span class="muted">· no project page published</span>` : "";
+  return `${title}<div class="small source-line">${sourceLink(src)}${note}</div>`;
+}
+
 /** Current route: { route, id, params } from location.hash. */
 function params() {
   const raw = location.hash.replace(/^#/, "");
@@ -383,7 +439,7 @@ async function renderProject(id, seq) {
   const [lnCountry, lnYears] = [...byCountry.entries()].sort((a, b) => b[1].length - a[1].length)[0] || [];
   const lineage = lnCountry
     ? ` <a class="btn btn-secondary" href="${esc(lineageHref(lnCountry, lnYears, `project:${r.project_id}`))}">Show lineage</a>` : "";
-  const page = (safeUrl(r.url) ? `<p>${extLink(r.url, "Project page")} ↗</p>` : "")
+  const page = projectSourceHtml(r)
     + `<p class="toolbar-actions"><a class="btn btn-secondary" href="#impact/${encodeURIComponent(r.project_id)}">Impact analysis</a>${lineage}</p>`;
   const summary = r.summary
     ? `<div class="card"><h3 class="section-label">Summary <span class="ai-note">AI-generated summary</span></h3><p class="prose">${esc(r.summary)}</p></div>`
@@ -525,7 +581,7 @@ async function renderAnomalies(p, seq) {
     + yearField("from", "From year", f.from) + yearField("to", "To year", f.to)
     + countriesSelect(f.country));
   const rows = data.map((r) => [
-    td(r.project_id ? hashLink("project", r.project_id, r.title || r.project_id) : extLink(r.url, r.title || r.url || "—"), "title-cell"),
+    td(anomalyTitleCell(r), "title-cell"),
     td(esc(ANOMALY_TYPES[r.type] || r.type)), td(badge(r.severity)), td(esc(r.programme)), td(esc(r.year), "nowrap"),
     td(esc(r.countries)), td(esc(r.detail)),
   ]);
@@ -1775,6 +1831,7 @@ function lineageModel(rows, scores, { unlinked = false, country = "" } = {}) {
     summary: {
       csrs: csrList.length, csrsLinked: linkedCsrs.size, projects: projectList.length,
       links: edgeList.length, direct: edgeList.filter((e) => e.level === "direct").length,
+      subLinks: edgeList.reduce((n, e) => n + e.parts.length, 0),
     },
   };
 }
@@ -1924,9 +1981,12 @@ function lineageLegend() {
     + `<ul class="viz-legend"><li class="muted">Programme:</li>${PROGRAMMES.map((p) => sw(programmeKey(p), p)).join("")}</ul></div>`;
 }
 
-function lineageSummary(s) {
-  return `${fmtN(s.csrs)} CSR${s.csrs === 1 ? "" : "s"} (${fmtN(s.csrsLinked)} with at least one project) · `
-    + `${fmtN(s.projects)} project${s.projects === 1 ? "" : "s"} · ${fmtN(s.links)} link${s.links === 1 ? "" : "s"} (${fmtN(s.direct)} direct)`;
+function lineageSummary(s, { country = "", from = null, to = null } = {}) {
+  const plural = (n, word) => `${fmtN(n)} ${word}${n === 1 ? "" : "s"}`;
+  const where = [country ? countryName(country) : "", from && to ? (from === to ? String(from) : `${from}–${to}`) : ""].filter(Boolean).join(", ");
+  return `${where ? `${where}: ` : ""}${plural(s.csrs, "CSR")} (${fmtN(s.csrsLinked)} with at least one project) · `
+    + `${plural(s.projects, "project")} · ${plural(s.links, "CSR–project pair")} (${fmtN(s.direct)} direct)`
+    + ` from ${plural(s.subLinks ?? s.links, "sub-part link")}`;
 }
 
 /** Detail panel of the pinned node (links to the CSR or project page). */
@@ -1953,7 +2013,7 @@ function lineageDetail(model, key) {
     const c = csrs.get(e.csr) || {};
     return `<li>${badge(e.level)} ${hashLink("csr", e.csr, `${model.country} ${c.year} · CSR ${c.number}`)} <span class="muted small">${esc(c.title)}</span></li>`;
   }).join("");
-  const page = safeUrl(p.url) ? ` · ${extLink(p.url, "Project page")} ↗` : "";
+  const page = p.url && sourceInfo(p.url) ? ` · ${sourceLink(sourceInfo(p.url))}` : "";
   return `<h3>${esc(p.title)}</h3><p class="small muted">${esc([p.programme, p.year, p.results ? `results ${p.results}` : "",
     Number.isFinite(p.score) ? `impact score ${p.score}/10` : ""].filter(Boolean).join(" · "))}</p>`
     + `<ul class="ln-list">${items}</ul><p>${hashLink("project", p.id, "Open the project")}${page}</p>`;
@@ -2196,7 +2256,7 @@ async function renderLineage(p, seq) {
   const model = lineageModel(res.csrs, res.scores, { unlinked, country });
   const head = `${heading(`Lineage · ${countryName(country)}`)}${intro}${form}`;
   if (!model.edges.length) {
-    view(`${head}<p class="muted small">${esc(lineageSummary(model.summary))}</p>`
+    view(`${head}<p class="muted small">${esc(lineageSummary(model.summary, { country, from, to }))}</p>`
       + `<div class="card"><p class="empty">No project is linked to a CSR of ${esc(countryName(country))} between ${from} and ${to}.</p>`
       + `<p><a href="${esc(hrefFor("projects", { country }))}">See the projects of ${esc(countryName(country))}</a></p></div>`);
     bindFilters();
@@ -2204,7 +2264,7 @@ async function renderLineage(p, seq) {
     return;
   }
   lineageState = { model, country, pinned: null, layout: null, width: 0 };
-  view(`${head}<p class="ln-summary"><strong>${esc(lineageSummary(model.summary))}</strong></p>`
+  view(`${head}<p class="ln-summary"><strong>${esc(lineageSummary(model.summary, { country, from, to }))}</strong></p>`
     + `<div class="card ln-card">${lineageLegend()}`
     + `<div id="ln-wrap" class="ln-wrap"><div class="ln-cols" aria-hidden="true"><span>CSRs</span><span>Projects</span></div>`
     + `<div id="ln-graph" class="ln-graph"></div><div id="ln-tip" class="viz-tip ln-tip" role="tooltip" hidden></div></div>`
