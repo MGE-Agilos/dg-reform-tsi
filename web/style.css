@@ -426,3 +426,32 @@ a.viz-mark { cursor: pointer; }
   .ln-line { stroke: CanvasText; }
   .ln-edge.on .ln-line { stroke: Highlight; }
 }
+
+/* "About this chart" buttons and the shared dialog. */
+.title-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.title-row > h2, .title-row > h4 { margin-bottom: 0; }
+div.title-row:has(> h2) { margin-bottom: 12px; }
+.info-btn {
+  display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; min-width: 26px; padding: 0;
+  border: 1px solid var(--border); border-radius: 50%; background: var(--card); color: var(--accent);
+  font-size: 15px; line-height: 1; cursor: pointer; vertical-align: middle; font-weight: 400; text-transform: none; letter-spacing: 0;
+}
+.info-btn:hover { background: var(--accent-soft); }
+.info-dialog {
+  width: min(640px, calc(100vw - 2 * var(--gutter))); max-height: min(80vh, 720px); padding: 0;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); color: var(--fg);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+.info-dialog::backdrop { background: rgba(11, 18, 32, 0.55); }
+.info-inner { display: flex; flex-direction: column; max-height: min(80vh, 720px); }
+.info-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 18px 10px; border-bottom: 1px solid var(--border); }
+.info-head h2 { margin: 0; font-size: 1.15rem; overflow-wrap: anywhere; }
+.info-body { padding: 4px 18px 16px; overflow-y: auto; overscroll-behavior: contain; overflow-wrap: anywhere; }
+.info-body h3 { font-size: 1rem; margin: 14px 0 6px; }
+.info-body p, .info-body ul { margin: 8px 0; }
+.info-body ul { padding-left: 20px; }
+.info-body li { margin: 4px 0; }
+.info-dl { margin: 6px 0; }
+.info-dl dt { font-weight: 600; margin-top: 8px; }
+.info-dl dd { margin: 2px 0 0; }
+
