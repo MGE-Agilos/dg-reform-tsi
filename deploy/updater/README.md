@@ -170,7 +170,9 @@ kept.
   page whose sitemap date has not changed is **not read again** (`skipped_by_sitemap` in the summary of the run),
   whatever `deliverables_recheck_days`. The first `deliverables` on a state without publication dates reads every
   publication page once (about 540 pages: more than an hour) and records the dates. The publication links of a
-  detail page that `run` did not download again are taken from the state. `deliverables --recheck-all` reads
+  detail page that `run` did not download again are taken from the state (`publication_urls`, recorded by `run`
+each time it reads a detail page; a state without them gets one full check `run --recheck-all` in the
+workflow). `deliverables --recheck-all` reads
   every publication page again whatever its date (only publications whose files changed are summarised again;
   pages processed less than `deliverables_recheck_days` ago are still not reread, so that a resumed run does not
   start over); `deliverables --full` reprocesses everything.
@@ -202,7 +204,8 @@ in GitHub, without a PC. The LLM is the Claude Code CLI (`llm_provider: claude_c
 **Schedule.** The 1st of each month at 03:00 UTC. In January, April, July and October, the scheduled run is a
 **full check** (`run --recheck-all` and `deliverables --recheck-all`): every detail page and every publication
 page is read again whatever its sitemap date, in case the site changed a page without changing its date; only
-the pages whose text (or files) changed go to the LLM.
+the pages whose text (or files) changed go to the LLM. It also catches a PDF replaced under the same publication
+page, and a project page whose date did not change when a publication was added to it.
 
 GitHub **disables a scheduled workflow after 60 days without activity in the repository** (no commit). To avoid
 it, the last step of each run re-enables the workflow through the API (`permissions: actions: write`). If the
@@ -230,7 +233,7 @@ top of the workflow:
 | Step | Budget (minutes) |
 |---|---|
 | `run`, incremental | `RUN_BUDGET_MIN` (60) |
-| `run`, full check or `--full` (quarterly, input, or state without detail dates) | `RUN_RECHECK_BUDGET_MIN` (150) |
+| `run`, full check or `--full` (quarterly, input, or state without detail dates or publication links) | `RUN_RECHECK_BUDGET_MIN` (150) |
 | `deliverables` | `DELIVERABLES_BUDGET_MIN` (75) |
 | `deliverables`, state without publication dates (every page is read once) | `DELIVERABLES_FIRST_BUDGET_MIN` (150) |
 | `csr-link` | `CSR_LINK_BUDGET_MIN` (60) |

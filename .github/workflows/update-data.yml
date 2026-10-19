@@ -157,6 +157,11 @@ jobs:
             echo "HAS_SITEMAP_DATES=false" >> "$GITHUB_ENV"
             echo "::notice::The state has no sitemap dates yet: this run re-reads every detail page (run --recheck-all) and records them"
           fi
+          if python -c 'import json, sys; d = json.load(open("output/state/index.json", encoding="utf-8")); sys.exit(0 if any(e.get("publication_urls") is not None for e in d.get("projects", {}).values()) else 1)'; then
+            echo "HAS_PUBLICATION_LINKS=true" >> "$GITHUB_ENV"
+          else
+            echo "HAS_PUBLICATION_LINKS=false" >> "$GITHUB_ENV"
+          fi
           if python -c 'import json, sys; d = json.load(open("output/state/deliverables.json", encoding="utf-8")); sys.exit(0 if any(e.get("sitemap_lastmod") for e in d.get("publications", {}).values()) else 1)'; then
             echo "HAS_PUBLICATION_DATES=true" >> "$GITHUB_ENV"
           else
@@ -170,6 +175,7 @@ jobs:
           RECHECK: ${{ steps.mode.outputs.recheck }}
         run: |
           deliverables_args=""
+          run_note=""
           if [ "$FULL" = true ]; then
             run_args="--full"; run_label="full re-extraction"; run_budget=$RUN_RECHECK_BUDGET_MIN
           elif [ "$RECHECK" = true ]; then
@@ -177,6 +183,10 @@ jobs:
             deliverables_args="--recheck-all"
           elif [ "${HAS_SITEMAP_DATES:-false}" != true ]; then
             run_args="--recheck-all"; run_label="full check"; run_budget=$RUN_RECHECK_BUDGET_MIN
+            run_note="Projects: the state has no sitemap dates yet, so every detail page is read once (run --recheck-all) and its date recorded."
+          elif [ "${HAS_PUBLICATION_LINKS:-false}" != true ]; then
+            run_args="--recheck-all"; run_label="full check"; run_budget=$RUN_RECHECK_BUDGET_MIN
+            run_note="Projects: the state has no publication links yet, so every detail page is read once (run --recheck-all) to record them for the deliverables step."
           else
             run_args=""; run_label=incremental; run_budget=$RUN_BUDGET_MIN
           fi
@@ -205,8 +215,10 @@ jobs:
             echo "csr_link_budget=$csr_link_budget"
             echo "csr_link_timeout=$(( csr_link_budget + 10 ))"
             echo "note=$note"
+            echo "run_note=$run_note"
           } >> "$GITHUB_OUTPUT"
           echo "run: ${run_label} ${run_args} (${run_budget} min); deliverables ${deliverables_args} (${deliverables_budget} min); csr-link ${csr_link_budget} min"
+          if [ -n "$run_note" ]; then echo "::notice::$run_note"; fi
           if [ -n "$note" ]; then echo "::notice::$note"; fi
 
       # HTTP cache: fewer downloads (always revalidated with ETag / Last-Modified, so never stale). The official
@@ -309,6 +321,7 @@ jobs:
           SINCE: ${{ steps.mode.outputs.since }}
           RUN_MODE: ${{ steps.plan.outputs.run_label }}
           PLAN_NOTE: ${{ steps.plan.outputs.note }}
+          PLAN_RUN_NOTE: ${{ steps.plan.outputs.run_note }}
         run: |
           args=(--runs-dir logs/runs --work-dir "$CI_WORK" --manifest deploy/prod/build/manifest.json)
           if [ -n "${SINCE:-}" ]; then args+=(--since "$SINCE"); fi
@@ -318,6 +331,7 @@ jobs:
             args+=(--release-tag "$RELEASE_TAG" --release-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG")
           fi
           if [ -n "${PARTIAL_ARTIFACT:-}" ]; then args+=(--partial-artifact "$PARTIAL_ARTIFACT"); fi
+          if [ -n "${PLAN_RUN_NOTE:-}" ]; then args+=(--note "$PLAN_RUN_NOTE"); fi
           if [ -n "${PLAN_NOTE:-}" ]; then args+=(--note "$PLAN_NOTE"); fi
           python .github/scripts/ci_summary.py "${args[@]}" >> "$GITHUB_STEP_SUMMARY"
 

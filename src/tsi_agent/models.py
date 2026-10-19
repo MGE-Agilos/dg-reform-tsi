@@ -40,6 +40,8 @@ class ProjectRef(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     # Date <lastmod> du sitemap pour la page detail (mode incremental) ; hors listing_hash : ce n'est pas du listing.
     sitemap_lastmod: str | None = None
+    # Liens /publications-0/ lus sur la page detail par `run` (None : page non lue ce run) ; hors listing_hash.
+    publication_urls: list[str] | None = None
 
     @property
     def detail_page(self) -> bool:

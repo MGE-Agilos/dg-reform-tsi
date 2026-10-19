@@ -9,7 +9,7 @@ from tsi_agent.models import ProgrammeDoc, ProjectRecord, ProjectRef
 from tsi_agent.render import (deliverables_section, detail_body, front_matter, parse_front_matter,
                               programme_doc_text, render, replace_deliverables_section, replace_listing_tail,
                               source_urls, thin_body, with_deliverables_count)
-from tsi_agent.store import ProjectStore, file_stem, shared_store, StoreEntry
+from tsi_agent.store import ProjectStore, file_stem, merge_publication_urls, shared_store, StoreEntry
 
 NAME = "MarkdownProjectWriter"
 THIN_FLUSH_EVERY = 100  # l'index est réécrit en entier : on groupe les projets thin
@@ -41,23 +41,26 @@ class MarkdownProjectWriter:
         return min(dates) if dates else today
 
     def _entry(self, ref: ProjectRef, file: str, first_seen: str, today: str,
-               content_hash: str | None, listing_hash: str, sitemap_lastmod: str | None = None) -> StoreEntry:
+               content_hash: str | None, listing_hash: str, sitemap_lastmod: str | None = None,
+               publication_urls: list[str] | None = None) -> StoreEntry:
         return StoreEntry(project_id=ref.project_id, file=file, programme=ref.programme,
                           detail_page=ref.detail_page, content_hash=content_hash,
                           listing_hash=listing_hash, source_urls=source_urls(ref),
                           countries=list(ref.countries), first_seen=first_seen, last_updated=today,
                           listed=True, aliases=list(ref.aliases), sitemap_lastmod=sitemap_lastmod,
-                          title=ref.title, year=ref.year)
+                          title=ref.title, year=ref.year, publication_urls=publication_urls)
 
-    def _record_lastmod(self, ref: ProjectRef) -> None:
-        """Page detail relue (changee ou non) : sa date du sitemap devient la reference du mode incremental."""
-        if not ref.sitemap_lastmod:
-            return  # run sans sitemap (pilote, sitemap incomplet) : on garde la date connue
+    def _record_read(self, ref: ProjectRef) -> None:
+        """Page detail relue et inchangee : sa date du sitemap devient la reference du mode incremental (sans date :
+        run pilote ou sitemap incomplet, on garde la connue) et ses liens de publication sont enregistres."""
         store = self._get_store()
         entry = store.get(ref.project_id)
-        if entry is not None and entry.sitemap_lastmod != ref.sitemap_lastmod:
-            entry.sitemap_lastmod = ref.sitemap_lastmod
-            store.put(entry, save=False)
+        if entry is None:
+            return
+        lastmod = ref.sitemap_lastmod or entry.sitemap_lastmod
+        links = merge_publication_urls(ref.project_id, entry.publication_urls, ref.publication_urls)
+        if (lastmod, links) != (entry.sitemap_lastmod, entry.publication_urls):
+            store.put(entry.model_copy(update={"sitemap_lastmod": lastmod, "publication_urls": links}), save=False)
 
     def _replace_aliases(self, ref: ProjectRef) -> None:
         store = self._get_store()
@@ -104,7 +107,9 @@ class MarkdownProjectWriter:
         self._replace_aliases(ref)
         # Hash de la vue listing : c'est à elle que le prochain run comparera (pas au ref enrichi).
         lastmod = ref.sitemap_lastmod or (stored.sitemap_lastmod if stored else None)
-        store.put(self._entry(ref, file, first_seen, today, rec.content_hash, rec.listing_hash, lastmod))
+        links = merge_publication_urls(ref.project_id, stored.publication_urls if stored else None,
+                                       ref.publication_urls)
+        store.put(self._entry(ref, file, first_seen, today, rec.content_hash, rec.listing_hash, lastmod, links))
         runlog.event(NAME, "write", ref.project_id, "detail", file=file)
         return file
 
@@ -194,7 +199,7 @@ class MarkdownProjectWriter:
                     stats["refreshed"] += 1
                     runlog.event(NAME, "write", ref.project_id, "refreshed_front_matter")
                 if id(ref) in reread:
-                    self._record_lastmod(ref)
+                    self._record_read(ref)
             except OSError as exc:
                 failed(ref.project_id, exc)
         store.flush()

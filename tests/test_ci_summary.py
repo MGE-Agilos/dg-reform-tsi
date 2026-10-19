@@ -202,7 +202,8 @@ def run_plan(tmp_path, **env):
     out = tmp_path / "out.txt"
     full_env = {**{k: str(v) for k, v in wf["env"].items()}, "GITHUB_OUTPUT": out.as_posix(),
                 "PATH": __import__("os").environ["PATH"], "FULL": "false", "RECHECK": "false",
-                "HAS_SITEMAP_DATES": "true", "HAS_PUBLICATION_DATES": "true", **env}
+                "HAS_SITEMAP_DATES": "true", "HAS_PUBLICATION_DATES": "true",
+                "HAS_PUBLICATION_LINKS": "true", **env}
     subprocess.run([bash, script.as_posix()], env=full_env, check=True, capture_output=True)
     return dict(line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines() if "=" in line)
 
@@ -211,6 +212,7 @@ def test_plan_incremental_month(tmp_path):
     plan = run_plan(tmp_path)
     assert (plan["run_args"], plan["run_label"], plan["run_budget"]) == ("", "incremental", "60")
     assert (plan["deliverables_budget"], plan["csr_link_budget"], plan["note"]) == ("75", "60", "")
+    assert plan["run_note"] == ""
     assert plan["run_timeout"] == "70" and plan["deliverables_timeout"] == "85" and plan["csr_link_timeout"] == "70"
 
 
@@ -229,3 +231,12 @@ def test_plan_budgets_stay_within_the_total_for_a_full_check(tmp_path):
     assert run_plan(tmp_path, RECHECK="true")["run_args"] == "--recheck-all"
     assert run_plan(tmp_path, HAS_SITEMAP_DATES="false")["run_label"] == "full check"
     assert run_plan(tmp_path, FULL="true")["run_args"] == "--full"
+
+
+def test_plan_state_without_publication_links_rereads_every_detail_page(tmp_path):
+    plan = run_plan(tmp_path, HAS_PUBLICATION_LINKS="false")
+    assert (plan["run_args"], plan["run_label"], plan["run_budget"]) == ("--recheck-all", "full check", "150")
+    assert "publication links" in plan["run_note"]
+    both = run_plan(tmp_path, HAS_PUBLICATION_LINKS="false", HAS_PUBLICATION_DATES="false")
+    assert int(both["run_budget"]) + int(both["deliverables_budget"]) + int(both["csr_link_budget"]) <= 300
+    assert run_plan(tmp_path, HAS_PUBLICATION_LINKS="false", FULL="true")["run_args"] == "--full"

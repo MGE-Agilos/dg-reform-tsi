@@ -29,7 +29,7 @@ from tsi_agent.parsers.publication import files_key, parse_publication, publicat
 from tsi_agent.parsers.sitemap import not_modified_since, sitemap_lastmods
 from tsi_agent.render import (deliverables_section, parse_front_matter, render, replace_deliverables_section,
                               with_deliverables_count)
-from tsi_agent.store import ProjectStore, _retry_on_lock, file_stem, shared_store
+from tsi_agent.store import ProjectStore, _retry_on_lock, file_stem, merge_publication_urls, shared_store
 
 
 class _Http:
@@ -97,7 +97,7 @@ class PublicationDiscoverer(_Http):
                 continue
             html = fetcher.cached(entry.source_urls[0])  # source_urls[0] = page detail (render.source_urls)
             if html is not None:
-                links = publication_links(html)
+                links = merge_publication_urls(project_id, entry.publication_urls, publication_links(html)) or []
                 if entry.publication_urls != links:
                     store.put(entry.model_copy(update={"publication_urls": links}), save=False)
                     remembered = True
