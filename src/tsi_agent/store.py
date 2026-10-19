@@ -51,6 +51,8 @@ class StoreEntry(BaseModel):
     # Titre et annee officiels (page detail) : indices de la fusion floue quand la page n'est pas relue.
     title: str | None = None
     year: int | None = None
+    # Liens de publication lus sur la page detail (etage livrables) : repris quand la page n'est pas relue.
+    publication_urls: list[str] | None = None
 
 
 class ProjectStore(Protocol):

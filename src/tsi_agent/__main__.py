@@ -79,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
     index.add_argument("--full", action="store_true", help="revectoriser tous les fichiers")
     deliv = sub.add_parser("deliverables", help="livrables des projets (publications PDF) : texte et résumé IA")
     deliv.add_argument("--full", action="store_true", help="retraiter toutes les publications")
+    deliv.add_argument("--recheck-all", action="store_true",
+                       help="relire toutes les pages de publication sans tenir compte des dates du sitemap ; seules "
+                            "celles dont les fichiers ont changé sont retraitées (contrairement à --full)")
     deliv.add_argument("--limit", type=int, help="nombre maximal de publications envoyées au LLM")
     deliv.add_argument("--chunk-size", type=int)
     deliv.add_argument("--model")
@@ -363,7 +366,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(refresh_deliverables_metadata(settings), indent=2, ensure_ascii=False))
                 return 0
             summary = run_deliverables(settings, full=args.full, limit=args.limit, chunk_size=args.chunk_size,
-                                       model=args.model)
+                                       model=args.model, recheck_all=args.recheck_all,
+                                       sitemap_url=sources.get("sitemap_url"))
         except Exception as exc:
             print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)

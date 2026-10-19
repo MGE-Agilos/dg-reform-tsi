@@ -132,6 +132,7 @@ class Publication(BaseModel):
     meta: dict[str, str] = Field(default_factory=dict)
     files: list[PublicationFile] = Field(default_factory=list)  # fichiers retenus (anglais en priorite)
     files_key: str | None = None
+    sitemap_lastmod: str | None = None  # date <lastmod> du sitemap de la page de publication (mode incremental)
 
 
 class DeliverableFileText(BaseModel):
