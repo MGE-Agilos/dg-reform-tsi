@@ -212,3 +212,51 @@ def test_ci_run_removes_the_duplicates_published_by_the_faulty_run(ci):
     assert summary["duplicates_removed"] == 1 and summary["counts"]["write:duplicate_removed"] == 1
     assert sorted(LocalProjectStore(ci.output_dir).all()) == [OWNER]
     assert not (LocalProjectStore(ci.output_dir).projects_dir / f"{THIN}.md").exists()
+
+
+# --- suites de revue : pas de va-et-vient, visibilite, reparation complete ----------------------------------------
+
+def test_alias_of_a_missing_but_not_delisted_detail_page_is_not_written_suspect_country(tmp_path):
+    """Sitemap lu, page absente, mais pays suspect : la page n'est pas dé-listee, donc le thin n'est pas ecrit
+    (sinon il serait ecrit puis supprime par le writer a chaque run)."""
+    d = detector(tmp_path, owner_entry())
+    scope = {"countries": ["HR"], "srsp": True, "all_countries": False, "sitemap": True, "fetched": [PDF, SITEMAP]}
+    out = d.run(refs=[thin_ref()], run_id="r", scope=scope, suspect_countries=["HR"])
+    assert out["thin"] == [] and out["delisted"] == []
+
+
+def test_alias_of_a_missing_detail_page_with_a_listing_not_read_is_not_written(tmp_path):
+    other = f"{SITE}/technical-support-instrument-0/our-projects/tsi-country-factsheets/croatia_en"
+    d = detector(tmp_path, owner_entry(source_urls=[OWNER_URL, SITEMAP, PDF, other]))
+    scope = {"countries": [], "srsp": True, "all_countries": False, "sitemap": True, "fetched": [PDF, SITEMAP]}
+    out = d.run(refs=[thin_ref()], run_id="r", scope=scope)
+    assert out["thin"] == [] and out["delisted"] == []
+
+
+def test_alias_of_an_already_delisted_detail_page_is_written_even_without_sitemap(tmp_path):
+    d = detector(tmp_path, owner_entry(listed=False))
+    scope = {"countries": [], "srsp": True, "all_countries": False, "sitemap": False, "fetched": [PDF]}
+    assert [r.project_id for r in d.run(refs=[thin_ref()], run_id="r", scope=scope)["thin"]] == [THIN]
+
+
+def test_duplicate_cleanup_removes_the_csr_links_record_and_saves_the_index_once(tmp_path, monkeypatch):
+    w = writer_with(tmp_path, owner_entry(), thin_entry(),
+                    owner_entry(project_id="other", aliases=["tsi-2021-other"], source_urls=[]),
+                    thin_entry("tsi-2021-other"))
+    links = tmp_path / "csr_links"
+    links.mkdir()
+    (links / f"{THIN}.json").write_text("{}", encoding="utf-8")
+    (links / f"{OWNER}.json").write_text("{}", encoding="utf-8")
+    saves = []
+    original = w._store._save
+    monkeypatch.setattr(w._store, "_save", lambda: (saves.append(1), original())[1])
+    assert w._remove_alias_duplicates() == 2
+    assert len(saves) == 1
+    assert not (links / f"{THIN}.json").exists() and (links / f"{OWNER}.json").exists()
+    assert sorted(LocalProjectStore(tmp_path).all()) == [OWNER, "other"]
+
+
+@pytest.mark.parametrize("throttled", [True, False])
+def test_run_summary_says_whether_the_sitemap_was_read(ci, throttled):
+    summary = run_extraction(ci, SOURCES, run_id="ci", pipeline_factory=factory(CiSite(throttled)))
+    assert summary["sitemap_read"] is (not throttled)

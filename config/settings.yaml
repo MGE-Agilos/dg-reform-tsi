@@ -4,6 +4,7 @@ logs_dir: logs
 cache_dir: .cache/http
 user_agent: "TSI-Extraction-Agent/0.1 (DG REFORM project; polite crawler)"
 min_interval_s: 2.0   # le site renvoie des 429 au-delà d'environ 1 req/s soutenue
+sitemap_retry_wait_s: 180   # sitemap incomplet (HTTP 429) : attente avant une nouvelle lecture (une fois par run)
 model: sonnet
 llm_timeout_s: 180
 max_concurrency: 2

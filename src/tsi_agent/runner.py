@@ -92,6 +92,7 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
         llm_pages = 0
         skipped_by_sitemap = 0  # pages detail connues non relues : date du sitemap inchangee
         undated = fetch_failed = extract_failed = 0
+        sitemap_read = True  # sitemap complet lu a chaque lot (sinon : pages trouvees par lui ni vues ni dé-listees)
         while True:
             chunk_limit = None if dry_run else (chunk if budget is None else min(chunk, budget))
             data: dict[str, Any] = {
@@ -105,6 +106,8 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
             out = pipeline.run(data, include_outputs_from={"discoverer", "judge", "detector", "detail_fetcher",
                                                           "extractor", "writer"})
             chunks += 1
+            sitemap_read = sitemap_read and bool(out.get("discoverer", {}).get("scope", {}).get("sitemap"))
+            run.extra["sitemap_read"] = sitemap_read
             det = out["detector"]
             skipped_by_sitemap += len(det.get("skipped", []))
             undated += det.get("undated", 0)
@@ -150,7 +153,8 @@ def seed_sitemap_lastmod(settings: Settings, sources: dict[str, Any], *, fetcher
         if not sources.get("sitemap_url"):
             raise RuntimeError("sitemap_url absent de la configuration des sources")
         listing = SourceListingFetcher(sources=sources, cache_dir=settings.cache_dir,
-                                       min_interval_s=settings.min_interval_s, user_agent=settings.user_agent)
+                                       min_interval_s=settings.min_interval_s, user_agent=settings.user_agent,
+                                       sitemap_retry_wait_s=settings.sitemap_retry_wait_s)
         if fetcher is not None:
             listing._fetcher = fetcher
         pages = listing.fetch_sitemap()

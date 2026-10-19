@@ -32,7 +32,8 @@ def build_pipeline(settings: Settings, sources: dict[str, Any], *, dry_run: bool
     http = {"cache_dir": settings.cache_dir, "min_interval_s": settings.min_interval_s,
             "user_agent": settings.user_agent}
     p = Pipeline()
-    p.add_component("listing", SourceListingFetcher(sources=sources, **http))
+    p.add_component("listing", SourceListingFetcher(sources=sources, sitemap_retry_wait_s=settings.sitemap_retry_wait_s,
+                                                    **http))
     p.add_component("discoverer", ProjectDiscoverer(sitemap_excluded_areas=sources.get("sitemap_excluded_areas"),
                                                     output_dir=settings.output_dir, **http))
     p.add_component("judge", SitemapMergeJudge(chat_generator=judge_generator or default_judge_generator(settings),

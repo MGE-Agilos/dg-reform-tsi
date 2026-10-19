@@ -9,7 +9,8 @@ from tsi_agent.models import ProgrammeDoc, ProjectRecord, ProjectRef
 from tsi_agent.render import (deliverables_section, detail_body, front_matter, parse_front_matter,
                               programme_doc_text, render, replace_deliverables_section, replace_listing_tail,
                               source_urls, thin_body, with_deliverables_count)
-from tsi_agent.store import ProjectStore, file_stem, merge_publication_urls, shared_store, StoreEntry
+from tsi_agent.store import (ProjectStore, _retry_on_lock, file_stem, merge_publication_urls, shared_store,
+                             StoreEntry)
 
 NAME = "MarkdownProjectWriter"
 THIN_FLUSH_EVERY = 100  # l'index est réécrit en entier : on groupe les projets thin
@@ -96,10 +97,21 @@ class MarkdownProjectWriter:
                 if alias == owner_id or alias in removed or entry is None or entry.detail_page:
                     continue
                 store.delete_project_file(alias)
-                store.remove(alias)
+                self._delete_csr_links(alias)
+                store.remove(alias, save=False)
                 removed.add(alias)
                 runlog.event(NAME, "write", alias, "duplicate_removed", project_id=owner_id)
+        if removed:
+            store.flush()  # un seul enregistrement de l'index
         return len(removed)
+
+    def _delete_csr_links(self, project_id: str) -> None:
+        """Decision csr-link d'un projet supprime (output/csr_links/<id>.json), s'il y en a une."""
+        from pathlib import Path
+
+        from tsi_agent.csr_link import LINKS_DIR
+        path = Path(getattr(self._get_store(), "root", self.output_dir)) / LINKS_DIR / f"{file_stem(project_id)}.json"
+        _retry_on_lock(lambda: path.unlink(missing_ok=True))
 
     def _with_csr_links(self, project_id: str, text: str) -> str:
         """Texte reecrit en entier : remet les liens CSR (csr-link) deja decides, s'il y en a ; silencieux sinon."""

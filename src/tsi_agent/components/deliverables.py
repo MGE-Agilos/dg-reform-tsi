@@ -56,8 +56,10 @@ class PublicationDiscoverer(_Http):
     """
 
     def __init__(self, output_dir: str = "output", cache_dir: str = ".cache/http", min_interval_s: float = 2.0,
-                 user_agent: str = DEFAULT_USER_AGENT, sitemap_url: str | None = None):
+                 user_agent: str = DEFAULT_USER_AGENT, sitemap_url: str | None = None,
+                 sitemap_retry_wait_s: float = 180):
         self.output_dir = output_dir
+        self.sitemap_retry_wait_s = sitemap_retry_wait_s
         self.cache_dir = cache_dir
         self.min_interval_s = min_interval_s
         self.user_agent = user_agent
@@ -73,7 +75,8 @@ class PublicationDiscoverer(_Http):
             if self.sitemap_url:
                 from tsi_agent.components.listing import SourceListingFetcher
                 listing = SourceListingFetcher(sources={"sitemap_url": self.sitemap_url}, cache_dir=self.cache_dir,
-                                               min_interval_s=self.min_interval_s, user_agent=self.user_agent)
+                                               min_interval_s=self.min_interval_s, user_agent=self.user_agent,
+                                               sitemap_retry_wait_s=self.sitemap_retry_wait_s)
                 listing._fetcher = self._get_fetcher()
                 for page in listing.fetch_sitemap():
                     self._lastmods.update(sitemap_lastmods(page.content))

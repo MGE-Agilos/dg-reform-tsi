@@ -79,6 +79,10 @@ def step_of(run: dict) -> str:
     return "run" if "llm_pages" in run or "skipped_by_sitemap" in run else "other"
 
 
+SITEMAP_WARNING = ("sitemap could not be read: pages found only via the sitemap were neither discovered nor "
+                   "delisted this run")
+
+
 def _details(run: dict, step: str) -> tuple[str, str, str]:
     """(new or updated projects, pages skipped thanks to the sitemap, details)."""
     if step == "run":
@@ -193,6 +197,9 @@ def render(runs_dir: Path, work_dir: Path, manifest: Path, since: str | None = N
             except (TypeError, ValueError):
                 pass
         lines += ["", f"**Total LLM cost: {_money(total)}**", ""]
+        for run in runs:
+            if step_of(run) == "run" and run.get("sitemap_read") is False:
+                lines += [f"> **Warning ({run.get('run_id', '-')}): {SITEMAP_WARNING}.**", ""]
 
     work = Path(work_dir)
     csr = _read_json(work / "csr-build.out")

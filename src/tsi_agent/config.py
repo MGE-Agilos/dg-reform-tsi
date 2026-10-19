@@ -11,6 +11,7 @@ class Settings(BaseModel):
     cache_dir: str = ".cache/http"
     user_agent: str = "TSI-Extraction-Agent/0.1 (DG REFORM project; polite crawler)"
     min_interval_s: float = 2.0
+    sitemap_retry_wait_s: float = 180  # sitemap incomplet (HTTP 429) : attente avant une nouvelle lecture
     model: str = "sonnet"
     llm_timeout_s: int = 180
     max_concurrency: int = 2
