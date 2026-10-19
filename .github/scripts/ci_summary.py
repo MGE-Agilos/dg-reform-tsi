@@ -102,7 +102,9 @@ def _details(run: dict, step: str) -> tuple[str, str, str]:
         w = run.get("written") or {}
         parts = [f"{w.get('publications', 0)} publications", f"{w.get('projects_updated', 0)} projects updated",
                  f"{run.get('remaining_publications', 0)} remaining", f"{len(run.get('failed') or [])} failed"]
-        return str(w.get("projects_updated", 0)), "-", ", ".join(parts)
+        if run.get("publication_without_sitemap_date"):
+            parts.append(f"{run['publication_without_sitemap_date']} without sitemap date")
+        return str(w.get("projects_updated", 0)), str(run.get("skipped_by_sitemap", "-")), ", ".join(parts)
     if step == "csr-link":
         failed = run.get("failed")
         n_failed = len(failed) if isinstance(failed, list) else int(failed or 0)
@@ -144,13 +146,16 @@ def _steps_table(steps: list[tuple[str, str, str, str]] | None) -> list[str]:
 
 def render(runs_dir: Path, work_dir: Path, manifest: Path, since: str | None = None, mode: str | None = None,
            state_tag: str | None = None, release_tag: str | None = None, release_url: str | None = None,
-           partial_artifact: str | None = None) -> str:
+           partial_artifact: str | None = None, notes: list[str] | None = None) -> str:
     lines = ["## TSI data update", ""]
     head = [f"Mode: **{mode}**"] if mode else []
     if state_tag:
         head.append(f"state restored from `{state_tag}`")
     if head:
         lines += [" · ".join(head), ""]
+    for note in notes or []:
+        if note.strip():
+            lines += [f"> {note.strip()}", ""]
 
     steps = read_steps(work_dir)
     lines += ["### Steps", "", *_steps_table(steps), ""]
@@ -224,12 +229,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--release-tag")
     parser.add_argument("--release-url")
     parser.add_argument("--partial-artifact", help="artifact holding the state of a failed or cancelled run")
+    parser.add_argument("--note", action="append", default=[], help="line shown under the mode (repeatable)")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     sys.stdout.write(render(Path(args.runs_dir), Path(args.work_dir), Path(args.manifest), since=args.since,
                             mode=args.mode, state_tag=args.state_tag, release_tag=args.release_tag,
-                            release_url=args.release_url, partial_artifact=args.partial_artifact))
+                            release_url=args.release_url, partial_artifact=args.partial_artifact,
+                            notes=args.note))
     return 0
 
 

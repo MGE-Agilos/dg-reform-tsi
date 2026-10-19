@@ -45,12 +45,15 @@ concurrency:
 env:
   # Claude Code CLI version, tested with the agent (bump it here after a local test: see the README).
   CLAUDE_CODE_VERSION: "2.1.119"
-  # Time budgets of the LLM steps (minutes). Their sum leaves at least 30 minutes of the job timeout (350) to the
-  # setup (~15 min) and the publication steps. A step that reaches its budget keeps what it has written; the
-  # next run resumes.
-  RUN_BUDGET_MIN: "150"
+  # Time budgets of the LLM steps (minutes), chosen by the "Plan the run" step. A step that reaches its budget
+  # keeps what it has written; the next run resumes. The three budgets of a run never exceed LLM_BUDGET_TOTAL_MIN,
+  # which leaves at least 30 minutes of the job timeout (350) to the setup (~15 min) and the publication steps.
+  RUN_BUDGET_MIN: "60"                  # incremental run (only new and changed detail pages)
+  RUN_RECHECK_BUDGET_MIN: "150"         # full check (--recheck-all, quarterly or state without dates) or --full
   DELIVERABLES_BUDGET_MIN: "75"
+  DELIVERABLES_FIRST_BUDGET_MIN: "150"  # state without publication sitemap dates: every publication page is read
   CSR_LINK_BUDGET_MIN: "60"
+  LLM_BUDGET_TOTAL_MIN: "300"
   CI_WORK: ci-work
   PYTHONUNBUFFERED: "1"
 
@@ -154,6 +157,57 @@ jobs:
             echo "HAS_SITEMAP_DATES=false" >> "$GITHUB_ENV"
             echo "::notice::The state has no sitemap dates yet: this run re-reads every detail page (run --recheck-all) and records them"
           fi
+          if python -c 'import json, sys; d = json.load(open("output/state/deliverables.json", encoding="utf-8")); sys.exit(0 if any(e.get("sitemap_lastmod") for e in d.get("publications", {}).values()) else 1)'; then
+            echo "HAS_PUBLICATION_DATES=true" >> "$GITHUB_ENV"
+          else
+            echo "HAS_PUBLICATION_DATES=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Plan the run (mode and time budgets)
+        id: plan
+        env:
+          FULL: ${{ steps.mode.outputs.full }}
+          RECHECK: ${{ steps.mode.outputs.recheck }}
+        run: |
+          deliverables_args=""
+          if [ "$FULL" = true ]; then
+            run_args="--full"; run_label="full re-extraction"; run_budget=$RUN_RECHECK_BUDGET_MIN
+          elif [ "$RECHECK" = true ]; then
+            run_args="--recheck-all"; run_label="full check"; run_budget=$RUN_RECHECK_BUDGET_MIN
+            deliverables_args="--recheck-all"
+          elif [ "${HAS_SITEMAP_DATES:-false}" != true ]; then
+            run_args="--recheck-all"; run_label="full check"; run_budget=$RUN_RECHECK_BUDGET_MIN
+          else
+            run_args=""; run_label=incremental; run_budget=$RUN_BUDGET_MIN
+          fi
+          note=""
+          if [ "${HAS_PUBLICATION_DATES:-false}" != true ]; then
+            deliverables_budget=$DELIVERABLES_FIRST_BUDGET_MIN
+            note="Deliverables: the state has no publication sitemap dates yet, so every publication page is read once and its date recorded; budget raised to ${deliverables_budget} min for this run."
+          else
+            deliverables_budget=$DELIVERABLES_BUDGET_MIN
+          fi
+          csr_link_budget=$CSR_LINK_BUDGET_MIN
+          # Never more than LLM_BUDGET_TOTAL_MIN for the three steps: the deliverables give way.
+          left=$(( LLM_BUDGET_TOTAL_MIN - run_budget - csr_link_budget ))
+          if [ "$deliverables_budget" -gt "$left" ]; then
+            deliverables_budget=$left
+            if [ -n "$note" ]; then note="${note%; budget raised*}; budget raised to ${deliverables_budget} min for this run (capped by the full check of the detail pages)."; fi
+          fi
+          {
+            echo "run_args=$run_args"
+            echo "run_label=$run_label"
+            echo "run_budget=$run_budget"
+            echo "run_timeout=$(( run_budget + 10 ))"
+            echo "deliverables_args=$deliverables_args"
+            echo "deliverables_budget=$deliverables_budget"
+            echo "deliverables_timeout=$(( deliverables_budget + 10 ))"
+            echo "csr_link_budget=$csr_link_budget"
+            echo "csr_link_timeout=$(( csr_link_budget + 10 ))"
+            echo "note=$note"
+          } >> "$GITHUB_OUTPUT"
+          echo "run: ${run_label} ${run_args} (${run_budget} min); deliverables ${deliverables_args} (${deliverables_budget} min); csr-link ${csr_link_budget} min"
+          if [ -n "$note" ]; then echo "::notice::$note"; fi
 
       # HTTP cache: fewer downloads (always revalidated with ETag / Last-Modified, so never stale). The official
       # titles used by the fuzzy merge for pages that are not downloaded come from the state, not from this cache.
@@ -164,31 +218,27 @@ jobs:
           restore-keys: http-cache-
 
       - name: Projects (run)
-        timeout-minutes: 160
+        timeout-minutes: ${{ fromJSON(steps.plan.outputs.run_timeout) }}
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          FULL: ${{ steps.mode.outputs.full }}
-          RECHECK: ${{ steps.mode.outputs.recheck }}
+          RUN_ARGS: ${{ steps.plan.outputs.run_args }}
+          STEP_BUDGET_MIN: ${{ steps.plan.outputs.run_budget }}
         run: |
           args=(run)
-          if [ "$FULL" = true ]; then
-            args+=(--full); label="full re-extraction"
-          elif [ "$RECHECK" = true ] || [ "${HAS_SITEMAP_DATES:-false}" != true ]; then
-            args+=(--recheck-all); label="full check"
-          else
-            label=incremental
-          fi
-          echo "RUN_MODE=$label" >> "$GITHUB_ENV"
-          STEP_BUDGET_MIN=$RUN_BUDGET_MIN bash .github/scripts/run_step.sh run quota python -m tsi_agent "${args[@]}"
+          if [ -n "$RUN_ARGS" ]; then args+=("$RUN_ARGS"); fi
+          bash .github/scripts/run_step.sh run quota python -m tsi_agent "${args[@]}"
 
       - name: Publications (deliverables)
         if: steps.mode.outputs.skip_deliverables != 'true'
-        timeout-minutes: 85
+        timeout-minutes: ${{ fromJSON(steps.plan.outputs.deliverables_timeout) }}
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DELIVERABLES_ARGS: ${{ steps.plan.outputs.deliverables_args }}
+          STEP_BUDGET_MIN: ${{ steps.plan.outputs.deliverables_budget }}
         run: |
-          STEP_BUDGET_MIN=$DELIVERABLES_BUDGET_MIN \
-            bash .github/scripts/run_step.sh deliverables quota python -m tsi_agent deliverables
+          args=(deliverables)
+          if [ -n "$DELIVERABLES_ARGS" ]; then args+=("$DELIVERABLES_ARGS"); fi
+          bash .github/scripts/run_step.sh deliverables quota python -m tsi_agent "${args[@]}"
 
       - name: CSR database (csr-fetch)
         run: bash .github/scripts/run_step.sh csr-fetch soft python -m tsi_agent csr-fetch
@@ -197,15 +247,15 @@ jobs:
         run: bash .github/scripts/run_step.sh csr-build strict python -m tsi_agent csr-build
 
       - name: Project -> CSR links (csr-link)
-        timeout-minutes: 70
+        timeout-minutes: ${{ fromJSON(steps.plan.outputs.csr_link_timeout) }}
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DETAIL_ONLY: ${{ steps.mode.outputs.detail_only }}
+          STEP_BUDGET_MIN: ${{ steps.plan.outputs.csr_link_budget }}
         run: |
           args=(csr-link)
           if [ "$DETAIL_ONLY" = true ]; then args+=(--detail-only); fi
-          STEP_BUDGET_MIN=$CSR_LINK_BUDGET_MIN \
-            bash .github/scripts/run_step.sh csr-link quota python -m tsi_agent "${args[@]}"
+          bash .github/scripts/run_step.sh csr-link quota python -m tsi_agent "${args[@]}"
 
       - name: Anomalies
         run: bash .github/scripts/run_step.sh anomalies strict python -m tsi_agent anomalies
@@ -257,6 +307,8 @@ jobs:
         if: always()
         env:
           SINCE: ${{ steps.mode.outputs.since }}
+          RUN_MODE: ${{ steps.plan.outputs.run_label }}
+          PLAN_NOTE: ${{ steps.plan.outputs.note }}
         run: |
           args=(--runs-dir logs/runs --work-dir "$CI_WORK" --manifest deploy/prod/build/manifest.json)
           if [ -n "${SINCE:-}" ]; then args+=(--since "$SINCE"); fi
@@ -266,6 +318,7 @@ jobs:
             args+=(--release-tag "$RELEASE_TAG" --release-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG")
           fi
           if [ -n "${PARTIAL_ARTIFACT:-}" ]; then args+=(--partial-artifact "$PARTIAL_ARTIFACT"); fi
+          if [ -n "${PLAN_NOTE:-}" ]; then args+=(--note "$PLAN_NOTE"); fi
           python .github/scripts/ci_summary.py "${args[@]}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the run logs
