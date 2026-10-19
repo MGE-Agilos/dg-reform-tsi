@@ -255,6 +255,7 @@ class ProjectDiscoverer:
                              message=f"Factsheet {page.key}: 0 project parsed (site structure changed?)")
             refs += found
         scope["all_countries"] = set(scope["countries"]) == set(COUNTRIES)
+        scope["sitemap"] = bool(sitemap_keys)  # sitemap complet lu : les pages detail qu'il liste sont decouvertes
         # Sources lues dans ce run (vue partielle ?) ; un projet trouve par le sitemap a pour source l'index.
         scope["fetched"] = sorted({page.url for page in pages} | sitemap_keys)
         deferred: list[str] = []
@@ -281,7 +282,7 @@ class ProjectDiscoverer:
             if r.detail_url and not r.policy_area:
                 r.policy_area = policy_area_from_url(r.detail_url)
         ambiguous = ambiguous_title_keys(resolved)
-        merged, fuzzy = self._fuzzy_with_hints(merge_refs(resolved), ambiguous)
+        merged, fuzzy = self._fuzzy_with_hints(self._merge_known_aliases(merge_refs(resolved), ambiguous), ambiguous)
         for r in merged:  # mode incremental : date du sitemap de la page detail (None sans sitemap ou sans date)
             r.sitemap_lastmod = lastmods.get(r.detail_url) if r.detail_url else None
         report = self._report(merged, fuzzy, thin_ids, {r.detail_url for r in from_sitemap}, sitemap_report)
@@ -351,20 +352,63 @@ class ProjectDiscoverer:
                 deferred.extend([slug_from_url(url), url])
         return out
 
+    # --- alias connus ---------------------------------------------------------------------------------------------
+    def _get_store(self) -> ProjectStore | None:
+        if self._store is None and self.output_dir is not None:
+            self._store = shared_store(self.output_dir)
+        return self._store
+
+    def _merge_known_aliases(self, refs: list[ProjectRef], ambiguous: set[str]) -> list[ProjectRef]:
+        """Rattache a sa page detail un projet sans page detail dont l'id est un alias connu de cette page dans l'etat.
+
+        Fusion deterministe, avant la fusion floue et l'arbitre : elle ne depend ni des indices (cache HTTP, titres
+        officiels), ni du LLM. Si la page detail n'est pas decouverte dans ce run (sitemap indisponible), le projet
+        sans page detail reste tel quel : le detecteur ne l'ecrit pas tant que la disparition de la page n'est pas
+        etablie. Les cles titre ambigues (projet "flagship" distinct des pages pays) ne sont jamais rattachees.
+        """
+        store = self._get_store()
+        if store is None:
+            return refs
+        owner_of = {alias: pid for pid, e in store.all().items() if e.detail_page for alias in e.aliases
+                    if alias != pid}
+        if not owner_of:
+            return refs
+        detail_index = {r.project_id: i for i, r in enumerate(refs) if r.detail_url}
+        absorbed: dict[int, list[int]] = {}
+        for i, ref in enumerate(refs):
+            if ref.detail_url:
+                continue
+            owner = next((owner_of[x] for x in (ref.project_id, *ref.aliases)
+                          if x in owner_of and x not in ambiguous), None)
+            if owner is None or owner not in detail_index:
+                continue
+            absorbed.setdefault(detail_index[owner], []).append(i)
+            runlog.event(NAME, "discover", owner, "alias_merge", thin_id=ref.project_id)
+        if not absorbed:
+            return refs
+        dropped = {i for idxs in absorbed.values() for i in idxs}
+        out = []
+        for i, ref in enumerate(refs):
+            if i in dropped:
+                continue
+            for j in absorbed.get(i, []):
+                ref = combine(ref, refs[j])
+            out.append(ref)
+        return out
+
     # --- fusion floue --------------------------------------------------------------------------------------------
     def _hint_from_store(self, url: str) -> tuple[str | None, int | None, str | None]:
         """Programme, annee et titre officiel enregistres pour cette page detail (etat, sinon front matter du
         fichier projet pour un etat anterieur a ces champs) ; (None, None, None) si inconnue ou sans etat."""
-        if self._store is None:
-            if self.output_dir is None:
-                return (None, None, None)
-            self._store = shared_store(self.output_dir)
-        entry = self._store.get(slug_from_url(url))
+        store = self._get_store()
+        if store is None:
+            return (None, None, None)
+        entry = store.get(slug_from_url(url))
         if entry is None or not entry.detail_page or url not in entry.source_urls:
             return (None, None, None)
         if entry.title:
             return (entry.programme, entry.year, entry.title)
-        text = self._store.read_project_file(entry.project_id)
+        text = store.read_project_file(entry.project_id)
         if text is None:
             return (None, None, None)
         fm, _ = parse_front_matter(text.replace("\r\n", "\n"))

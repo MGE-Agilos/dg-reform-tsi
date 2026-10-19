@@ -20,6 +20,13 @@ def _no_dotenv(monkeypatch):
     monkeypatch.setattr(llm, "load_dotenv", lambda *a, **k: {})
 
 
+@pytest.fixture(autouse=True)
+def _no_sitemap_wait(monkeypatch):
+    """Sitemap incomplet (HTTP 429 simule) : pas d'attente reelle avant la nouvelle lecture."""
+    import tsi_agent.components.listing as listing
+    monkeypatch.setattr(listing, "_sleep", lambda seconds: None)
+
+
 def fixture_bytes(name: str) -> bytes:
     return (FIXTURES / name).read_bytes()
 

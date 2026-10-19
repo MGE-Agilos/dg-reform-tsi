@@ -11,6 +11,7 @@ class Settings(BaseModel):
     cache_dir: str = ".cache/http"
     user_agent: str = "TSI-Extraction-Agent/0.1 (DG REFORM project; polite crawler)"
     min_interval_s: float = 2.0
+    sitemap_retry_wait_s: float = 180  # sitemap incomplet (HTTP 429) : attente avant une nouvelle lecture
     model: str = "sonnet"
     llm_timeout_s: int = 180
     max_concurrency: int = 2
@@ -46,6 +47,7 @@ class Settings(BaseModel):
     deliverables_max_words: int = 15000
     deliverables_max_pdf_mb: float = 50
     deliverables_recheck_days: int = 7  # relances : pas de reverification des publications recentes
+    deliverables_fetch_chunk: int = 25  # pages de publication lues par lot (enregistre avant le lot suivant)
     deliverables_llm_timeout_s: int = 600  # prompts longs, jusqu'a 15 000 mots
     # Analyse d'impact (onglet de la page web).
     impact_dir: str = "output/impact"

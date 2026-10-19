@@ -240,3 +240,22 @@ def test_plan_state_without_publication_links_rereads_every_detail_page(tmp_path
     both = run_plan(tmp_path, HAS_PUBLICATION_LINKS="false", HAS_PUBLICATION_DATES="false")
     assert int(both["run_budget"]) + int(both["deliverables_budget"]) + int(both["csr_link_budget"]) <= 300
     assert run_plan(tmp_path, HAS_PUBLICATION_LINKS="false", FULL="true")["run_args"] == "--full"
+
+
+SITEMAP_WARNING = ("sitemap could not be read: pages found only via the sitemap were neither discovered nor "
+                   "delisted this run")
+
+
+@pytest.mark.parametrize("read, shown", [(False, True), (True, False), (None, False)])
+def test_summary_warns_when_the_run_could_not_read_the_sitemap(tmp_path, read, shown):
+    ci = load()
+    runs, work, manifest = fake_logs(tmp_path)
+    path = runs / "20261101-031000.summary.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if read is not None:
+        data["sitemap_read"] = read
+    write(path, data)
+    md = ci.render(runs_dir=runs, work_dir=work, manifest=manifest, since="2026-11-01T03:00:00+00:00")
+    assert (SITEMAP_WARNING in md) is shown
+    if shown:
+        assert "20261101-031000" in md.split(SITEMAP_WARNING)[0].splitlines()[-1]

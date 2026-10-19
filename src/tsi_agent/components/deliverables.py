@@ -56,8 +56,10 @@ class PublicationDiscoverer(_Http):
     """
 
     def __init__(self, output_dir: str = "output", cache_dir: str = ".cache/http", min_interval_s: float = 2.0,
-                 user_agent: str = DEFAULT_USER_AGENT, sitemap_url: str | None = None):
+                 user_agent: str = DEFAULT_USER_AGENT, sitemap_url: str | None = None,
+                 sitemap_retry_wait_s: float = 180):
         self.output_dir = output_dir
+        self.sitemap_retry_wait_s = sitemap_retry_wait_s
         self.cache_dir = cache_dir
         self.min_interval_s = min_interval_s
         self.user_agent = user_agent
@@ -73,7 +75,8 @@ class PublicationDiscoverer(_Http):
             if self.sitemap_url:
                 from tsi_agent.components.listing import SourceListingFetcher
                 listing = SourceListingFetcher(sources={"sitemap_url": self.sitemap_url}, cache_dir=self.cache_dir,
-                                               min_interval_s=self.min_interval_s, user_agent=self.user_agent)
+                                               min_interval_s=self.min_interval_s, user_agent=self.user_agent,
+                                               sitemap_retry_wait_s=self.sitemap_retry_wait_s)
                 listing._fetcher = self._get_fetcher()
                 for page in listing.fetch_sitemap():
                     self._lastmods.update(sitemap_lastmods(page.content))
@@ -146,19 +149,21 @@ class PublicationFetcher(_Http):
         self._offered: set[str] = set()  # deja proposees pendant ce run (boucle par lots du runner)
 
     @component.output_types(to_process=list[Publication], unchanged=list[Publication], failed=list[str],
-                            remaining=int, skipped=int, undated=int)
+                            remaining=int, skipped=int, undated=int, fetched=int)
     def run(self, publications: list[Publication], full: bool = False, limit: int | None = None,
-            recheck_all: bool = False) -> dict[str, Any]:
+            recheck_all: bool = False, fetch_limit: int | None = None) -> dict[str, Any]:
         """Publication connue dont la date du sitemap n'est pas plus recente que celle enregistree : non relue
-        (`skipped`, avant `recheck_days` et la limite), sauf `full` ou `recheck_all`. `undated` : pages relues
-        faute de date du sitemap."""
+        (`skipped`, avant `recheck_days` et les limites), sauf `full` ou `recheck_all`. `undated` : pages relues
+        faute de date du sitemap. `limit` : publications envoyees au LLM ; `fetch_limit` : pages de publication lues
+        (`fetched`) dans cet appel, le reste compte dans `remaining` pour l'appel suivant. Une page n'est lue qu'une
+        fois par instance (par run), meme sous `recheck_all`."""
         known = DeliverableStore(self.output_dir)
         # Les relances rapprochees (reprise apres limite de souscription) ne reverifient pas les pages deja vues.
         recent_since = (date.today() - timedelta(days=self.recheck_days)).isoformat()
         to_process: list[Publication] = []
         unchanged: list[Publication] = []
         failed: list[str] = []
-        remaining = skipped = undated = 0
+        remaining = skipped = undated = fetched = 0
         for pub in publications:
             if pub.url in self._offered:
                 continue
@@ -179,10 +184,12 @@ class PublicationFetcher(_Http):
                 unchanged.append(pub.model_copy(update=kept))
                 runlog.event("PublicationFetcher", "classify", pub.publication_id, "recent")
                 continue
-            if limit is not None and len(to_process) >= limit:
+            if ((limit is not None and len(to_process) >= limit)
+                    or (fetch_limit is not None and fetched >= max(1, fetch_limit))):
                 remaining += 1
                 continue
             self._offered.add(pub.url)
+            fetched += 1
             undated += pub.sitemap_lastmod is None
             try:
                 parse = parse_publication(self._get_fetcher().get(pub.url).content)
@@ -204,7 +211,7 @@ class PublicationFetcher(_Http):
                          files=len(files))
             to_process.append(pub)
         return {"to_process": to_process, "unchanged": unchanged, "failed": failed, "remaining": remaining,
-                "skipped": skipped, "undated": undated}
+                "skipped": skipped, "undated": undated, "fetched": fetched}
 
 
 def pdf_text(data: bytes) -> tuple[int, str]:

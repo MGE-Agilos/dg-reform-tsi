@@ -4,6 +4,7 @@ logs_dir: logs
 cache_dir: .cache/http
 user_agent: "TSI-Extraction-Agent/0.1 (DG REFORM project; polite crawler)"
 min_interval_s: 2.0   # le site renvoie des 429 au-delà d'environ 1 req/s soutenue
+sitemap_retry_wait_s: 180   # sitemap incomplet (HTTP 429) : attente avant une nouvelle lecture (une fois par run)
 model: sonnet
 llm_timeout_s: 180
 max_concurrency: 2
@@ -43,6 +44,7 @@ deliverables_max_words: 15000   # debut des documents envoye au LLM pour le resu
 deliverables_max_pdf_mb: 50
 deliverables_llm_timeout_s: 600   # prompts longs, jusqu'a 15 000 mots
 deliverables_recheck_days: 7   # publications traitees depuis moins de N jours : page non reverifiee (sauf --full)
+deliverables_fetch_chunk: 25   # pages de publication lues par lot ; chaque lot est enregistre avant le suivant
 
 # Analyse d'impact (onglet "Impact analysis" de la page web)
 impact_dir: output/impact

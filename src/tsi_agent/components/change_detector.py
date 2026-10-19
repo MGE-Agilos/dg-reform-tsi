@@ -77,6 +77,25 @@ class ChangeDetector:
                              message=f"{country}: {now[country]} projects listed vs {before[country]} known")
         return dropped
 
+    @staticmethod
+    def _covering_owner(ref: ProjectRef, alias_owner: dict[str, str], known: dict[str, StoreEntry], seen: set[str],
+                        delisted: set[str]) -> str | None:
+        """Projet de l'etat qui couvre ce projet sans page detail (son id ou un de ses alias est un alias connu).
+
+        Couvert si le proprietaire est vu dans ce run, ou si c'est une page detail listee que ce run ne dé-liste pas :
+        page non decouverte (sitemap illisible, listing non lu, pays suspect) sans preuve de sa disparition. Ecrire le
+        thin la ferait supprimer par le writer (doublon d'une page detail listee) a chaque run. Proprietaire dé-liste
+        (ce run ou avant) : page disparue, le thin revient.
+        """
+        for pid in (ref.project_id, *ref.aliases):
+            owner = alias_owner.get(pid)
+            if owner is None or owner == ref.project_id:
+                continue
+            entry = known.get(owner)
+            if owner in seen or (entry is not None and entry.detail_page and entry.listed and owner not in delisted):
+                return owner
+        return None
+
     @component.output_types(thin=list[ProjectRef], detail=list[ProjectRef], delisted=list[str], remaining=int,
                             skipped=list[ProjectRef], undated=int)
     def run(self, refs: list[ProjectRef], run_id: str, scope: dict[str, Any],
@@ -98,6 +117,12 @@ class ChangeDetector:
         seen = {r.project_id for r in refs} | {a for r in refs for a in r.aliases} | deferred
         # Lien reporté : il porte l'ancien slug/l'ancienne URL, l'état connaît le projet sous son slug canonique.
         seen |= {pid for pid, e in known.items() if deferred & {*e.aliases, *e.source_urls}}
+        suspect = set(suspect_countries or []) | set(self._dropped_countries(refs, known, scope))
+        delisted = [
+            pid for pid, e in known.items()
+            if e.listed and pid not in seen and _in_scope(e, scope) and not (set(e.countries) & suspect)
+        ]
+        delisted_set = set(delisted)
         for ref in refs:
             entry = known.get(ref.project_id)
             if ref.detail_url:
@@ -116,19 +141,15 @@ class ChangeDetector:
                 detail.append(ref)
                 undated += ref.sitemap_lastmod is None
                 runlog.event(NAME, "classify", ref.project_id, "known_detail" if entry else "new_detail")
+            elif (owner := self._covering_owner(ref, alias_owner, known, seen, delisted_set)) is not None:
+                # Alias connu d'une page detail : deja couvert par elle, ou page listee non dé-listee par ce run.
+                runlog.event(NAME, "classify", ref.project_id, "alias_of_detail", owner=owner)
             elif entry is None:
-                if ref.project_id in alias_owner and alias_owner[ref.project_id] in seen:
-                    continue  # déjà couvert par sa page détail
                 thin.append(ref)
                 runlog.event(NAME, "classify", ref.project_id, "new_thin")
             elif entry.listing_hash != ref.listing_hash() or not entry.listed:
                 thin.append(ref)
                 runlog.event(NAME, "classify", ref.project_id, "changed_thin")
-        suspect = set(suspect_countries or []) | set(self._dropped_countries(refs, known, scope))
-        delisted = [
-            pid for pid, e in known.items()
-            if e.listed and pid not in seen and _in_scope(e, scope) and not (set(e.countries) & suspect)
-        ]
         for pid in delisted:
             runlog.event(NAME, "classify", pid, "delisted")
         return {"thin": thin, "detail": detail, "delisted": delisted, "remaining": remaining, "skipped": skipped,
