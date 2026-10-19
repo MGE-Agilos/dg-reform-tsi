@@ -77,6 +77,24 @@ class ChangeDetector:
                              message=f"{country}: {now[country]} projects listed vs {before[country]} known")
         return dropped
 
+    @staticmethod
+    def _covering_owner(ref: ProjectRef, alias_owner: dict[str, str], known: dict[str, StoreEntry], seen: set[str],
+                        scope: dict[str, Any]) -> str | None:
+        """Projet de l'etat qui couvre ce projet sans page detail (son id ou un de ses alias est un alias connu).
+
+        Couvert si le proprietaire est vu dans ce run, ou si c'est une page detail et que le sitemap n'a pas ete lu
+        (`scope["sitemap"]` faux) : sans sitemap, une page detail trouvee seulement par lui n'est pas decouverte,
+        ce qui ne prouve pas sa disparition. Sitemap lu et proprietaire absent : page disparue, le thin revient.
+        """
+        for pid in (ref.project_id, *ref.aliases):
+            owner = alias_owner.get(pid)
+            if owner is None or owner == ref.project_id:
+                continue
+            entry = known.get(owner)
+            if owner in seen or (entry is not None and entry.detail_page and not scope.get("sitemap")):
+                return owner
+        return None
+
     @component.output_types(thin=list[ProjectRef], detail=list[ProjectRef], delisted=list[str], remaining=int,
                             skipped=list[ProjectRef], undated=int)
     def run(self, refs: list[ProjectRef], run_id: str, scope: dict[str, Any],
@@ -116,9 +134,12 @@ class ChangeDetector:
                 detail.append(ref)
                 undated += ref.sitemap_lastmod is None
                 runlog.event(NAME, "classify", ref.project_id, "known_detail" if entry else "new_detail")
+            elif (owner := self._covering_owner(ref, alias_owner, known, seen, scope)) is not None:
+                # Alias connu d'une page detail : deja couvert par elle, ou page non decouverte dans ce run (sitemap
+                # indisponible) sans preuve de sa disparition. Ni ecrit en thin ni dé-liste.
+                seen.add(owner)
+                runlog.event(NAME, "classify", ref.project_id, "alias_of_detail", owner=owner)
             elif entry is None:
-                if ref.project_id in alias_owner and alias_owner[ref.project_id] in seen:
-                    continue  # déjà couvert par sa page détail
                 thin.append(ref)
                 runlog.event(NAME, "classify", ref.project_id, "new_thin")
             elif entry.listing_hash != ref.listing_hash() or not entry.listed:

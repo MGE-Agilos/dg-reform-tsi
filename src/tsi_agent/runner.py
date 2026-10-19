@@ -130,6 +130,7 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
                 break
         run.extra.update({"chunks": chunks, "quota_exceeded": quota, "written": written, "llm_pages": llm_pages,
                           "skipped_by_sitemap": skipped_by_sitemap, "detail_without_sitemap_date": undated,
+                          "duplicates_removed": written.get("duplicates_removed", 0),
                           "failed": fetch_failed + extract_failed, "fetch_failed": fetch_failed,
                           "extract_failed": extract_failed})
     return run.final_summary

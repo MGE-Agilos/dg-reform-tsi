@@ -78,6 +78,29 @@ class MarkdownProjectWriter:
                 runlog.event(NAME, "alert", alias, "warning",
                              message=f"Alias {alias} of {ref.project_id} is a detail project; not deleted")
 
+    def _remove_alias_duplicates(self) -> int:
+        """Supprime les projets sans page detail dont l'id est un alias d'une page detail listee (doublons).
+
+        Reparation de l'etat : un run sans sitemap (HTTP 429) a pu ecrire en thin des projets deja rattaches a leur
+        page detail. Une page detail dé-listee garde son thin (page disparue : le thin est la seule trace listee).
+        """
+        store = self._get_store()
+        known = store.all()
+        removed: set[str] = set()
+        for owner_id, owner in sorted(known.items()):
+            if not owner.detail_page or not owner.listed:
+                continue
+            for alias in owner.aliases:
+                entry = known.get(alias)
+                # Deux pages detail : jamais supprimee (alerte de _replace_aliases).
+                if alias == owner_id or alias in removed or entry is None or entry.detail_page:
+                    continue
+                store.delete_project_file(alias)
+                store.remove(alias)
+                removed.add(alias)
+                runlog.event(NAME, "write", alias, "duplicate_removed", project_id=owner_id)
+        return len(removed)
+
     def _with_csr_links(self, project_id: str, text: str) -> str:
         """Texte reecrit en entier : remet les liens CSR (csr-link) deja decides, s'il y en a ; silencieux sinon."""
         try:
@@ -169,7 +192,8 @@ class MarkdownProjectWriter:
         today = date.today().isoformat()
         store = self._get_store()
         written: list[str] = []
-        stats = {"detail": 0, "thin": 0, "refreshed": 0, "delisted": 0, "programme_docs": 0, "write_failed": 0}
+        stats = {"detail": 0, "thin": 0, "refreshed": 0, "delisted": 0, "programme_docs": 0, "write_failed": 0,
+                 "duplicates_removed": 0}
 
         def failed(pid: str, exc: OSError) -> None:
             # Une erreur disque/OneDrive sur un projet ne doit pas faire perdre les autres.
@@ -210,6 +234,10 @@ class MarkdownProjectWriter:
                     runlog.event(NAME, "delist", pid)
             except OSError as exc:
                 failed(pid, exc)
+        try:
+            stats["duplicates_removed"] = self._remove_alias_duplicates()
+        except OSError as exc:
+            failed("duplicates", exc)
         for doc in programme_docs or []:
             try:
                 if store.programme_hash(doc.doc_id) != doc.content_hash:

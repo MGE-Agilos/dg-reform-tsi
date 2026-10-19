@@ -108,7 +108,7 @@ def test_resolves_non_canonical_links_and_builds_programme_docs():
     assert resolved.policy_area == "financial-sector-and-access-finance"
     assert disc._fetcher.calls == [odd]
     assert [d.doc_id for d in out["programme_docs"]] == ["country-croatia"]  # performance vide => écartée
-    assert out["scope"] == {"countries": ["HR"], "srsp": False, "all_countries": False,
+    assert out["scope"] == {"countries": ["HR"], "srsp": False, "all_countries": False, "sitemap": False,
                             "fetched": sorted([hr_url, "https://x/perf_en"])}
     assert out["suspect_countries"] == []
 

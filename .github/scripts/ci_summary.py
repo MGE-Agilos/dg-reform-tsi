@@ -87,6 +87,8 @@ def _details(run: dict, step: str) -> tuple[str, str, str]:
                  f"{w.get('refreshed', 0)} refreshed", f"{w.get('delisted', 0)} delisted"]
         if w.get("write_failed"):
             parts.append(f"{w['write_failed']} write errors")
+        if w.get("duplicates_removed"):
+            parts.append(f"{w['duplicates_removed']} duplicates removed")
         if run.get("failed"):
             parts.append(f"{run['failed']} failed ({run.get('fetch_failed', 0)} fetch, "
                          f"{run.get('extract_failed', 0)} extraction)")
