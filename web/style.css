@@ -455,3 +455,5 @@ div.title-row:has(> h2) { margin-bottom: 12px; }
 .info-dl dt { font-weight: 600; margin-top: 8px; }
 .info-dl dd { margin: 2px 0 0; }
 
+/* Source of a project known only from a listing (factsheet, PDF list). */
+.source-line { margin-top: 2px; color: var(--muted); overflow-wrap: anywhere; }
