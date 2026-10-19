@@ -97,14 +97,17 @@ class ChangeDetector:
         return None
 
     @component.output_types(thin=list[ProjectRef], detail=list[ProjectRef], delisted=list[str], remaining=int,
-                            skipped=list[ProjectRef], undated=int)
+                            skipped=list[ProjectRef], undated=int, unchanged_no_sitemap=int)
     def run(self, refs: list[ProjectRef], run_id: str, scope: dict[str, Any],
             suspect_countries: list[str] | None = None, deferred_ids: list[str] | None = None, full: bool = False,
             limit: int | None = None, sitemap_skip: bool = True) -> dict[str, Any]:
         """`skipped` : pages detail connues dont la date du sitemap n'est pas plus recente que celle enregistree
         (mode incremental, sauf `full` ou `sitemap_skip=False`) ; ni telechargees ni comptees dans `limit`, le writer les traite comme
         inchangees (mise a jour du front matter si le listing a change). `undated` : pages detail proposees sans
-        date du sitemap (relues a chaque run)."""
+        date du sitemap (relues a chaque run). `unchanged_no_sitemap` : pages detail connues et datees non relues
+        parce que le sitemap n'a pas pu etre lu en entier maintenant (`scope["sitemap_status"]` ni "fresh" ni
+        "not_requested") : sans date fraiche, on ne relit pas tout le corpus ; elles sont dans `skipped`, sans date
+        enregistree (sauf `full` ou `sitemap_skip=False`). Les copies anciennes du sitemap ne donnent jamais de date."""
         store = self._get_store()
         known = store.all()
         if scope.get("fetched") is not None:
@@ -112,7 +115,8 @@ class ChangeDetector:
             refs = [_complete(r, known.get(r.project_id), fetched) for r in refs]
         alias_owner = {alias: pid for pid, e in known.items() for alias in e.aliases}
         offered = self._offered.setdefault(run_id, set())
-        thin, detail, skipped, remaining, undated = [], [], [], 0, 0
+        thin, detail, skipped, remaining, undated, no_sitemap = [], [], [], 0, 0, 0
+        sitemap_missing = scope.get("sitemap_status") not in (None, "fresh", "not_requested")
         deferred = set(deferred_ids or [])
         seen = {r.project_id for r in refs} | {a for r in refs for a in r.aliases} | deferred
         # Lien reporté : il porte l'ancien slug/l'ancienne URL, l'état connaît le projet sous son slug canonique.
@@ -134,6 +138,13 @@ class ChangeDetector:
                     skipped.append(ref)
                     runlog.event(NAME, "classify", ref.project_id, "unchanged_sitemap", lastmod=ref.sitemap_lastmod)
                     continue
+                if (sitemap_skip and not full and sitemap_missing and ref.sitemap_lastmod is None and entry is not None
+                        and entry.detail_page and entry.content_hash and entry.sitemap_lastmod):
+                    offered.add(ref.project_id)
+                    skipped.append(ref)
+                    no_sitemap += 1
+                    runlog.event(NAME, "classify", ref.project_id, "unchanged_no_sitemap")
+                    continue
                 if limit is not None and len(detail) >= limit:
                     remaining += 1
                     continue
@@ -153,4 +164,4 @@ class ChangeDetector:
         for pid in delisted:
             runlog.event(NAME, "classify", pid, "delisted")
         return {"thin": thin, "detail": detail, "delisted": delisted, "remaining": remaining, "skipped": skipped,
-                "undated": undated}
+                "undated": undated, "unchanged_no_sitemap": no_sitemap}

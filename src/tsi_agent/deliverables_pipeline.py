@@ -6,7 +6,7 @@ from haystack import Pipeline
 
 from tsi_agent.components.deliverables import (DeliverableSummarizer, DeliverableTextExtractor, DeliverableWriter,
                                                PublicationDiscoverer, PublicationFetcher)
-from tsi_agent.config import Settings
+from tsi_agent.config import Settings, sitemap_options
 from tsi_agent.llm import make_json_generator
 from tsi_agent.models import DeliverableContent
 
@@ -23,7 +23,7 @@ def build_deliverables_pipeline(settings: Settings, *, chat_generator: Any = Non
             "user_agent": settings.user_agent}
     p = Pipeline()
     p.add_component("discoverer", PublicationDiscoverer(output_dir=settings.output_dir, sitemap_url=sitemap_url,
-                                                        sitemap_retry_wait_s=settings.sitemap_retry_wait_s, **http))
+                                                        sitemap_options=sitemap_options(settings), **http))
     p.add_component("publications", PublicationFetcher(output_dir=settings.output_dir,
                                                         recheck_days=settings.deliverables_recheck_days, **http))
     p.add_component("texts", DeliverableTextExtractor(output_dir=settings.output_dir,

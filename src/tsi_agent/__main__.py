@@ -404,7 +404,22 @@ def main(argv: list[str] | None = None) -> int:
         report = json.loads(Path(discovery["file"]).read_text(encoding="utf-8"))
         print(format_discovery(report, discovery["file"]))
     print(json.dumps(summary, indent=2, ensure_ascii=False))
-    return 1 if summary.get("quota_exceeded") else 0
+    return run_exit_code(summary)
+
+
+EXIT_SITEMAP_UNAVAILABLE = 3
+
+
+def run_exit_code(summary: dict) -> int:
+    """Code de sortie de `run` : 1 limite LLM (prioritaire), 3 sitemap non lu en entier maintenant (run termine, pages
+    trouvees seulement par le sitemap ni vues ni dé-listees, pages connues non relues), 0 sinon."""
+    if summary.get("quota_exceeded"):
+        return 1
+    if summary.get("sitemap_status") in ("stale", "unavailable"):
+        print("ATTENTION : sitemap illisible (HTTP 429 ?) : pages connues non relues, aucune date enregistree ; "
+              "relancer plus tard.", file=sys.stderr)
+        return EXIT_SITEMAP_UNAVAILABLE
+    return 0
 
 
 if __name__ == "__main__":

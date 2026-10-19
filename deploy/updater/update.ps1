@@ -95,6 +95,11 @@ try {
     $start = Get-Date
 
     $code = Invoke-Step "1/7 projects" @("run")
+    $sitemapUnread = ($code -eq 3)
+    if ($sitemapUnread) {
+        Write-Host "Warning: run could not read the sitemap (exit code 3, HTTP 429?): known detail pages were not re-read; continuing, run again later." -ForegroundColor Yellow
+        $code = 0
+    }
     if ($code -eq 1) { Stop-Update "run: quota reached, or key/model refused along the way: see logs\runs\ (run again later: the run resumes where it stopped)" 1 }
     if ($code -ne 0) { Stop-LlmStep "run" $code }
 
@@ -143,9 +148,11 @@ try {
     foreach ($p in $manifest.files_by_type.PSObject.Properties) {
         Write-Host ("  {0,-12} {1,6} files  {2,7} chunks" -f $p.Name, $p.Value, $manifest.chunks_by_type.($p.Name))
     }
+    if ($sitemapUnread) { Write-Host "Warning: the sitemap could not be read; run the update again later to re-read the changed detail pages." -ForegroundColor Yellow }
     if ($csrQuota) { Write-Host "Warning: partial CSR links (quota); run csr-link then prod-export again later." -ForegroundColor Yellow }
     Write-Host "Next: import into Haystack (deploy\prod\GUIDE.md, or deploy\prod\upload.ps1)."
 } finally {
     Pop-Location
 }
+if ($sitemapUnread) { exit 3 }
 exit 0

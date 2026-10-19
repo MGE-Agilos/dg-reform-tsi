@@ -98,6 +98,8 @@ def _details(run: dict, step: str) -> tuple[str, str, str]:
                          f"{run.get('extract_failed', 0)} extraction)")
         if run.get("detail_without_sitemap_date"):
             parts.append(f"{run['detail_without_sitemap_date']} without sitemap date")
+        if run.get("skipped_no_sitemap"):
+            parts.append(f"{run['skipped_no_sitemap']} known pages not re-read (no fresh sitemap)")
         if run.get("remaining_detail"):
             parts.append(f"{run['remaining_detail']} detail pages left")
         new = int(w.get("detail", 0) or 0) + int(w.get("thin", 0) or 0)
@@ -136,6 +138,8 @@ def step_result(code: str, policy: str) -> str:
         return "ok"
     if code == "124" and policy in ("quota", "soft"):
         return "time budget reached, continued"
+    if code == "3" and policy in ("quota", "soft"):
+        return "sitemap unavailable, continued"
     if code == "1" and policy == "quota":
         return "quota (exit 1), continued"
     if policy == "soft":
