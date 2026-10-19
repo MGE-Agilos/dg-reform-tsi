@@ -46,6 +46,7 @@ class Settings(BaseModel):
     deliverables_max_words: int = 15000
     deliverables_max_pdf_mb: float = 50
     deliverables_recheck_days: int = 7  # relances : pas de reverification des publications recentes
+    deliverables_fetch_chunk: int = 25  # pages de publication lues par lot (enregistre avant le lot suivant)
     deliverables_llm_timeout_s: int = 600  # prompts longs, jusqu'a 15 000 mots
     # Analyse d'impact (onglet de la page web).
     impact_dir: str = "output/impact"

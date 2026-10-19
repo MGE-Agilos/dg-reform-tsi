@@ -106,6 +106,8 @@ def _details(run: dict, step: str) -> tuple[str, str, str]:
                  f"{run.get('remaining_publications', 0)} remaining", f"{len(run.get('failed') or [])} failed"]
         if run.get("publication_without_sitemap_date"):
             parts.append(f"{run['publication_without_sitemap_date']} without sitemap date")
+        if run.get("publication_pages_fetched"):
+            parts.append(f"{run['publication_pages_fetched']} pages read")
         return str(w.get("projects_updated", 0)), str(run.get("skipped_by_sitemap", "-")), ", ".join(parts)
     if step == "csr-link":
         failed = run.get("failed")

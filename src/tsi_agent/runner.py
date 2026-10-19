@@ -204,24 +204,31 @@ def run_deliverables(settings: Settings, *, full: bool = False, limit: int | Non
     """Livrables des projets, par lots : chaque lot est ecrit avant le suivant (reprise sur limite de souscription).
 
     `sitemap_url` : les pages de publication connues dont la date du sitemap n'a pas change ne sont pas relues
-    (sauf `full` ou `recheck_all`, qui relit toutes les pages sans retraiter les fichiers inchanges)."""
+    (sauf `full` ou `recheck_all`, qui relit toutes les pages sans retraiter les fichiers inchanges).
+
+    Un lot lit au plus `settings.deliverables_fetch_chunk` pages de publication (et envoie au plus `chunk_size`
+    publications au LLM) ; le writer enregistre le lot (dates du sitemap comprises) avant le suivant, si bien qu'une
+    interruption (budget de temps) garde les lots termines. Fin : plus rien a lire, ou un lot qui ne lit rien."""
     chunk = chunk_size if chunk_size is not None else settings.chunk_size
     with runlog.open_run(settings.logs_dir, run_id) as run:
         pipeline = pipeline_factory(settings, model=model, sitemap_url=sitemap_url)
         budget = limit
         chunks = 0
         quota = False
-        remaining = skipped = undated = 0
+        remaining = skipped = undated = fetched = 0
         written: dict[str, int] = {}
         failed: list[str] = []
         while True:
             n = chunk if budget is None else min(chunk, budget)
-            out = pipeline.run({"publications": {"full": full, "limit": n, "recheck_all": recheck_all}},
+            out = pipeline.run({"publications": {"full": full, "limit": n, "recheck_all": recheck_all,
+                                                 "fetch_limit": settings.deliverables_fetch_chunk}},
                                include_outputs_from={"publications", "texts", "summarizer", "writer"})
             chunks += 1
             skipped += out["publications"].get("skipped", 0)
             undated += out["publications"].get("undated", 0)
             sent = len(out["publications"]["to_process"])
+            chunk_fetched = out["publications"].get("fetched", 0)
+            fetched += chunk_fetched
             remaining = out["publications"]["remaining"]
             for key, value in out["writer"]["stats"].items():
                 written[key] = written.get(key, 0) + value
@@ -229,9 +236,10 @@ def run_deliverables(settings: Settings, *, full: bool = False, limit: int | Non
             quota = bool(out["summarizer"]["quota_exceeded"])
             if budget is not None:
                 budget -= sent
-            if quota or remaining == 0 or sent == 0 or (budget is not None and budget <= 0):
+            if quota or remaining == 0 or (sent == 0 and chunk_fetched == 0) or (budget is not None and budget <= 0):
                 break
         run.extra.update({"mode": "deliverables", "chunks": chunks, "quota_exceeded": quota, "written": written,
+                          "publication_pages_fetched": fetched,
                           "remaining_publications": remaining, "failed": sorted(set(failed)),
                           "skipped_by_sitemap": skipped, "publication_without_sitemap_date": undated})
     return run.final_summary

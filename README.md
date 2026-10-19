@@ -228,6 +228,11 @@ sa page de publication n'est même pas récupérée. Les relances rapprochées (
 souscription) repartent donc directement sur les publications restantes. Un run hebdomadaire revérifie tout,
 et `--full` force le retraitement.
 
+Le run avance par lots : un lot lit au plus `deliverables_fetch_chunk` pages de publication (25 par défaut) et
+envoie au plus `chunk_size` publications au LLM, puis enregistre l'état (dates du sitemap comprises) avant le lot
+suivant. Une interruption (budget de temps du workflow) garde les lots terminés, et une page n'est lue qu'une fois
+par run, même avec `--recheck-all`.
+
 Une publication qui n'est plus liée depuis aucune page détail (document retiré du site) est nettoyée : son
 entrée disparaît de `output/state/deliverables.json`, et sa sous-section disparaît du fichier des projets qui
 la citaient (le compteur `deliverables` suit). Son texte intégral reste dans `output/deliverables/` (fichier
