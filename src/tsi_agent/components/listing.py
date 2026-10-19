@@ -17,8 +17,34 @@ from tsi_agent.parsers.sitemap import parse_sitemap, sitemap_lastmods
 
 NAME = "SourceListingFetcher"
 SNAPSHOT_PATH = "state/sitemap_snapshot.json"  # sous output_dir : derniere lecture complete du sitemap
+STATUS_PATH = "state/sitemap_status.json"  # sous output_dir : resultat et heure de la derniere lecture
 _sleep = time.sleep  # remplaces par les tests
 _monotonic = time.monotonic
+
+
+class _SingleTryFetcher(PoliteFetcher):
+    """Une tentative par requete, sans intervalle ni ralentissement internes : les attentes du sitemap sont toutes
+    decidees (et bornees) par SourceListingFetcher."""
+
+    def __init__(self, cache_dir: str | Path, user_agent: str, base: PoliteFetcher | None = None):
+        super().__init__(cache_dir, min_interval_s=0, user_agent=user_agent, retries=1)
+        if base is not None:  # meme client HTTP (transport), memes regles robots.txt et meme crochet d'attente
+            self._client, self.respect_robots, self._robots, self._sleep = (base._client, base.respect_robots,
+                                                                            base._robots, base._sleep)
+
+    def _on_rate_limited(self, url: str) -> None:
+        return None
+
+
+def recent_sitemap_failure(output_dir: str | None, max_age_s: float) -> bool:
+    """La derniere lecture du sitemap (marqueur de l'etat) a-t-elle echoue il y a moins de `max_age_s` ?"""
+    if not output_dir or max_age_s <= 0:
+        return False
+    try:
+        data = json.loads((Path(output_dir) / STATUS_PATH).read_text(encoding="utf-8"))
+        return data.get("status") in ("stale", "unavailable") and time.time() - float(data["at"]) < max_age_s
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def urlset_xml(urls: dict[str, str | None]) -> bytes:
@@ -55,13 +81,15 @@ class SourceListingFetcher:
                  user_agent: str = DEFAULT_USER_AGENT, sitemap_retry_wait_s: float = 180,
                  sitemap_interval_s: float = 10, sitemap_attempts: int = 4,
                  sitemap_backoff_s: list[float] | None = None, sitemap_budget_s: float = 1200,
-                 output_dir: str | None = None):
+                 output_dir: str | None = None, patient: bool = True):
         """:param sitemap_retry_wait_s: attente avant la nouvelle lecture complete d'un sitemap incomplet.
         :param sitemap_interval_s: intervalle entre deux requetes du sitemap (index, enfants).
         :param sitemap_attempts: tentatives par page du sitemap sur HTTP 429 (en plus des reprises du fetcher).
         :param sitemap_backoff_s: attentes entre ces tentatives (defaut 60, 120, 240 s ; Retry-After si plus long).
         :param sitemap_budget_s: au-dela, plus d'attente entre tentatives : la lecture echoue vite.
         :param output_dir: dossier de l'etat ; instantane du sitemap ecrit apres une lecture complete, relu en secours.
+        :param patient: False : une seule tentative par page et pas de nouvelle lecture (lecture echouee juste avant
+            dans le meme job).
         """
         self.sources = sources
         self.cache_dir = cache_dir
@@ -73,7 +101,9 @@ class SourceListingFetcher:
         self.sitemap_backoff_s = list(sitemap_backoff_s) if sitemap_backoff_s is not None else [60.0, 120.0, 240.0]
         self.sitemap_budget_s = sitemap_budget_s
         self.output_dir = output_dir
+        self.patient = patient
         self._fetcher: PoliteFetcher | None = None
+        self._sitemap_fetcher: Any = None
         self._sitemap: SitemapRead | None = None
         self._sitemap_requests = 0
 
@@ -94,21 +124,42 @@ class SourceListingFetcher:
         return targets
 
     # --- sitemap -------------------------------------------------------------------------------------------------
+    def _sitemap_client(self) -> Any:
+        """Fetcher des requetes du sitemap : une seule tentative, sans attente interne (toutes les attentes sont ici,
+        dans le budget) ; meme cache disque que le fetcher partage. Un fetcher injecte (tests) sert tel quel."""
+        if self._sitemap_fetcher is None:
+            if self._fetcher is not None and not isinstance(self._fetcher, PoliteFetcher):
+                self._sitemap_fetcher = self._fetcher
+            else:
+                base = self._fetcher
+                self._sitemap_fetcher = _SingleTryFetcher(
+                    base.cache_dir if base is not None else self.cache_dir,
+                    user_agent=base.user_agent if base is not None else self.user_agent, base=base)
+        return self._sitemap_fetcher
+
     def _sitemap_get(self, url: str, deadline: float) -> bytes:
-        """Requete du sitemap, espacee des precedentes ; HTTP 429 : nouvelles tentatives patientes."""
-        attempts = max(1, self.sitemap_attempts)
+        """Requete du sitemap, espacee des precedentes (sauf memo) ; HTTP 429 : nouvelles tentatives patientes.
+
+        Aucune requete apres `deadline` ; attente (palier ou Retry-After) bornee au budget restant."""
+        client = self._sitemap_client()
+        attempts = max(1, self.sitemap_attempts) if self.patient else 1
         for attempt in range(1, attempts + 1):
-            if self._sitemap_requests and self.sitemap_interval_s > 0:
-                _sleep(self.sitemap_interval_s)
-            self._sitemap_requests += 1
+            if _monotonic() > deadline:
+                raise FetchError(url, "sitemap time budget exhausted")
+            memo = url in getattr(client, "_memo", {})
+            pause = min(self.sitemap_interval_s, deadline - _monotonic())
+            if self._sitemap_requests and pause > 0 and not memo:
+                _sleep(pause)
+            self._sitemap_requests += not memo
             try:
-                return self._get_fetcher().get(url).content
+                return client.get(url).content
             except FetchError as exc:
                 if exc.status != 429 or attempt >= attempts:
                     raise
                 steps = self.sitemap_backoff_s or [0.0]
-                wait = max(steps[min(attempt - 1, len(steps) - 1)], exc.retry_after or 0)
-                if _monotonic() + wait > deadline:
+                wait = min(max(steps[min(attempt - 1, len(steps) - 1)], exc.retry_after or 0),
+                           deadline - _monotonic())
+                if wait <= 0:
                     raise
                 runlog.event(NAME, "sitemap", url, "rate_limited", attempt=attempt, wait_s=wait)
                 _sleep(wait)
@@ -197,12 +248,16 @@ class SourceListingFetcher:
         if not index_url:
             self._sitemap = SitemapRead("not_requested")
             return self._sitemap
+        # Budget de toute la lecture (attentes et nouvelle lecture comprises) : pire cas ~ budget + durees des
+        # requetes elles-memes.
         deadline = _monotonic() + self.sitemap_budget_s
         read = self._read_sitemap(index_url, deadline)
-        if read is None or read[2]:
-            if self.sitemap_retry_wait_s > 0:
-                _sleep(self.sitemap_retry_wait_s)
-            read = self._read_sitemap(index_url, deadline + self.sitemap_retry_wait_s)
+        if (read is None or read[2]) and self.patient:
+            remaining = deadline - _monotonic()
+            if remaining > self.sitemap_retry_wait_s:
+                if self.sitemap_retry_wait_s > 0:
+                    _sleep(self.sitemap_retry_wait_s)
+                read = self._read_sitemap(index_url, deadline)
         if read is not None and not read[2]:
             order, pages, _ = read
             fresh = [pages[u] for u in order]
@@ -227,7 +282,20 @@ class SourceListingFetcher:
             stale = any(p.kind == "sitemap_stale" for p in out)
             self._sitemap = SitemapRead("stale" if stale else "unavailable", out)
         runlog.event(NAME, "sitemap", index_url, self._sitemap.status, pages=len(self._sitemap.pages))
+        self._save_status(self._sitemap.status)
         return self._sitemap
+
+    def _save_status(self, status: str) -> None:
+        """Marqueur de la derniere lecture (state/sitemap_status.json) : un etage suivant du meme job (deliverables)
+        ne refait pas la lecture patiente si celle-ci vient d'echouer (recent_sitemap_failure)."""
+        if not self.output_dir:
+            return
+        path = Path(self.output_dir) / STATUS_PATH
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"status": status, "at": time.time()}), encoding="utf-8")
+        except OSError as exc:
+            runlog.event(NAME, "error", str(path), "status_write_failed", error=repr(exc))
 
     def fetch_sitemap(self) -> list[RawPage]:
         """Pages du sitemap lues maintenant et en entier ; [] sinon (absent, indisponible, incomplet ou ancien) : les

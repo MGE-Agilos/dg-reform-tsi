@@ -373,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
             traceback.print_exc(file=sys.stderr)
             return 2
         print(json.dumps(summary, indent=2, ensure_ascii=False))
-        return 1 if summary.get("quota_exceeded") else 0
+        return run_exit_code(summary)
     if args.command == "index":
         try:
             summary = run_index(settings, full=args.full)
@@ -411,13 +411,14 @@ EXIT_SITEMAP_UNAVAILABLE = 3
 
 
 def run_exit_code(summary: dict) -> int:
-    """Code de sortie de `run` : 1 limite LLM (prioritaire), 3 sitemap non lu en entier maintenant (run termine, pages
-    trouvees seulement par le sitemap ni vues ni dé-listees, pages connues non relues), 0 sinon."""
+    """Code de sortie de `run` et `deliverables` : 1 limite LLM (prioritaire), 3 sitemap non lu en entier maintenant
+    (etage termine, pages connues et datees non relues ; pour `run`, pages trouvees seulement par le sitemap ni vues
+    ni dé-listees), 0 sinon."""
     if summary.get("quota_exceeded"):
         return 1
     if summary.get("sitemap_status") in ("stale", "unavailable"):
-        print("ATTENTION : sitemap illisible (HTTP 429 ?) : pages connues non relues, aucune date enregistree ; "
-              "relancer plus tard.", file=sys.stderr)
+        print("ATTENTION : sitemap illisible (HTTP 429 ?) : pages connues et datees non relues, aucune date tiree "
+              "d'une copie ancienne n'a ete enregistree ; relancer plus tard.", file=sys.stderr)
         return EXIT_SITEMAP_UNAVAILABLE
     return 0
 

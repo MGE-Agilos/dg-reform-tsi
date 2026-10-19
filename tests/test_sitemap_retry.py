@@ -157,3 +157,79 @@ def test_pipeline_passes_the_configured_sitemap_options(tmp_path):
     lf = pipe.get_component("listing")
     assert (lf.sitemap_retry_wait_s, lf.sitemap_attempts, lf.sitemap_backoff_s, lf.output_dir) == \
         (42, 2, [5], s.output_dir)
+
+
+# --- budget reel : une seule tentative par requete, toutes les attentes ici ---------------------------------------
+
+def real_listing(tmp_path, handler, monkeypatch, **kw):
+    """SourceListingFetcher sur un vrai PoliteFetcher (transport simule) ; horloge factice avancee par les attentes."""
+    import httpx
+
+    from tsi_agent.http import PoliteFetcher
+    clock, waits, internal = [0.0], [], []
+
+    def sleep(seconds):
+        waits.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(listing_mod, "_sleep", sleep)
+    monkeypatch.setattr(listing_mod, "_monotonic", lambda: clock[0])
+    base = PoliteFetcher(tmp_path / "cache", min_interval_s=0, transport=httpx.MockTransport(handler),
+                         respect_robots=False, sleep=internal.append)
+    options = {"sitemap_retry_wait_s": 180, "sitemap_interval_s": 10, "sitemap_attempts": 4,
+               "sitemap_backoff_s": [60, 120, 240], "sitemap_budget_s": 1200, **kw}
+    lf = SourceListingFetcher(sources={"sitemap_url": INDEX}, **options)
+    lf._fetcher = base
+    return lf, clock, waits, internal
+
+
+def test_worst_case_stays_within_the_budget_with_a_huge_retry_after(tmp_path, monkeypatch):
+    import httpx
+    requests = []
+
+    def handler(request):
+        requests.append(str(request.url))
+        if str(request.url) == INDEX:
+            return httpx.Response(200, content=INDEX_XML)
+        return httpx.Response(429, headers={"Retry-After": "3600"})
+
+    lf, clock, waits, internal = real_listing(tmp_path, handler, monkeypatch)
+    assert lf.read_sitemap().status == "unavailable"
+    assert clock[0] <= 1200 and sum(waits) <= 1200  # Retry-After borne au budget restant
+    assert internal == []  # aucune attente cachee dans le fetcher (une tentative par requete)
+    assert len(requests) <= 1 + 2 * 4
+
+
+def test_each_retry_is_a_single_request_and_paced_waits_skip_the_memo(tmp_path, monkeypatch):
+    import httpx
+    hits = {}
+
+    def handler(request):
+        url = str(request.url)
+        hits[url] = hits.get(url, 0) + 1
+        if url == INDEX:
+            return httpx.Response(200, content=INDEX_XML)
+        if url == CHILD2 and hits[url] <= 4:  # echoue a toute la premiere lecture, lu a la nouvelle lecture
+            return httpx.Response(429)
+        return httpx.Response(200, content=child(1 if url == CHILD1 else 2))
+
+    lf, clock, waits, internal = real_listing(tmp_path, handler, monkeypatch)
+    read = lf.read_sitemap()
+    assert read.status == "fresh" and hits[CHILD2] == 5 and hits[INDEX] == 1 and hits[CHILD1] == 1
+    # 1re lecture : 10 (enfant 1), 10 + 60, 10 + 120, 10 + 240, 10 (enfant 2) ; attente 180 ; nouvelle lecture :
+    # index et enfant 1 dans le memo (pas d'intervalle), enfant 2 : 10.
+    assert waits == [10, 10, 60, 10, 120, 10, 240, 10, 180, 10]
+    assert internal == []
+
+
+def test_no_request_once_the_budget_is_spent(tmp_path, monkeypatch):
+    import httpx
+    requests = []
+
+    def handler(request):
+        requests.append(str(request.url))
+        return httpx.Response(429) if str(request.url) != INDEX else httpx.Response(200, content=INDEX_XML)
+
+    lf, clock, waits, _ = real_listing(tmp_path, handler, monkeypatch, sitemap_budget_s=65)
+    assert lf.read_sitemap().status == "unavailable"
+    assert clock[0] <= 65 and requests.count(CHILD2) <= 1

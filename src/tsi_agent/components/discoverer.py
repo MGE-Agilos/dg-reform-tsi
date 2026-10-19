@@ -227,9 +227,12 @@ class ProjectDiscoverer:
     @component.output_types(refs=list[ProjectRef], programme_docs=list[ProgrammeDoc],
                             suspect_countries=list[str], scope=dict[str, Any], deferred_ids=list[str],
                             report=dict[str, Any], excluded_thin_ids=list[str])
-    def run(self, pages: list[RawPage], sitemap_status: str | None = None) -> dict[str, Any]:
+    def run(self, pages: list[RawPage], sitemap_status: str | None = None,
+            refresh_sitemap_pages: bool = False) -> dict[str, Any]:
         """`sitemap_status` : etat de la lecture du sitemap (SourceListingFetcher) ; a defaut, deduit des pages.
-        Pages "sitemap_stale" (copie ancienne) : decouverte seulement, sans date ni dé-listing."""
+        Pages "sitemap_stale" (copie ancienne) : decouverte seulement, sans date ni dé-listing.
+        `refresh_sitemap_pages` (--recheck-all, --full) : les pages du sitemap absentes des listings sont telechargees
+        meme si l'etat les connait (une page disparue mais encore dans le sitemap est ainsi reperee)."""
         refs: list[ProjectRef] = []
         docs: list[ProgrammeDoc] = []
         suspect: list[str] = []
@@ -286,7 +289,8 @@ class ProjectDiscoverer:
         from_sitemap: list[ProjectRef] = []
         if sitemap_keys or stale_keys:
             from_sitemap = self._sitemap_refs(project_urls, {r.detail_url for r in resolved if r.detail_url},
-                                              sorted(sitemap_keys | stale_keys)[0], deferred, sitemap_report)
+                                              sorted(sitemap_keys | stale_keys)[0], deferred, sitemap_report,
+                                              use_state=not refresh_sitemap_pages)
         thin_ids = {r.project_id for r in resolved if not r.detail_url}
         resolved += from_sitemap
         for r in resolved:
@@ -345,14 +349,14 @@ class ProjectDiscoverer:
                           policy_area=policy_area_from_url(url), listing_urls=[listing_url])
 
     def _sitemap_refs(self, urls: list[str], known: set[str], listing_url: str, deferred: list[str],
-                      report: dict[str, Any]) -> list[ProjectRef]:
+                      report: dict[str, Any], use_state: bool = True) -> list[ProjectRef]:
         """Projets des pages du sitemap qui ne sont la page detail d'aucun projet deja decouvert."""
         new_urls = [u for u in urls if u not in known]
         report["new_urls"] = len(new_urls)
         out = []
         for url in new_urls:
             outcome = self._sitemap_cache.get(url)
-            if outcome is None and (known_ref := self._ref_from_state(url, listing_url)) is not None:
+            if outcome is None and use_state and (known_ref := self._ref_from_state(url, listing_url)) is not None:
                 # Page detail deja dans l'etat : la decouverte n'a pas besoin de la telecharger (le detecteur la
                 # relit si sa date du sitemap a change, ou sous --full / --recheck-all).
                 outcome = ("ref", known_ref)
@@ -436,7 +440,8 @@ class ProjectDiscoverer:
         if store is None:
             return (None, None, None)
         entry = store.get(slug_from_url(url))
-        if entry is None or not entry.detail_page or url not in entry.source_urls:
+        # Projet dé-liste : pas d'indice (une copie ancienne ne le fait pas revenir ; page disparue dé-listable).
+        if entry is None or not entry.detail_page or not entry.listed or url not in entry.source_urls:
             return (None, None, None)
         if entry.title:
             return (entry.programme, entry.year, entry.title)

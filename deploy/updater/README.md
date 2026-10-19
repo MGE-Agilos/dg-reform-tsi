@@ -137,8 +137,9 @@ one, the English meaning is given in parentheses.
 | 7 | `prod-export` | writes one file per project, programme, publication and CSR, with its metadata, into `deploy\prod\build\files`, and the manifest | no |
 
 Exit codes: `0` done; `1` LLM quota reached (the next run resumes where it stopped); `2` fatal error (details in
-the `ERREUR` (error) message and in `logs\runs\`); `3` (`run` only) the site sitemap could not be read (HTTP 429):
-the run finished without it, known detail pages were not re-read and no sitemap date was recorded; `update.ps1`
+the `ERREUR` (error) message and in `logs\runs\`); `3` (`run`, `deliverables`) the site sitemap could not be read (HTTP
+429): the step finished without it, known pages with a recorded date were not re-read and no date from an old copy
+was recorded; `update.ps1`
 continues with the next steps and ends with exit code `3`: run the update again later.
 
 **LLM check before any work.** `run`, `deliverables`, `csr-link` and `llm-check` first check the provider: known

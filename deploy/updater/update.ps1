@@ -107,6 +107,11 @@ try {
         Write-Host "=== 2/7 deliverables: skipped (-SkipDeliverables)"
     } else {
         $code = Invoke-Step "2/7 deliverables" @("deliverables")
+        if ($code -eq 3) {
+            Write-Host "Warning: deliverables could not read the sitemap (exit code 3): known publications were not re-read; continuing." -ForegroundColor Yellow
+            $sitemapUnread = $true
+            $code = 0
+        }
         if ($code -eq 1) { Stop-Update "deliverables: quota reached, or key/model refused along the way: see logs\runs\ (run again later: it resumes automatically)" 1 }
         if ($code -ne 0) { Stop-LlmStep "deliverables" $code }
     }
@@ -148,7 +153,7 @@ try {
     foreach ($p in $manifest.files_by_type.PSObject.Properties) {
         Write-Host ("  {0,-12} {1,6} files  {2,7} chunks" -f $p.Name, $p.Value, $manifest.chunks_by_type.($p.Name))
     }
-    if ($sitemapUnread) { Write-Host "Warning: the sitemap could not be read; run the update again later to re-read the changed detail pages." -ForegroundColor Yellow }
+    if ($sitemapUnread) { Write-Host "Warning: the sitemap could not be read; run the update again later to re-read the changed detail and publication pages." -ForegroundColor Yellow }
     if ($csrQuota) { Write-Host "Warning: partial CSR links (quota); run csr-link then prod-export again later." -ForegroundColor Yellow }
     Write-Host "Next: import into Haystack (deploy\prod\GUIDE.md, or deploy\prod\upload.ps1)."
 } finally {

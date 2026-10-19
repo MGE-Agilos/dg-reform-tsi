@@ -99,6 +99,7 @@ def run_extraction(settings: Settings, sources: dict[str, Any], *, full: bool = 
             chunk_limit = None if dry_run else (chunk if budget is None else min(chunk, budget))
             data: dict[str, Any] = {
                 "listing": {"countries": countries},
+                "discoverer": {"refresh_sitemap_pages": recheck_all or full},
                 "detector": {"run_id": run.run_id, "full": full, "limit": chunk_limit,
                              "sitemap_skip": not recheck_all},
             }
@@ -225,19 +226,22 @@ def run_deliverables(settings: Settings, *, full: bool = False, limit: int | Non
         budget = limit
         chunks = 0
         quota = False
-        remaining = skipped = undated = fetched = 0
+        remaining = skipped = undated = fetched = no_sitemap = 0
+        sitemap_status = "not_requested"
         written: dict[str, int] = {}
         failed: list[str] = []
         while True:
             n = chunk if budget is None else min(chunk, budget)
             out = pipeline.run({"publications": {"full": full, "limit": n, "recheck_all": recheck_all,
                                                  "fetch_limit": settings.deliverables_fetch_chunk}},
-                               include_outputs_from={"publications", "texts", "summarizer", "writer"})
+                               include_outputs_from={"discoverer", "publications", "texts", "summarizer", "writer"})
             chunks += 1
             skipped += out["publications"].get("skipped", 0)
             undated += out["publications"].get("undated", 0)
             sent = len(out["publications"]["to_process"])
             chunk_fetched = out["publications"].get("fetched", 0)
+            no_sitemap += out["publications"].get("skipped_no_sitemap", 0)
+            sitemap_status = out.get("discoverer", {}).get("sitemap_status", sitemap_status)
             fetched += chunk_fetched
             remaining = out["publications"]["remaining"]
             for key, value in out["writer"]["stats"].items():
@@ -249,7 +253,9 @@ def run_deliverables(settings: Settings, *, full: bool = False, limit: int | Non
             if quota or remaining == 0 or (sent == 0 and chunk_fetched == 0) or (budget is not None and budget <= 0):
                 break
         run.extra.update({"mode": "deliverables", "chunks": chunks, "quota_exceeded": quota, "written": written,
-                          "publication_pages_fetched": fetched,
+                          "publication_pages_fetched": fetched, "skipped_no_sitemap": no_sitemap,
+                          "sitemap_status": sitemap_status,
+                          "sitemap_read": sitemap_status in ("fresh", "not_requested"),
                           "remaining_publications": remaining, "failed": sorted(set(failed)),
                           "skipped_by_sitemap": skipped, "publication_without_sitemap_date": undated})
     return run.final_summary

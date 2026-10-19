@@ -83,6 +83,10 @@ SITEMAP_WARNING = ("sitemap could not be read: pages found only via the sitemap 
                    "delisted this run")
 
 
+DELIVERABLES_SITEMAP_WARNING = ("sitemap could not be read: known publications with a recorded date were not "
+                                "re-read this run")
+
+
 def _details(run: dict, step: str) -> tuple[str, str, str]:
     """(new or updated projects, pages skipped thanks to the sitemap, details)."""
     if step == "run":
@@ -112,6 +116,8 @@ def _details(run: dict, step: str) -> tuple[str, str, str]:
                  f"{run.get('remaining_publications', 0)} remaining", f"{len(run.get('failed') or [])} failed"]
         if run.get("publication_without_sitemap_date"):
             parts.append(f"{run['publication_without_sitemap_date']} without sitemap date")
+        if run.get("skipped_no_sitemap"):
+            parts.append(f"{run['skipped_no_sitemap']} known publications not re-read (no fresh sitemap)")
         if run.get("publication_pages_fetched"):
             parts.append(f"{run['publication_pages_fetched']} pages read")
         return str(w.get("projects_updated", 0)), str(run.get("skipped_by_sitemap", "-")), ", ".join(parts)
@@ -202,8 +208,9 @@ def render(runs_dir: Path, work_dir: Path, manifest: Path, since: str | None = N
                 pass
         lines += ["", f"**Total LLM cost: {_money(total)}**", ""]
         for run in runs:
-            if step_of(run) == "run" and run.get("sitemap_read") is False:
-                lines += [f"> **Warning ({run.get('run_id', '-')}): {SITEMAP_WARNING}.**", ""]
+            if run.get("sitemap_read") is False and step_of(run) in ("run", "deliverables"):
+                text = SITEMAP_WARNING if step_of(run) == "run" else DELIVERABLES_SITEMAP_WARNING
+                lines += [f"> **Warning ({run.get('run_id', '-')}): {text}.**", ""]
 
     work = Path(work_dir)
     csr = _read_json(work / "csr-build.out")

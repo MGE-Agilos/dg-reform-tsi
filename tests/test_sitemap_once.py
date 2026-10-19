@@ -267,3 +267,90 @@ def test_run_step_defers_exit_3_without_retry(tmp_path, policy):
 def test_run_step_strict_fails_on_exit_3(tmp_path):
     out, _ = run_step(tmp_path, "strict", 3)
     assert out.returncode == 3
+
+
+# --- rattrapage, lecture partielle, pages dé-listees, --recheck-all ------------------------------------------------
+
+NEWER = "2026-02-01T10:00Z"
+
+
+def entry_dates(s, url):
+    return [e.sitemap_lastmod for e in LocalProjectStore(s.output_dir).all().values() if url in e.source_urls]
+
+
+def test_failed_month_then_fresh_month_catches_the_changes(settings, corpus):
+    """Scenario de la revue : mois M sans sitemap (pages modifiees invisibles), mois M+1 avec sitemap frais."""
+    dates, known = corpus
+    changed = [u for u in known if u != ONLY_IN_SITEMAP][:3] + [ONLY_IN_SITEMAP]
+    newdates = dict(dates) | {u: NEWER for u in changed}
+    s1 = run_extraction(settings, SOURCES, run_id="m1", pipeline_factory=factory(FakeChatGenerator(),
+                                                                                 Throttled(newdates)))
+    assert s1["sitemap_status"] in ("stale", "unavailable")
+    for u in changed:
+        assert NEWER not in entry_dates(settings, u)
+    site = Site(newdates)
+    s2 = run_extraction(settings, SOURCES, run_id="m2", pipeline_factory=factory(FakeChatGenerator(), site))
+    assert s2["sitemap_status"] == "fresh"
+    fetched = set(site.calls)
+    for u in changed:
+        assert u in fetched, u
+        assert NEWER in entry_dates(settings, u)
+    others = [u for u in known if u not in changed]
+    assert not (set(others) & fetched)
+
+
+def test_partial_fresh_read_uses_fresh_dates_only_and_never_delists(tmp_path):
+    """Un enfant lu maintenant, l'autre illisible sans copie : dates sures pour le premier seulement."""
+    import tsi_agent.components.listing as listing_mod
+    from test_sitemap_retry import CHILD1, CHILD2, Flaky, INDEX, NS
+    url1, url2 = f"{BASE}/green-transition/page-one_en", f"{BASE}/green-transition/page-two_en"
+
+    def child(url):
+        return (f'<?xml version="1.0"?><urlset {NS}><url><loc>{url}</loc><lastmod>{DATE}</lastmod></url>'
+                f'</urlset>').encode()
+
+    site = Flaky({CHILD2: 99})
+    site.pages.update({CHILD1: child(url1), CHILD2: child(url2)})
+    lf = listing_mod.SourceListingFetcher(sources={"sitemap_url": INDEX}, sitemap_attempts=1, sitemap_retry_wait_s=0)
+    lf._fetcher = site
+    read = lf.read_sitemap()
+    assert read.status == "unavailable" and [p.url for p in read.pages] == [CHILD1]
+    store = LocalProjectStore(tmp_path)
+    for pid, url in (("page-one", url1), ("page-two", url2)):
+        store.put(StoreEntry(project_id=pid, file="f", detail_page=True, programme="TSI", year=2022, title=pid,
+                             content_hash="sha256:x", source_urls=[url, INDEX], first_seen="d", last_updated="d",
+                             sitemap_lastmod=DATE))
+    disc = ProjectDiscoverer()
+    disc._store = store
+    disc._fetcher = FakeFetcher()
+    out = disc.run(pages=read.pages, sitemap_status=read.status)
+    refs = {r.project_id: r for r in out["refs"]}
+    assert refs["page-one"].sitemap_lastmod == DATE and "page-two" not in refs
+    assert INDEX not in out["scope"]["fetched"] and out["scope"]["sitemap"] is False
+    d = ChangeDetector(output_dir=str(tmp_path))
+    d._store = store
+    with runlog.open_run(tmp_path / "logs", "r") as run:
+        det = d.run(refs=out["refs"], run_id="r", scope=out["scope"])
+    assert det["detail"] == [] and det["delisted"] == []  # page-two absente mais sitemap incomplet : gardee
+    assert run.counts["classify:unchanged_sitemap"] == 1  # date fraiche de page-one
+
+
+def test_a_delisted_detail_page_is_not_revived_from_the_state(tmp_path):
+    url = f"{BASE}/green-transition/gone-page_en"
+    store = LocalProjectStore(tmp_path)
+    store.put(StoreEntry(project_id="gone-page", file="f", detail_page=True, programme="TSI", year=2022,
+                         title="Gone", source_urls=[url, SITEMAP], first_seen="d", last_updated="d", listed=False))
+    disc = ProjectDiscoverer()
+    disc._store = store
+    assert disc._ref_from_state(url, SITEMAP) is None and disc._hint_from_store(url) == (None, None, None)
+
+
+def test_recheck_all_downloads_the_sitemap_only_pages_too(settings, corpus):
+    dates, known = corpus
+    site = Site(dates)
+    run_extraction(settings, SOURCES, run_id="recheck", recheck_all=True,
+                   pipeline_factory=factory(FakeChatGenerator(), site))
+    assert ONLY_IN_SITEMAP in site.calls
+    site = Site(dates)
+    run_extraction(settings, SOURCES, run_id="inc", pipeline_factory=factory(FakeChatGenerator(), site))
+    assert ONLY_IN_SITEMAP not in site.calls

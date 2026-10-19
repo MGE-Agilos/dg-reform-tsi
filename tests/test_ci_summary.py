@@ -271,3 +271,14 @@ def test_exit_3_of_a_step_is_shown_as_sitemap_unavailable_and_known_pages_not_re
     write(path, {**data, "sitemap_read": False, "skipped_no_sitemap": 830})
     md = ci.render(runs_dir=runs, work_dir=work, manifest=manifest, since="2026-11-01T03:00:00+00:00")
     assert "830 known pages not re-read (no fresh sitemap)" in md and SITEMAP_WARNING in md
+
+
+def test_summary_warns_when_deliverables_could_not_read_the_sitemap(tmp_path):
+    ci = load()
+    runs, work, manifest = fake_logs(tmp_path)
+    path = runs / "20261101-040000.summary.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    write(path, {**data, "sitemap_read": False, "skipped_no_sitemap": 480})
+    md = ci.render(runs_dir=runs, work_dir=work, manifest=manifest, since="2026-11-01T03:00:00+00:00")
+    assert ci.DELIVERABLES_SITEMAP_WARNING in md and SITEMAP_WARNING not in md
+    assert "480 known publications not re-read (no fresh sitemap)" in md

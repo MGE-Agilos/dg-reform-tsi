@@ -57,10 +57,14 @@ class PublicationDiscoverer(_Http):
 
     def __init__(self, output_dir: str = "output", cache_dir: str = ".cache/http", min_interval_s: float = 2.0,
                  user_agent: str = DEFAULT_USER_AGENT, sitemap_url: str | None = None,
-                 sitemap_options: dict[str, Any] | None = None):
-        """:param sitemap_options: parametres de lecture du sitemap (config.sitemap_options)."""
+                 sitemap_options: dict[str, Any] | None = None, sitemap_failure_memory_s: float = 0):
+        """:param sitemap_options: parametres de lecture du sitemap (config.sitemap_options).
+        :param sitemap_failure_memory_s: si la lecture du sitemap (marqueur de l'etat, ecrit par `run`) a echoue il y a
+            moins de N s, une seule tentative rapide au lieu de la lecture patiente (0 : toujours patiente)."""
         self.output_dir = output_dir
         self.sitemap_options = dict(sitemap_options or {})
+        self.sitemap_failure_memory_s = sitemap_failure_memory_s
+        self._sitemap_status = "not_requested"
         self.cache_dir = cache_dir
         self.min_interval_s = min_interval_s
         self.user_agent = user_agent
@@ -74,18 +78,24 @@ class PublicationDiscoverer(_Http):
         if self._lastmods is None:
             self._lastmods = {}
             if self.sitemap_url:
-                from tsi_agent.components.listing import SourceListingFetcher
+                from tsi_agent.components.listing import SourceListingFetcher, recent_sitemap_failure
+                patient = not recent_sitemap_failure(self.output_dir, self.sitemap_failure_memory_s)
+                if not patient:
+                    runlog.event("PublicationDiscoverer", "sitemap", self.sitemap_url, "quick_read",
+                                 message="sitemap read failed shortly before (run): single quick attempt")
                 listing = SourceListingFetcher(sources={"sitemap_url": self.sitemap_url}, cache_dir=self.cache_dir,
                                                min_interval_s=self.min_interval_s, user_agent=self.user_agent,
-                                               **{"output_dir": self.output_dir, **self.sitemap_options})
+                                               **{"output_dir": self.output_dir, **self.sitemap_options},
+                                               patient=patient)
                 listing._fetcher = self._get_fetcher()
-                for page in listing.fetch_sitemap():
+                for page in listing.fetch_sitemap():  # lecture fraiche et complete seulement
                     self._lastmods.update(sitemap_lastmods(page.content))
+                self._sitemap_status = listing.read_sitemap().status
                 runlog.event("PublicationDiscoverer", "sitemap", self.sitemap_url,
                              "ok" if self._lastmods else "unavailable", dates=len(self._lastmods))
         return self._lastmods
 
-    @component.output_types(publications=list[Publication], complete=bool)
+    @component.output_types(publications=list[Publication], complete=bool, sitemap_status=str)
     def run(self) -> dict[str, Any]:
         store = self._store if self._store is not None else shared_store(self.output_dir)
         fetcher = self._get_fetcher()
@@ -131,7 +141,7 @@ class PublicationDiscoverer(_Http):
         publications = list(by_url.values())
         runlog.event("PublicationDiscoverer", "discover", None, publications=len(publications),
                      projects_with_publications=projects, missing_pages=len(missing), from_state=from_state)
-        return {"publications": publications, "complete": not missing}
+        return {"publications": publications, "complete": not missing, "sitemap_status": self._sitemap_status}
 
 
 @component
@@ -150,21 +160,24 @@ class PublicationFetcher(_Http):
         self._offered: set[str] = set()  # deja proposees pendant ce run (boucle par lots du runner)
 
     @component.output_types(to_process=list[Publication], unchanged=list[Publication], failed=list[str],
-                            remaining=int, skipped=int, undated=int, fetched=int)
+                            remaining=int, skipped=int, undated=int, fetched=int, skipped_no_sitemap=int)
     def run(self, publications: list[Publication], full: bool = False, limit: int | None = None,
-            recheck_all: bool = False, fetch_limit: int | None = None) -> dict[str, Any]:
+            recheck_all: bool = False, fetch_limit: int | None = None,
+            sitemap_status: str | None = None) -> dict[str, Any]:
         """Publication connue dont la date du sitemap n'est pas plus recente que celle enregistree : non relue
         (`skipped`, avant `recheck_days` et les limites), sauf `full` ou `recheck_all`. `undated` : pages relues
         faute de date du sitemap. `limit` : publications envoyees au LLM ; `fetch_limit` : pages de publication lues
         (`fetched`) dans cet appel, le reste compte dans `remaining` pour l'appel suivant. Une page n'est lue qu'une
-        fois par instance (par run), meme sous `recheck_all`."""
+        fois par instance (par run), meme sous `recheck_all`. `skipped_no_sitemap` : publications connues et datees
+        non relues faute de sitemap frais (`sitemap_status` "stale" ou "unavailable"), sans date enregistree."""
         known = DeliverableStore(self.output_dir)
         # Les relances rapprochees (reprise apres limite de souscription) ne reverifient pas les pages deja vues.
         recent_since = (date.today() - timedelta(days=self.recheck_days)).isoformat()
         to_process: list[Publication] = []
         unchanged: list[Publication] = []
         failed: list[str] = []
-        remaining = skipped = undated = fetched = 0
+        remaining = skipped = undated = fetched = no_sitemap = 0
+        sitemap_missing = sitemap_status in ("stale", "unavailable")
         for pub in publications:
             if pub.url in self._offered:
                 continue
@@ -179,6 +192,13 @@ class PublicationFetcher(_Http):
                 skipped += 1
                 runlog.event("PublicationFetcher", "classify", pub.publication_id, "unchanged_sitemap",
                              lastmod=pub.sitemap_lastmod)
+                continue
+            if (entry is not None and not full and not recheck_all and sitemap_missing and pub.sitemap_lastmod is None
+                    and entry.sitemap_lastmod):
+                self._offered.add(pub.url)
+                unchanged.append(pub.model_copy(update=kept))
+                no_sitemap += 1
+                runlog.event("PublicationFetcher", "classify", pub.publication_id, "unchanged_no_sitemap")
                 continue
             if entry is not None and not full and entry.processed >= recent_since:
                 self._offered.add(pub.url)
@@ -212,7 +232,7 @@ class PublicationFetcher(_Http):
                          files=len(files))
             to_process.append(pub)
         return {"to_process": to_process, "unchanged": unchanged, "failed": failed, "remaining": remaining,
-                "skipped": skipped, "undated": undated, "fetched": fetched}
+                "skipped": skipped, "undated": undated, "fetched": fetched, "skipped_no_sitemap": no_sitemap}
 
 
 def pdf_text(data: bytes) -> tuple[int, str]:
