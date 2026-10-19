@@ -14,7 +14,7 @@ The deployment guides below are in English; the rest of this document is in Fren
 | Task | Guide |
 |---|---|
 | **Deploy to PROD on Haystack Enterprise** (data files, index, pipelines) | [deploy/prod/GUIDE.md](deploy/prod/GUIDE.md) (order of operations) and [deploy/prod/README.md](deploy/prod/README.md) (details) |
-| **Update the data (PC)**: new projects, publications, CSRs and links, with EC GPT or OpenAI | [deploy/updater/README.md](deploy/updater/README.md) |
+| **Update the data (PC)**: new projects, publications, CSRs and links, with the Claude Code CLI, EC GPT or OpenAI; monthly as a Windows scheduled task (`deploy\updater\register-task.ps1`), GitHub Actions only as a manual fallback | [deploy/updater/README.md](deploy/updater/README.md) |
 | **Web explorer**: GitHub Pages or local server | <https://mge-agilos.github.io/dg-reform-tsi/> and [deploy/frontend-local/README.md](deploy/frontend-local/README.md) |
 
 **Latest data:** [repository Releases](https://github.com/MGE-Agilos/dg-reform-tsi/releases) (tags

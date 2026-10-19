@@ -183,7 +183,7 @@ def render(runs_dir: Path, work_dir: Path, manifest: Path, since: str | None = N
     if partial_artifact:
         lines += [f"> **The job did not finish.** The work done so far (state of `output/`) is kept in the artifact "
                   f"`{partial_artifact}` for 30 days: restore it as described in deploy/updater/README.md "
-                  "(\"Automatic monthly update\", failed run).", ""]
+                  "(\"Manual update on GitHub Actions (fallback)\", failed run).", ""]
 
     lines += ["### Runs of the agent", ""]
     runs = load_runs(runs_dir, since)

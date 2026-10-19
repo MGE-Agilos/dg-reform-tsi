@@ -1,9 +1,10 @@
 # Updating the TSI data on a Windows PC
 
 This guide sets up, on a PC, the search for new documents published by the Commission (TSI and SRSP projects,
-project publications, country-specific recommendations (CSRs) and project -> CSR links), with an
-OpenAI-compatible LLM: the Commission's **EC GPT** gateway or the **OpenAI** API. The result is a folder of files
-ready to import into Haystack Enterprise.
+project publications, country-specific recommendations (CSRs) and project -> CSR links), with the **Claude
+Code CLI** or an OpenAI-compatible LLM (the Commission's **EC GPT** gateway or the **OpenAI** API). The result is
+a folder of files ready to import into Haystack Enterprise. The monthly update can run on its own as a scheduled
+task (see "Scheduled update on this PC").
 
 No knowledge of Python is needed: you only copy the commands into **PowerShell**, from the repository folder. Use
 the normal PowerShell console (Start menu, "Windows PowerShell" or "Terminal"), not **PowerShell ISE**, which
@@ -89,11 +90,20 @@ one, the English meaning is given in parentheses.
    ```powershell
    .\deploy\updater\update.ps1
    ```
-   The script checks the settings and the key, runs the seven steps below and stops at the first error. At the
-   end, it shows the folder to import (`deploy\prod\build\files`) and the figures of the manifest
-   (`deploy\prod\build\manifest.json`).
+   The script checks the settings and the LLM (the key in `openai` mode, the `claude` command in `claude_cli`
+   mode), runs the seven steps below, and shows the folder to import (`deploy\prod\build\files`), the figures
+   of the manifest (`deploy\prod\build\manifest.json`) and a summary of the runs. A quota (exit code 1), an
+   unreadable sitemap (3), a failed `csr-fetch`, `supabase-sync`, release or index are **warnings**: the next
+   steps run and the script ends with the worst code (1 before 3). A fatal error (2) or a failed `csr-build`,
+   `anomalies` or `prod-export` stops it. Everything is also written to `logs\update-YYYYMMDD-HHMM.log`.
 
    Options:
+   - `-RecheckAll`: full check (`--recheck-all` for `run` and `deliverables`): every page read again whatever
+     its sitemap date, only changed pages go to the LLM;
+   - `-Sync`: then `supabase-sync` (web explorer; `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` in `.env`);
+   - `-Publish`: then the release `data-YYYY-MM-DD` (step 10; `gh` logged in);
+   - `-Index`: then the vector index of the local chatbot (`index`); skipped with a warning while the local
+     chat server (`python -m tsi_agent chat`) is running: stop it first;
    - `-SkipDeliverables`: do not process the publications (the longest and most expensive step);
    - `-SkipCsr`: do not update the CSRs or the project -> CSR links;
    - `-DetailOnly`: `csr-link` only sends the projects with a detail page to the LLM (the others later);
@@ -124,6 +134,48 @@ one, the English meaning is given in parentheses.
     Default tag `data-YYYY-MM-DD` (option `--tag` if a release of the day already exists; nothing is
     overwritten).
 
+## Scheduled update on this PC
+
+The monthly update runs on this PC, as a Windows scheduled task: the Commission site answers HTTP 429 (too many
+requests) to the GitHub runners on its sitemap, so the GitHub workflow can no longer see which pages changed
+(see "Manual update on GitHub Actions (fallback)" below).
+
+**Register the task** (once; run it again to change the options, nothing is duplicated):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\updater\register-task.ps1
+```
+It registers the task **"TSI monthly data update"**: on day 1 of each month at 03:00 (local time), it runs
+`deploy\updater\update.ps1 -Scheduled -Sync -Publish` in the repository folder. Options: `-Day 2` and
+`-Time 06:30` (another day, 1 to 28, or hour), `-NoSync` (no Supabase), `-NoPublish` (no release), `-Index` (also
+the vector index of the local chatbot), `-WhatIf` (prints the task that would be registered, changes nothing).
+To remove it:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\updater\unregister-task.ps1
+```
+
+**What runs.** The full update of step 8, then `supabase-sync` (`-Sync`), the release `data-YYYY-MM-DD`
+(`-Publish`; `data-YYYY-MM-DD-HHMM` if a release of the day already exists) and, with `-Index`, the vector index.
+In January, April, July and October the scheduled run is a **full check** (`--recheck-all` for `run` and
+`deliverables`): every detail and publication page is read again whatever its sitemap date; only changed pages go
+to the LLM.
+
+**Conditions.**
+- The PC must be on and you must be logged on (the task runs only while you are logged on: no password is
+  stored). If the PC was off at 03:00, the task starts at the next opportunity (when you log on).
+- LLM: with `llm_provider: claude_cli` (default `config\settings.yaml`), the Claude Code CLI must be installed and
+  logged in on this PC (run `claude` once and sign in), or `ANTHROPIC_API_KEY` set; with the EC GPT settings
+  (`llm_provider: openai`), the key in `.env` (step 5).
+- Supabase (`-Sync`): `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` (service_role key) in `.env` at the root of the
+  repository. Without them, the update runs without `supabase-sync` and ends with a warning.
+- Release (`-Publish`): the GitHub CLI logged in with write access to the repository (`gh auth login`, step 1).
+  Without it, no release is published and the update ends with a warning.
+
+**Logs.** Each update writes `logs\update-YYYYMMDD-HHMM.log` (everything printed, then the summary of the runs:
+result and duration of each step, projects and publications new or updated, pages skipped thanks to the sitemap,
+LLM calls and cost, release) and the logs of the agent in `logs\runs\`. Task Scheduler (`taskschd.msc`) shows the
+last result of the task: `0` done, `1` warning (quota or a step to redo), `3` sitemap unavailable (run again
+later), `2` stopped.
+
 ## What each step does
 
 | Step | Command | What it does | LLM |
@@ -139,8 +191,8 @@ one, the English meaning is given in parentheses.
 Exit codes: `0` done; `1` LLM quota reached (the next run resumes where it stopped); `2` fatal error (details in
 the `ERREUR` (error) message and in `logs\runs\`); `3` (`run`, `deliverables`) the site sitemap could not be read (HTTP
 429): the step finished without it, known pages with a recorded date were not re-read and no date from an old copy
-was recorded; `update.ps1`
-continues with the next steps and ends with exit code `3`: run the update again later.
+was recorded; `update.ps1` continues with the next steps and ends with exit code `3`: run the update again
+later.
 
 **LLM check before any work.** `run`, `deliverables`, `csr-link` and `llm-check` first check the provider: known
 `llm_provider` setting, key present and, in `openai` mode, a very small test call. A refused key, URL
@@ -186,10 +238,14 @@ workflow). `deliverables --recheck-all` reads
   Commission. The cost of each run is in `logs\runs\<run>.summary.json` (`cost_usd`), computed with the `pricing`
   section of the settings.
 
-## Automatic monthly update (GitHub Actions)
+## Manual update on GitHub Actions (fallback)
 
 The workflow [`.github/workflows/update-data.yml`](../../.github/workflows/update-data.yml) runs the whole update
-in GitHub, without a PC. The LLM is the Claude Code CLI (`llm_provider: claude_cli`, `model: sonnet` in
+in GitHub, without a PC, **when started by hand**. It is no longer scheduled: the Commission site answers HTTP 429
+(too many requests) to the GitHub runners on its sitemap, so a run there cannot see which detail and publication
+pages changed. It then keeps the known pages as they are (exit code 3, warning in the summary) and only processes
+new pages. Use it as a fallback (PC unavailable, a step to redo); the monthly update runs on a PC ("Scheduled
+update on this PC"). The LLM is the Claude Code CLI (`llm_provider: claude_cli`, `model: sonnet` in
 `config/settings.yaml`), authenticated by an Anthropic API key (no Claude subscription is used).
 
 **What it does**, in order:
@@ -204,25 +260,19 @@ in GitHub, without a PC. The LLM is the Claude Code CLI (`llm_provider: claude_c
 4. publishes a release `data-YYYY-MM-DD` (`release-data --publish`; `data-YYYY-MM-DD-HHMM` for a second run on
    the same day). The next run restores its state from it.
 
-**Schedule.** The 1st of each month at 03:00 UTC. In January, April, July and October, the scheduled run is a
-**full check** (`run --recheck-all` and `deliverables --recheck-all`): every detail page and every publication
-page is read again whatever its sitemap date, in case the site changed a page without changing its date; only
-the pages whose text (or files) changed go to the LLM. It also catches a PDF replaced under the same publication
-page, and a project page whose date did not change when a publication was added to it.
+**Full check.** The input `recheck_all` runs `run --recheck-all` and `deliverables --recheck-all`: every detail
+page and every publication page is read again whatever its sitemap date, in case the site changed a page without
+changing its date; only the pages whose text (or files) changed go to the LLM. It also catches a PDF replaced
+under the same publication page, and a project page whose date did not change when a publication was added to
+it.
 
-GitHub **disables a scheduled workflow after 60 days without activity in the repository** (no commit). To avoid
-it, the last step of each run re-enables the workflow through the API (`permissions: actions: write`). If the
-schedule was disabled anyway (for example after two failed runs before that step), GitHub shows a banner in
-*Actions* > *Monthly data update*: click *Enable workflow*, or run
-`gh workflow enable update-data.yml -R MGE-Agilos/dg-reform-tsi`.
-
-**Run it by hand.** GitHub > *Actions* > *Monthly data update* > *Run workflow* (or
+**Run it.** GitHub > *Actions* > *Monthly data update* > *Run workflow* (or
 `gh workflow run update-data.yml -f skip_deliverables=true`). Inputs:
 
 | Input | Default | Effect |
 |---|---|---|
 | `full` | false | `run --full`: re-read **and re-extract with the LLM** every detail page (hours, tens of dollars; every project is then sent again to `csr-link`) |
-| `recheck_all` | false | `run --recheck-all` and `deliverables --recheck-all`: the quarterly full check |
+| `recheck_all` | false | `run --recheck-all` and `deliverables --recheck-all`: the full check |
 | `detail_only` | true | `csr-link --detail-only`: only the projects with a detail page go to the LLM |
 | `skip_deliverables` | false | skip the publications step |
 | `publish_release` | true | publish the `data-*` release at the end (without it, the next run starts again from the previous release) |
@@ -236,7 +286,7 @@ top of the workflow:
 | Step | Budget (minutes) |
 |---|---|
 | `run`, incremental | `RUN_BUDGET_MIN` (60) |
-| `run`, full check or `--full` (quarterly, input, or state without detail dates or publication links) | `RUN_RECHECK_BUDGET_MIN` (150) |
+| `run`, full check or `--full` (input, or state without detail dates or publication links) | `RUN_RECHECK_BUDGET_MIN` (150) |
 | `deliverables` | `DELIVERABLES_BUDGET_MIN` (75) |
 | `deliverables`, state without publication dates (every page is read once) | `DELIVERABLES_FIRST_BUDGET_MIN` (150) |
 | `csr-link` | `CSR_LINK_BUDGET_MIN` (60) |
@@ -267,11 +317,11 @@ continue from it:
   `gh run download <run id> -n output-state-partial-<run id> -R MGE-Agilos/dg-reform-tsi`), unzip the artifact,
   then unzip the `tsi-output-state.zip` it contains into `output\` (after moving away the old `output\`), and run
   `update.ps1` or the steps that did not finish; then publish a release (`release-data --publish`) so that the
-  next automatic run starts from it;
+  next run starts from it;
 - the workflow itself always starts from the latest release, not from an artifact.
 
 **Claude Code CLI version.** The workflow installs the version in `CLAUDE_CODE_VERSION` at the top of
-`.github/workflows/update-data.yml`, so that a new CLI release cannot change the behaviour of a monthly run. To
+`.github/workflows/update-data.yml`, so that a new CLI release cannot change the behaviour of a run. To
 move to a newer version: install it locally (`npm install -g @anthropic-ai/claude-code@<version>`), run
 `python -m tsi_agent llm-check --n 3` and a small `run --limit 3`, then change `CLAUDE_CODE_VERSION` in a commit.
 The test call of the workflow uses the same options as the agent (`--tools ""`, `--json-schema`...), so an
@@ -286,8 +336,7 @@ incompatible CLI change stops the job before any long step.
 | `SUPABASE_URL` | `supabase-sync` |
 | `SUPABASE_SERVICE_KEY` | `supabase-sync` (service_role key) |
 
-The release and the schedule upkeep use the token that GitHub gives to each job (`permissions: contents: write`,
-`actions: write`): no secret needed. The checkout does not keep this token in the working copy
+The release uses the token that GitHub gives to each job (`permissions: contents: write`): no secret needed. The checkout does not keep this token in the working copy
 (`persist-credentials: false`).
 
 **Where to see the result.** The page of the run (*Actions* > the run) shows a **summary**: result and duration
@@ -297,8 +346,8 @@ cost; the CSR files, the rows sent to Supabase, the files and chunks of the expo
 to the run as the artifact `run-logs-<id>` for 30 days.
 
 **Costs.**
-- GitHub: a public repository has unlimited minutes on `ubuntu-latest`; for a private one, a monthly run of 1
-  to 4 hours fits in the free minutes of most plans.
+- GitHub: a public repository has unlimited minutes on `ubuntu-latest`; for a private one, a run of 1 to 4 hours
+  fits in the free minutes of most plans.
 - Anthropic API (Claude Sonnet: $3 per million input tokens, $15 per million output tokens, prices of 2026):
   roughly 2 to 3 cents per extracted project, 5 to 15 cents per summarised publication, 4 to 5 cents per project
   linked to the CSRs. A usual monthly update costs **a few dollars**; the quarterly full check costs about the

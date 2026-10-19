@@ -1,12 +1,12 @@
-# Monthly update of the TSI data (see deploy/updater/README.md, "Automatic monthly update").
+# Manual update of the TSI data on GitHub Actions (fallback; see deploy/updater/README.md, "Manual update on
+# GitHub Actions (fallback)"). The monthly update runs on a Windows PC (deploy/updater/register-task.ps1): the
+# site answers HTTP 429 to GitHub runners on its sitemap.
 # State restored from the latest data-* release -> run -> deliverables -> csr-fetch -> csr-build -> csr-link
 # -> anomalies -> supabase-sync -> prod-export -> release-data --publish. The LLM is the Claude Code CLI,
 # authenticated by the ANTHROPIC_API_KEY secret.
 name: Monthly data update
 
 on:
-  schedule:
-    - cron: "0 3 1 * *"   # 1st of each month, 03:00 UTC; full check in January, April, July and October
   workflow_dispatch:
     inputs:
       full:
@@ -36,7 +36,6 @@ on:
 
 permissions:
   contents: write   # the data release
-  actions: write    # keeps the schedule enabled (last step)
 
 concurrency:
   group: update-data
@@ -108,7 +107,6 @@ jobs:
       - name: Choose the mode
         id: mode
         env:
-          EVENT: ${{ github.event_name }}
           IN_FULL: ${{ inputs.full }}
           IN_RECHECK: ${{ inputs.recheck_all }}
           IN_DETAIL_ONLY: ${{ inputs.detail_only }}
@@ -116,15 +114,8 @@ jobs:
           IN_PUBLISH: ${{ inputs.publish_release }}
           IN_SYNC: ${{ inputs.sync_supabase }}
         run: |
-          if [ "$EVENT" = schedule ]; then
-            # Scheduled runs: incremental, with a full check each quarter (every detail page re-read, sitemap
-            # dates ignored; only changed pages go to the LLM).
-            case "$(date -u +%m)" in 01|04|07|10) recheck=true ;; *) recheck=false ;; esac
-            full=false; detail_only=true; skip_deliverables=false; publish=true; sync=true
-          else
-            full=$IN_FULL; recheck=$IN_RECHECK; detail_only=$IN_DETAIL_ONLY
-            skip_deliverables=$IN_SKIP_DELIVERABLES; publish=$IN_PUBLISH; sync=$IN_SYNC
-          fi
+          full=$IN_FULL; recheck=$IN_RECHECK; detail_only=$IN_DETAIL_ONLY
+          skip_deliverables=$IN_SKIP_DELIVERABLES; publish=$IN_PUBLISH; sync=$IN_SYNC
           {
             echo "full=$full"
             echo "recheck=$recheck"
@@ -345,15 +336,6 @@ jobs:
             ci-work/
           retention-days: 30
           if-no-files-found: ignore
-
-      # GitHub disables scheduled workflows after 60 days without activity in the repository: re-enable this
-      # one at each run so that the monthly schedule keeps running.
-      - name: Keep the schedule enabled
-        if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/update-data.yml/enable"
 
       - name: Fail if a step was deferred (quota, time budget or soft failure)
         if: env.DEFERRED_FAILURES != ''
