@@ -198,22 +198,28 @@ def run_index(settings: Settings, *, full: bool = False, embedder: Any = None, r
 
 def run_deliverables(settings: Settings, *, full: bool = False, limit: int | None = None,
                      chunk_size: int | None = None, model: str | None = None, run_id: str | None = None,
+                     recheck_all: bool = False, sitemap_url: str | None = None,
                      pipeline_factory: PipelineFactory = build_deliverables_pipeline) -> dict[str, Any]:
-    """Livrables des projets, par lots : chaque lot est ecrit avant le suivant (reprise sur limite de souscription)."""
+    """Livrables des projets, par lots : chaque lot est ecrit avant le suivant (reprise sur limite de souscription).
+
+    `sitemap_url` : les pages de publication connues dont la date du sitemap n'a pas change ne sont pas relues
+    (sauf `full` ou `recheck_all`, qui relit toutes les pages sans retraiter les fichiers inchanges)."""
     chunk = chunk_size if chunk_size is not None else settings.chunk_size
     with runlog.open_run(settings.logs_dir, run_id) as run:
-        pipeline = pipeline_factory(settings, model=model)
+        pipeline = pipeline_factory(settings, model=model, sitemap_url=sitemap_url)
         budget = limit
         chunks = 0
         quota = False
-        remaining = 0
+        remaining = skipped = undated = 0
         written: dict[str, int] = {}
         failed: list[str] = []
         while True:
             n = chunk if budget is None else min(chunk, budget)
-            out = pipeline.run({"publications": {"full": full, "limit": n}},
+            out = pipeline.run({"publications": {"full": full, "limit": n, "recheck_all": recheck_all}},
                                include_outputs_from={"publications", "texts", "summarizer", "writer"})
             chunks += 1
+            skipped += out["publications"].get("skipped", 0)
+            undated += out["publications"].get("undated", 0)
             sent = len(out["publications"]["to_process"])
             remaining = out["publications"]["remaining"]
             for key, value in out["writer"]["stats"].items():
@@ -225,7 +231,8 @@ def run_deliverables(settings: Settings, *, full: bool = False, limit: int | Non
             if quota or remaining == 0 or sent == 0 or (budget is not None and budget <= 0):
                 break
         run.extra.update({"mode": "deliverables", "chunks": chunks, "quota_exceeded": quota, "written": written,
-                          "remaining_publications": remaining, "failed": sorted(set(failed))})
+                          "remaining_publications": remaining, "failed": sorted(set(failed)),
+                          "skipped_by_sitemap": skipped, "publication_without_sitemap_date": undated})
     return run.final_summary
 
 

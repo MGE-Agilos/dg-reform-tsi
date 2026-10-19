@@ -2,8 +2,11 @@
 
 import importlib.util
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,7 +43,8 @@ def fake_logs(tmp_path: Path) -> tuple[Path, Path, Path]:
         **base, "run_id": "20261101-040000", "started_at": "2026-11-01T04:00:00+00:00", "duration_s": 600.0,
         "llm_calls": 4, "cost_usd": 0.3, "mode": "deliverables", "quota_exceeded": True,
         "written": {"publications": 4, "projects_updated": 3, "orphans_removed": 0},
-        "remaining_publications": 9, "failed": ["p1"]})
+        "remaining_publications": 9, "failed": ["p1"], "skipped_by_sitemap": 500,
+        "publication_without_sitemap_date": 3})
     write(runs / "20261101-050000.summary.json", {
         **base, "run_id": "20261101-050000", "started_at": "2026-11-01T05:00:00+00:00", "duration_s": 300.0,
         "llm_calls": 5, "cost_usd": 0.2, "mode": "csr_link", "projects": 900, "linked": 5, "cached": 880,
@@ -89,12 +93,22 @@ def test_summary_tables(tmp_path):
     assert "830 of 835 detail pages dated" in lines[0]
     assert "4 publications" in lines[2] and "9 remaining" in lines[2] and "1 failed" in lines[2] \
         and "quota" in lines[2]
+    assert "| 500 |" in lines[2] and "3 without sitemap date" in lines[2]
     assert "5 newly linked, 880 cached, 15 deferred" in lines[3]
     assert "**Total LLM cost: $0.92**" in md
     assert "CSR files: 2140" in md and "project_csr_links 3100" in md
     assert "5400 files, 41000 chunks" in md and "project 2200 files / 9000 chunks" in md
     assert "[data-2026-11-01](https://github.com/o/r/releases/tag/data-2026-11-01)" in md
     assert "partial" not in md.split("### Release")[1].lower()
+
+
+def test_summary_shows_the_notes_of_the_workflow(tmp_path):
+    ci = load()
+    md = ci.render(runs_dir=tmp_path, work_dir=tmp_path, manifest=tmp_path / "m.json",
+                   notes=["deliverables: budget raised to 150 min"])
+    assert "> deliverables: budget raised to 150 min" in md
+    assert ci.main(["--runs-dir", str(tmp_path), "--manifest", str(tmp_path / "m.json"), "--note", "a", "--note",
+                    "", "--note", "b"]) == 0
 
 
 def test_summary_points_to_the_partial_state_artifact(tmp_path):
@@ -138,9 +152,16 @@ def test_workflow_is_valid_yaml_with_expected_triggers_and_secrets():
     # Etat sans dates : verification complete, plus d'initialisation automatique.
     assert "--seed-sitemap-lastmod" not in text and "--recheck-all" in text
     # Budgets des etapes LLM : leur somme laisse au moins 30 min aux etapes de publication.
-    budgets = {k: int(v) for k, v in wf["env"].items() if k.endswith("_BUDGET_MIN")}
-    assert set(budgets) == {"RUN_BUDGET_MIN", "DELIVERABLES_BUDGET_MIN", "CSR_LINK_BUDGET_MIN"}
-    assert job["timeout-minutes"] - sum(budgets.values()) - 15 >= 30
+    env = wf["env"]
+    assert int(env["LLM_BUDGET_TOTAL_MIN"]) + 15 + 30 <= job["timeout-minutes"] <= 350
+    for key in ("RUN_BUDGET_MIN", "RUN_RECHECK_BUDGET_MIN", "DELIVERABLES_BUDGET_MIN",
+                "DELIVERABLES_FIRST_BUDGET_MIN", "CSR_LINK_BUDGET_MIN"):
+        assert 0 < int(env[key]) <= int(env["LLM_BUDGET_TOTAL_MIN"])
+    plan = next(s for s in steps if s.get("id") == "plan")
+    for name in ("Projects (run)", "Publications (deliverables)", "Project -> CSR links (csr-link)"):
+        step = next(s for s in steps if s.get("name") == name)
+        assert "steps.plan.outputs" in str(step["timeout-minutes"]) and "steps.plan.outputs" in json.dumps(step)
+    assert plan["name"]
     # Travail paye conserve en cas d'echec ou d'annulation.
     partial = [s for s in steps if s.get("if") == "failure() || cancelled()"]
     assert any("write_state_zip" in s.get("run", "") for s in partial)
@@ -167,3 +188,55 @@ def test_workflow_is_valid_yaml_with_expected_triggers_and_secrets():
         assert f"secrets.{name}" in text
     always = {s["name"] for s in job["steps"] if str(s.get("if", "")).startswith("always()")}
     assert any("summary" in n.lower() for n in always) and any("log" in n.lower() for n in always)
+
+
+def run_plan(tmp_path, **env):
+    """Script du step `plan` du workflow, execute avec bash (budgets et mode du run)."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash absent")
+    wf = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    step = next(s for s in wf["jobs"]["update"]["steps"] if s.get("id") == "plan")
+    script = tmp_path / "plan.sh"
+    script.write_text(step["run"], encoding="utf-8", newline="\n")
+    out = tmp_path / "out.txt"
+    full_env = {**{k: str(v) for k, v in wf["env"].items()}, "GITHUB_OUTPUT": out.as_posix(),
+                "PATH": __import__("os").environ["PATH"], "FULL": "false", "RECHECK": "false",
+                "HAS_SITEMAP_DATES": "true", "HAS_PUBLICATION_DATES": "true",
+                "HAS_PUBLICATION_LINKS": "true", **env}
+    subprocess.run([bash, script.as_posix()], env=full_env, check=True, capture_output=True)
+    return dict(line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines() if "=" in line)
+
+
+def test_plan_incremental_month(tmp_path):
+    plan = run_plan(tmp_path)
+    assert (plan["run_args"], plan["run_label"], plan["run_budget"]) == ("", "incremental", "60")
+    assert (plan["deliverables_budget"], plan["csr_link_budget"], plan["note"]) == ("75", "60", "")
+    assert plan["run_note"] == ""
+    assert plan["run_timeout"] == "70" and plan["deliverables_timeout"] == "85" and plan["csr_link_timeout"] == "70"
+
+
+def test_plan_first_run_without_publication_dates_gets_a_larger_deliverables_budget(tmp_path):
+    plan = run_plan(tmp_path, HAS_PUBLICATION_DATES="false")
+    assert plan["deliverables_budget"] == "150" and "150 min" in plan["note"]
+    assert int(plan["run_budget"]) + 150 + int(plan["csr_link_budget"]) <= 300
+
+
+def test_plan_budgets_stay_within_the_total_for_a_full_check(tmp_path):
+    for env in ({"RECHECK": "true"}, {"HAS_SITEMAP_DATES": "false"}, {"FULL": "true"}):
+        plan = run_plan(tmp_path, HAS_PUBLICATION_DATES="false", **env)
+        assert plan["run_budget"] == "150"
+        total = int(plan["run_budget"]) + int(plan["deliverables_budget"]) + int(plan["csr_link_budget"])
+        assert total <= 300 and int(plan["deliverables_budget"]) == 90
+    assert run_plan(tmp_path, RECHECK="true")["run_args"] == "--recheck-all"
+    assert run_plan(tmp_path, HAS_SITEMAP_DATES="false")["run_label"] == "full check"
+    assert run_plan(tmp_path, FULL="true")["run_args"] == "--full"
+
+
+def test_plan_state_without_publication_links_rereads_every_detail_page(tmp_path):
+    plan = run_plan(tmp_path, HAS_PUBLICATION_LINKS="false")
+    assert (plan["run_args"], plan["run_label"], plan["run_budget"]) == ("--recheck-all", "full check", "150")
+    assert "publication links" in plan["run_note"]
+    both = run_plan(tmp_path, HAS_PUBLICATION_LINKS="false", HAS_PUBLICATION_DATES="false")
+    assert int(both["run_budget"]) + int(both["deliverables_budget"]) + int(both["csr_link_budget"]) <= 300
+    assert run_plan(tmp_path, HAS_PUBLICATION_LINKS="false", FULL="true")["run_args"] == "--full"

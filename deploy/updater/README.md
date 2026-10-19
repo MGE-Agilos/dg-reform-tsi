@@ -166,7 +166,16 @@ kept.
   the state is known to be current (for example a release published the same day from a complete run): a page
   changed since the state was made would then only be seen by the next full check.
 - **Publications**: download of the PDFs (up to 50 MB) and one long LLM call per publication; allow several
-  minutes per ten new publications.
+  minutes per ten new publications. `deliverables` is incremental in the same way as `run`: a known publication
+  page whose sitemap date has not changed is **not read again** (`skipped_by_sitemap` in the summary of the run),
+  whatever `deliverables_recheck_days`. The first `deliverables` on a state without publication dates reads every
+  publication page once (about 540 pages: more than an hour) and records the dates. The publication links of a
+  detail page that `run` did not download again are taken from the state (`publication_urls`, recorded by `run`
+each time it reads a detail page; a state without them gets one full check `run --recheck-all` in the
+workflow). `deliverables --recheck-all` reads
+  every publication page again whatever its date (only publications whose files changed are summarised again;
+  pages processed less than `deliverables_recheck_days` ago are still not reread, so that a resumed run does not
+  start over); `deliverables --full` reprocesses everything.
 - **Costs** (order of magnitude, OpenAI public price for gpt-5.1: $1.25 per million input tokens, $10 per million
   output tokens): about 1 cent per extracted project, 5 to 10 cents per summarised publication, 4 cents per
   project linked to the CSRs. A usual weekly update costs less than a few dollars; redoing everything
@@ -187,14 +196,16 @@ in GitHub, without a PC. The LLM is the Claude Code CLI (`llm_provider: claude_c
 2. restores the state (`output/`) from `tsi-output-state.zip` of the **latest `data-*` release** of the
    repository; with no such release, the job stops with a clear message;
 3. `run` (incremental; a **full check** `run --recheck-all` if the state has no sitemap dates yet, which records
-   them), `deliverables`, `csr-fetch`, `csr-build`, `csr-link --detail-only`, `anomalies`, `supabase-sync`,
-   `prod-export`;
+   them), `deliverables` (incremental too), `csr-fetch`, `csr-build`, `csr-link --detail-only`, `anomalies`,
+   `supabase-sync`, `prod-export`;
 4. publishes a release `data-YYYY-MM-DD` (`release-data --publish`; `data-YYYY-MM-DD-HHMM` for a second run on
    the same day). The next run restores its state from it.
 
 **Schedule.** The 1st of each month at 03:00 UTC. In January, April, July and October, the scheduled run is a
-**full check** (`run --recheck-all`): every detail page is read again whatever its sitemap date, in case the
-site changed a page without changing its date; only the pages whose text changed go to the LLM.
+**full check** (`run --recheck-all` and `deliverables --recheck-all`): every detail page and every publication
+page is read again whatever its sitemap date, in case the site changed a page without changing its date; only
+the pages whose text (or files) changed go to the LLM. It also catches a PDF replaced under the same publication
+page, and a project page whose date did not change when a publication was added to it.
 
 GitHub **disables a scheduled workflow after 60 days without activity in the repository** (no commit). To avoid
 it, the last step of each run re-enables the workflow through the API (`permissions: actions: write`). If the
@@ -208,7 +219,7 @@ schedule was disabled anyway (for example after two failed runs before that step
 | Input | Default | Effect |
 |---|---|---|
 | `full` | false | `run --full`: re-read **and re-extract with the LLM** every detail page (hours, tens of dollars; every project is then sent again to `csr-link`) |
-| `recheck_all` | false | `run --recheck-all`: the quarterly full check |
+| `recheck_all` | false | `run --recheck-all` and `deliverables --recheck-all`: the quarterly full check |
 | `detail_only` | true | `csr-link --detail-only`: only the projects with a detail page go to the LLM |
 | `skip_deliverables` | false | skip the publications step |
 | `publish_release` | true | publish the `data-*` release at the end (without it, the next run starts again from the previous release) |
@@ -216,10 +227,22 @@ schedule was disabled anyway (for example after two failed runs before that step
 
 Only one update runs at a time (`concurrency: update-data`); the job stops after 350 minutes.
 
-**Time budgets.** The LLM steps have a time budget, set at the top of the workflow: `RUN_BUDGET_MIN` (150),
-`DELIVERABLES_BUDGET_MIN` (75), `CSR_LINK_BUDGET_MIN` (60). Their sum leaves at least 30 minutes for the CSR,
-export and release steps. A step that reaches its budget is interrupted; what it has written so far is kept,
-the following steps run, and the next run continues the work.
+**Time budgets.** The LLM steps have a time budget, chosen by the step *Plan the run* from the values at the
+top of the workflow:
+
+| Step | Budget (minutes) |
+|---|---|
+| `run`, incremental | `RUN_BUDGET_MIN` (60) |
+| `run`, full check or `--full` (quarterly, input, or state without detail dates or publication links) | `RUN_RECHECK_BUDGET_MIN` (150) |
+| `deliverables` | `DELIVERABLES_BUDGET_MIN` (75) |
+| `deliverables`, state without publication dates (every page is read once) | `DELIVERABLES_FIRST_BUDGET_MIN` (150) |
+| `csr-link` | `CSR_LINK_BUDGET_MIN` (60) |
+
+The three budgets of a run never exceed `LLM_BUDGET_TOTAL_MIN` (300): when they would, the `deliverables` budget
+is reduced (for example 90 minutes for a full check on a state without publication dates). This leaves at least
+30 minutes of the 350 for the setup, CSR, export and release steps. When a larger budget is used, the summary of
+the run says so. A step that reaches its budget is interrupted; what it has written so far is kept (dates
+included), the following steps run, and the next run continues the work.
 
 **Errors.** A step that stops on the LLM quota (exit code 1: `run`, `deliverables`, `csr-link`), reaches its time
 budget, a failed `csr-fetch` (ECFIN site down: the previous CSR export is kept) or a failed `supabase-sync` does

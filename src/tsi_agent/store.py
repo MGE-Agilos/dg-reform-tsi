@@ -9,6 +9,8 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field
 
+from tsi_agent import runlog
+
 
 MAX_FILE_STEM = 100  # limite de chemin Windows (260) : le dossier du dépôt en consomme déjà ~110
 REPLACE_ATTEMPTS = 8  # OneDrive et antivirus peuvent verrouiller le fichier temporairement
@@ -51,6 +53,24 @@ class StoreEntry(BaseModel):
     # Titre et annee officiels (page detail) : indices de la fusion floue quand la page n'est pas relue.
     title: str | None = None
     year: int | None = None
+    # Liens de publication lus sur la page detail (etage livrables) : repris quand la page n'est pas relue.
+    publication_urls: list[str] | None = None
+
+
+def merge_publication_urls(project_id: str, stored: list[str] | None, new: list[str] | None) -> list[str] | None:
+    """Liens de publication a enregistrer : `new` (lus sur la page detail) s'ils existent, sinon ceux de l'etat.
+
+    Une liste vide qui remplacerait une liste non vide est suspecte (page tronquee, structure du site changee) :
+    alerte et liste connue gardee.
+    """
+    if new is None:
+        return stored
+    if not new and stored:
+        runlog.event("ProjectStore", "alert", project_id, "warning",
+                     message=f"{project_id}: no publication links on the detail page any more; "
+                             f"{len(stored)} known link(s) kept")
+        return stored
+    return list(new)
 
 
 class ProjectStore(Protocol):

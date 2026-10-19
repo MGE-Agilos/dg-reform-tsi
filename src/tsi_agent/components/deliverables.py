@@ -26,9 +26,10 @@ from tsi_agent.ids import slug_from_url
 from tsi_agent.models import (DeliverableContent, DeliverableFileText, DeliverableRecord, DeliverableText,
                               Publication)
 from tsi_agent.parsers.publication import files_key, parse_publication, publication_links, select_files
+from tsi_agent.parsers.sitemap import not_modified_since, sitemap_lastmods
 from tsi_agent.render import (deliverables_section, parse_front_matter, render, replace_deliverables_section,
                               with_deliverables_count)
-from tsi_agent.store import ProjectStore, _retry_on_lock, file_stem, shared_store
+from tsi_agent.store import ProjectStore, _retry_on_lock, file_stem, merge_publication_urls, shared_store
 
 
 class _Http:
@@ -47,43 +48,85 @@ class _Http:
 
 @component
 class PublicationDiscoverer(_Http):
-    """Liens de publication des pages detail, lues dans le cache HTTP (le run d'extraction vient de le rafraichir)."""
+    """Liens de publication des pages detail, lues dans le cache HTTP (le run d'extraction vient de le rafraichir).
+
+    Page detail absente du cache (non relue par un `run` incremental) : liens enregistres dans l'etat lors de sa
+    derniere lecture, a defaut publications deja connues de ce projet. Chaque publication porte la date <lastmod>
+    du sitemap de sa page (`sitemap_url`), lu une fois par instance.
+    """
 
     def __init__(self, output_dir: str = "output", cache_dir: str = ".cache/http", min_interval_s: float = 2.0,
-                 user_agent: str = DEFAULT_USER_AGENT):
+                 user_agent: str = DEFAULT_USER_AGENT, sitemap_url: str | None = None):
         self.output_dir = output_dir
         self.cache_dir = cache_dir
         self.min_interval_s = min_interval_s
         self.user_agent = user_agent
+        self.sitemap_url = sitemap_url
         self._fetcher = None
         self._store: ProjectStore | None = None
+        self._lastmods: dict[str, str] | None = None
+
+    def _sitemap_dates(self) -> dict[str, str]:
+        """URL -> <lastmod> ({} sans sitemap configure, ou s'il est indisponible ou incomplet)."""
+        if self._lastmods is None:
+            self._lastmods = {}
+            if self.sitemap_url:
+                from tsi_agent.components.listing import SourceListingFetcher
+                listing = SourceListingFetcher(sources={"sitemap_url": self.sitemap_url}, cache_dir=self.cache_dir,
+                                               min_interval_s=self.min_interval_s, user_agent=self.user_agent)
+                listing._fetcher = self._get_fetcher()
+                for page in listing.fetch_sitemap():
+                    self._lastmods.update(sitemap_lastmods(page.content))
+                runlog.event("PublicationDiscoverer", "sitemap", self.sitemap_url,
+                             "ok" if self._lastmods else "unavailable", dates=len(self._lastmods))
+        return self._lastmods
 
     @component.output_types(publications=list[Publication], complete=bool)
     def run(self) -> dict[str, Any]:
         store = self._store if self._store is not None else shared_store(self.output_dir)
         fetcher = self._get_fetcher()
+        lastmods = self._sitemap_dates()
+        known_by_project: dict[str, list[str]] | None = None
         by_url: dict[str, Publication] = {}
         missing: list[str] = []
         projects = 0
+        from_state = 0
+        remembered = False
         for project_id, entry in sorted(store.all().items()):
             if not entry.detail_page or not entry.listed or not entry.source_urls:
                 continue
             html = fetcher.cached(entry.source_urls[0])  # source_urls[0] = page detail (render.source_urls)
-            if html is None:
-                missing.append(project_id)
-                continue
-            links = publication_links(html)
+            if html is not None:
+                links = merge_publication_urls(project_id, entry.publication_urls, publication_links(html)) or []
+                if entry.publication_urls != links:
+                    store.put(entry.model_copy(update={"publication_urls": links}), save=False)
+                    remembered = True
+            elif entry.publication_urls is not None:
+                links, from_state = list(entry.publication_urls), from_state + 1
+            else:
+                if known_by_project is None:  # etat d'avant `publication_urls` : publications deja traitees
+                    known_by_project = {}
+                    for pub_entry in DeliverableStore(self.output_dir).all().values():
+                        for pid in pub_entry.project_ids:
+                            known_by_project.setdefault(pid, []).append(pub_entry.url)
+                if project_id not in known_by_project:
+                    missing.append(project_id)
+                    continue
+                links, from_state = sorted(known_by_project[project_id]), from_state + 1
             projects += bool(links)
             for url in links:
-                pub = by_url.setdefault(url, Publication(publication_id=slug_from_url(url), url=url))
+                pub = by_url.setdefault(url, Publication(publication_id=slug_from_url(url), url=url,
+                                                         sitemap_lastmod=lastmods.get(url)))
                 if project_id not in pub.project_ids:
                     pub.project_ids.append(project_id)
+        if remembered:
+            store.flush()
         if missing:
             runlog.event("PublicationDiscoverer", "alert", None, "warning", missing=missing[:20],
                          message=f"{len(missing)} detail page(s) not in the HTTP cache: run `tsi_agent run` first")
         publications = list(by_url.values())
         runlog.event("PublicationDiscoverer", "discover", None, publications=len(publications),
-                     projects_with_publications=projects, missing_pages=len(missing))
+                     projects_with_publications=projects, missing_pages=len(missing), from_state=from_state)
         return {"publications": publications, "complete": not missing}
 
 
@@ -103,29 +146,44 @@ class PublicationFetcher(_Http):
         self._offered: set[str] = set()  # deja proposees pendant ce run (boucle par lots du runner)
 
     @component.output_types(to_process=list[Publication], unchanged=list[Publication], failed=list[str],
-                            remaining=int)
-    def run(self, publications: list[Publication], full: bool = False, limit: int | None = None) -> dict[str, Any]:
+                            remaining=int, skipped=int, undated=int)
+    def run(self, publications: list[Publication], full: bool = False, limit: int | None = None,
+            recheck_all: bool = False) -> dict[str, Any]:
+        """Publication connue dont la date du sitemap n'est pas plus recente que celle enregistree : non relue
+        (`skipped`, avant `recheck_days` et la limite), sauf `full` ou `recheck_all`. `undated` : pages relues
+        faute de date du sitemap."""
         known = DeliverableStore(self.output_dir)
         # Les relances rapprochees (reprise apres limite de souscription) ne reverifient pas les pages deja vues.
         recent_since = (date.today() - timedelta(days=self.recheck_days)).isoformat()
         to_process: list[Publication] = []
         unchanged: list[Publication] = []
         failed: list[str] = []
-        remaining = 0
+        remaining = skipped = undated = 0
         for pub in publications:
             if pub.url in self._offered:
                 continue
             entry = known.get(pub.publication_id)
+            # Non relue : la date transmise au writer est celle deja enregistree (aucune lecture ce run).
+            kept = {"title": entry.title, "date": entry.date, "files_key": entry.files_key,
+                    "sitemap_lastmod": entry.sitemap_lastmod} if entry is not None else {}
+            if (entry is not None and not full and not recheck_all
+                    and not_modified_since(pub.sitemap_lastmod, entry.sitemap_lastmod)):
+                self._offered.add(pub.url)
+                unchanged.append(pub.model_copy(update=kept))
+                skipped += 1
+                runlog.event("PublicationFetcher", "classify", pub.publication_id, "unchanged_sitemap",
+                             lastmod=pub.sitemap_lastmod)
+                continue
             if entry is not None and not full and entry.processed >= recent_since:
                 self._offered.add(pub.url)
-                unchanged.append(pub.model_copy(update={"title": entry.title, "date": entry.date,
-                                                        "files_key": entry.files_key}))
+                unchanged.append(pub.model_copy(update=kept))
                 runlog.event("PublicationFetcher", "classify", pub.publication_id, "recent")
                 continue
             if limit is not None and len(to_process) >= limit:
                 remaining += 1
                 continue
             self._offered.add(pub.url)
+            undated += pub.sitemap_lastmod is None
             try:
                 parse = parse_publication(self._get_fetcher().get(pub.url).content)
             except FetchError as exc:
@@ -145,7 +203,8 @@ class PublicationFetcher(_Http):
             runlog.event("PublicationFetcher", "classify", pub.publication_id, "changed" if entry else "new",
                          files=len(files))
             to_process.append(pub)
-        return {"to_process": to_process, "unchanged": unchanged, "failed": failed, "remaining": remaining}
+        return {"to_process": to_process, "unchanged": unchanged, "failed": failed, "remaining": remaining,
+                "skipped": skipped, "undated": undated}
 
 
 def pdf_text(data: bytes) -> tuple[int, str]:
@@ -460,13 +519,18 @@ class DeliverableWriter:
                 project_ids=list(pub.project_ids), files_key=pub.files_key or "",
                 files=[{"document": f.file.document, "url": f.file.url, "language": f.file.language,
                         "filename": f.file.filename, "pages": f.pages, "words": f.words} for f in rec.text.files],
-                full_text_path=rec.text.full_text_path, content=rec.content, model=rec.model, processed=today))
+                full_text_path=rec.text.full_text_path, content=rec.content, model=rec.model, processed=today,
+                sitemap_lastmod=pub.sitemap_lastmod or (old.sitemap_lastmod if old else None)))
             runlog.event("DeliverableWriter", "write", pub.publication_id, "publication", projects=pub.project_ids)
         for pub in unchanged or []:
             old = state.get(pub.publication_id)
             if old is not None and sorted(old.project_ids) != sorted(pub.project_ids):
                 affected |= set(old.project_ids) | set(pub.project_ids)
-                state.put(old.model_copy(update={"project_ids": list(pub.project_ids)}))
+                old = old.model_copy(update={"project_ids": list(pub.project_ids)})
+                state.put(old)
+            # Page relue et inchangee : sa date du sitemap devient la reference (pas de date : on garde la connue).
+            if old is not None and pub.sitemap_lastmod and old.sitemap_lastmod != pub.sitemap_lastmod:
+                state.put(old.model_copy(update={"sitemap_lastmod": pub.sitemap_lastmod}))
         orphans_removed = 0
         if complete and discovered is not None:
             discovered_ids = {p.publication_id for p in discovered}

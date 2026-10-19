@@ -16,11 +16,14 @@ def default_deliverables_generator(settings: Settings, model: str | None = None)
                                timeout_s=settings.deliverables_llm_timeout_s, model=model)
 
 
-def build_deliverables_pipeline(settings: Settings, *, chat_generator: Any = None, model: str | None = None) -> Pipeline:
+def build_deliverables_pipeline(settings: Settings, *, chat_generator: Any = None, model: str | None = None,
+                                sitemap_url: str | None = None) -> Pipeline:
+    """`sitemap_url` : sitemap du site (dates <lastmod> des pages de publication, mode incremental)."""
     http = {"cache_dir": settings.cache_dir, "min_interval_s": settings.min_interval_s,
             "user_agent": settings.user_agent}
     p = Pipeline()
-    p.add_component("discoverer", PublicationDiscoverer(output_dir=settings.output_dir, **http))
+    p.add_component("discoverer", PublicationDiscoverer(output_dir=settings.output_dir, sitemap_url=sitemap_url,
+                                                        **http))
     p.add_component("publications", PublicationFetcher(output_dir=settings.output_dir,
                                                         recheck_days=settings.deliverables_recheck_days, **http))
     p.add_component("texts", DeliverableTextExtractor(output_dir=settings.output_dir,

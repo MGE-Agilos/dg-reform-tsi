@@ -7,6 +7,7 @@ from tsi_agent.http import DEFAULT_USER_AGENT, FetchError, PoliteFetcher, shared
 from tsi_agent.ids import sha256_text
 from tsi_agent.models import DetailPage, ProjectRef
 from tsi_agent.parsers.detail import parse_detail
+from tsi_agent.parsers.publication import publication_links
 from tsi_agent.store import ProjectStore, shared_store
 
 NAME = "DetailPageFetcher"
@@ -55,6 +56,8 @@ class DetailPageFetcher:
                 runlog.event(NAME, "error", ref.project_id, "fetch_failed", error=repr(exc))
                 continue
             content_hash = sha256_text(parsed.text)
+            # Liens de publication : enregistres par le writer, repris par l'etage livrables sans cache HTTP.
+            ref = ref.model_copy(update={"publication_urls": publication_links(result.content)})
             entry = self._get_store().get(ref.project_id)
             if not full and entry is not None and entry.content_hash == content_hash:
                 unchanged.append(ref)

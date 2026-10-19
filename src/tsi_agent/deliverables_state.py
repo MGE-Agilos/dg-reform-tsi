@@ -24,6 +24,8 @@ class DeliverableEntry(BaseModel):
     content: DeliverableContent
     model: str
     processed: str
+    # Date <lastmod> du sitemap de la page de publication lors de sa derniere lecture reussie (mode incremental).
+    sitemap_lastmod: str | None = None
 
 
 def _date_key(entry: DeliverableEntry) -> datetime:
