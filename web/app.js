@@ -58,7 +58,6 @@ const ANOMALY_TYPES = {
 // Server-side order is order("severity") then order("type"): alphabetical, which equals the rank order
 // (high, medium) for the default filter; with "All severities" it is high, info, low, medium (shown in the UI).
 const SEVERITY_OPTIONS = { "": "High and medium", all: "All severities", high: "High", medium: "Medium", low: "Low", info: "Info" };
-const CSR_YEARS = Array.from({ length: 10 }, (_, i) => 2025 - i);
 
 const $ = (id) => document.getElementById(id);
 let sb = null;
@@ -351,7 +350,7 @@ function stale(seq) {
 }
 
 function setActiveTab(route) {
-  const tab = { project: "projects", csr: "csrs" }[route] || route;
+  const tab = { project: "projects", csr: "csrs", csrdoc: "csrs" }[route] || route;
   document.querySelectorAll("#tabs a").forEach((a) => {
     if (a.dataset.tab === tab) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });
@@ -429,6 +428,7 @@ async function renderProject(id, seq) {
 
   const r = proj.data;
   impactProject = r;
+  assistantContext = { kind: "project", label: r.title, prompt: `Tell me about project ${r.title} (id ${r.project_id})` };
   const rank = { direct: 0, partial: 1 };
   const sorted = [...links.data].sort((a, b) => (rank[a.level] ?? 2) - (rank[b.level] ?? 2) || a.part_id.localeCompare(b.part_id));
   const facts = [
@@ -458,7 +458,135 @@ async function renderProject(id, seq) {
   bindReportToggles($("impact-latest"));
 }
 
-// ---------- CSRs ----------
+// ---------- CSRs: documents (country x year) -> recommendations -> sub-parts ----------
+
+const COUNCIL_STAGE = "Council recommendation";
+const COMMISSION_STAGE = "Commission recommendation";
+const CSR_FIRST_YEAR = 2016;
+// csr_documents not deployed yet (migration 005 not applied, or an older schema cache): documents derived from csrs.
+const DOC_MISSING_CODES = new Set(["42P01", "42703", "PGRST200", "PGRST204", "PGRST205"]);
+let csrDocsMissing = false;
+let csrYearsCache = null; // { uid, years } (descending)
+
+function docsTableMissing(error) {
+  return Boolean(error) && (DOC_MISSING_CODES.has(error.code) || /csr_documents|doc_id/.test(error.message || ""));
+}
+
+function docIdOf(country, year) {
+  return `csrdoc-${country}-${year}`;
+}
+
+function parseDocId(id) {
+  const m = /^csrdoc-([A-Z]{2})-(\d{4})$/.exec(String(id ?? ""));
+  return m ? { country: m[1], year: Number(m[2]) } : null;
+}
+
+function docTitle(country, year) {
+  return `${countryName(country)} — ${year} country-specific recommendations`;
+}
+
+/** Fallback only (no csr_documents): a document of 2026 or later with no assessment at all is the Commission's proposal. */
+function derivedStage(year, recs) {
+  return year >= 2026 && recs.every((c) => !c.assessment) ? COMMISSION_STAGE : COUNCIL_STAGE;
+}
+
+/** Documents rebuilt from recommendation rows, grouped by country and year (same ids and titles as csr_documents). */
+function deriveDocuments(rows) {
+  const by = new Map();
+  for (const c of arr(rows)) {
+    if (!c || !c.country || !num(c.year)) continue;
+    const id = c.doc_id || docIdOf(c.country, num(c.year));
+    if (!by.has(id)) by.set(id, { doc_id: id, country: String(c.country), year: num(c.year), csrs: [] });
+    by.get(id).csrs.push(c);
+  }
+  return [...by.values()].map((d) => ({
+    ...d, title: docTitle(d.country, d.year), stage: derivedStage(d.year, d.csrs), n_recommendations: d.csrs.length,
+    document_url: d.csrs.map((c) => safeUrl(c.source_url)).find(Boolean) || null, derived: true,
+  }));
+}
+
+function isCommission(stage) {
+  return stage === COMMISSION_STAGE;
+}
+
+function stageBadge(stage) {
+  return `<span class="badge ${isCommission(stage) ? "badge-partial" : "badge-info"}">${esc(stage || COUNCIL_STAGE)}</span>`;
+}
+
+/** Link to the document's source: the country PDF (2026) or the ECFIN database (no URL per document before 2026). */
+function docSourceLink(url, stage, { short = false } = {}) {
+  const u = safeUrl(url);
+  if (!u) return "";
+  const pdf = /\.pdf(?:$|[?#])/i.test(u);
+  const label = short ? (pdf ? "PDF" : "ECFIN")
+    : pdf ? (isCommission(stage) ? "Commission recommendation (PDF)" : "Document (PDF)") : "ECFIN CSR database";
+  return `${extLink(u, label)} ↗`;
+}
+
+/** Recommendations, sub-parts, distinct linked projects and the most frequent latest assessment of a document. */
+function docStats(doc) {
+  const recs = arr(doc.csrs);
+  const projects = new Set();
+  const counts = new Map();
+  let parts = 0;
+  for (const c of recs) {
+    for (const p of arr(c.csr_parts)) {
+      parts++;
+      for (const l of arr(p?.project_csr_links)) {
+        const pid = l?.project_id ?? l?.projects?.project_id;
+        if (pid) projects.add(String(pid));
+      }
+    }
+    const a = assessmentInfo(c.assessment);
+    const hit = counts.get(a.label) || { ...a, n: 0 };
+    hit.n++;
+    counts.set(a.label, hit);
+  }
+  const dominant = [...counts.values()].sort((a, b) => b.n - a.n || a.label.localeCompare(b.label))[0] || null;
+  return { recs: recs.length || num(doc.n_recommendations), parts, projects: projects.size, dominant };
+}
+
+const COMMISSION_NOTE = "Commission recommendations, not yet adopted by the Council and not yet assessed. No project is linked yet: "
+  + "a recommendation of a given year can only be supported by projects of the following years.";
+
+async function fetchCsrYears() {
+  if (csrYearsCache?.uid === currentUid) return { years: csrYearsCache.years };
+  let years = [];
+  if (!csrDocsMissing) {
+    const res = await sb.from("csr_documents").select("year").order("year", { ascending: false });
+    if (!res.error) years = [...new Set(arr(res.data).map((r) => num(r.year)).filter(Boolean))].sort((a, b) => b - a);
+    else if (!docsTableMissing(res.error)) return { error: res.error };
+    if (!years.length) csrDocsMissing = true; // table missing, or created but not filled yet
+  }
+  if (!years.length) {
+    const res = await sb.from("csrs").select("year").order("year", { ascending: false }).limit(1);
+    if (res.error) return { error: res.error };
+    const max = num(res.data?.[0]?.year) || 2025;
+    for (let y = max; y >= CSR_FIRST_YEAR; y--) years.push(y);
+  }
+  csrYearsCache = { uid: currentUid, years };
+  return { years };
+}
+
+/** Documents of one year (optionally one country), with what the cards need; derived from csrs as a fallback. */
+async function fetchDocuments(year, country) {
+  if (!csrDocsMissing) {
+    let q = sb.from("csr_documents")
+      .select("doc_id,country,year,title,stage,n_recommendations,document_url,csrs(csr_id,number,assessment,csr_parts(part_id,project_csr_links(project_id)))")
+      .eq("year", year).order("country");
+    if (country) q = q.eq("country", country);
+    const res = await q;
+    if (!res.error) return { docs: arr(res.data) };
+    if (!docsTableMissing(res.error)) return { error: res.error };
+    csrDocsMissing = true;
+  }
+  let q = sb.from("csrs").select("csr_id,country,year,number,assessment,source_url,csr_parts(part_id,project_csr_links(project_id))")
+    .eq("year", year).order("country").order("number");
+  if (country) q = q.eq("country", country);
+  const res = await q;
+  if (res.error) return { error: res.error };
+  return { docs: deriveDocuments(res.data), derived: true };
+}
 
 function compareCsr(a, b) {
   return (b.year - a.year) || a.country.localeCompare(b.country)
@@ -474,35 +602,109 @@ function csrsQuery(f, opts) {
   return q;
 }
 
+/** Year select in descending order (an object map would enumerate numeric keys in ascending order). */
+function yearSelect(list, value) {
+  const opts = list.map(([k, label]) => `<option value="${esc(k)}"${k === value ? " selected" : ""}>${esc(label)}</option>`).join("");
+  return `<label class="field"><span>Year</span><select name="year">${opts}</select></label>`;
+}
+
+function csrsIntro() {
+  return `<p class="muted">Each year the EU addresses one CSR document to each Member State, 27 per year. A document contains numbered `
+    + `recommendations; the ECFIN database splits each recommendation into sub-parts, the level at which project links are assessed.</p>`;
+}
+
+/** Switch between the document view (default) and the list of all recommendations (also used by the text search). */
+function csrsModeLinks(recsMode, f) {
+  const docs = hrefFor("csrs", { year: f.year || "", country: f.country });
+  const recs = hrefFor("csrs", { view: "recs", year: f.year || "", country: f.country, q: f.q });
+  const a = (href, label, on) => `<a class="btn btn-secondary seg"${on ? ' aria-current="page"' : ""} href="${esc(href)}">${label}</a>`;
+  return `<p class="seg-group" role="group" aria-label="Show">${a(docs, "By document", !recsMode)}${a(recs, "All recommendations", recsMode)}</p>`;
+}
+
+function docCard(d) {
+  const s = docStats(d);
+  const commission = isCommission(d.stage);
+  const assess = commission || !s.dominant ? `<span class="viz-key viz-key-${commission ? "faint" : "muted"}" aria-hidden="true"></span>${commission ? "Not yet assessed" : "—"}`
+    : `<span class="viz-key viz-key-${esc(s.dominant.key)}" aria-hidden="true"></span>${esc(s.dominant.label)}`
+      + ` <span class="muted">(${s.dominant.n} of ${s.recs})</span>`;
+  const href = `#csrdoc/${encodeURIComponent(d.doc_id)}`;
+  return `<li class="doc-card"><div class="doc-head"><h4 class="doc-country"><a href="${href}">${esc(countryName(d.country))}</a>`
+    + ` <span class="muted small">${esc(d.country)}</span></h4></div>`
+    + `<dl class="doc-facts"><div><dt>Recommendations</dt><dd>${fmtN(s.recs)}</dd></div>`
+    + `<div><dt>Linked projects</dt><dd>${commission && !s.projects ? `<span class="muted">none yet</span>` : fmtN(s.projects)}</dd></div>`
+    + `<div class="doc-assess"><dt>Main assessment</dt><dd>${assess}</dd></div></dl>`
+    + `<p class="small doc-links"><a href="${href}" aria-label="${esc(`Open the document: ${d.title}`)}">Open the document</a>${d.document_url ? ` · ${docSourceLink(d.document_url, d.stage, { short: true })}` : ""}</p></li>`;
+}
+
 async function renderCsrs(p, seq) {
+  const recsMode = p.get("view") === "recs" || Boolean((p.get("q") || "").trim());
+  const country = pick(p.get("country"), COUNTRIES);
+  const yrs = await fetchCsrYears();
+  if (stale(seq)) return;
+  if (yrs.error) return showError(yrs.error, "Could not load CSRs");
+  const years = yrs.years;
+  const asked = yearOf(p, "year");
+  const title = `<div class="title-row">${heading("Country-specific recommendations")}${infoButton("csrlevels", "About the three levels")}</div>`;
+  if (recsMode) return renderCsrList(p, seq, { title, years, country, year: asked });
+
+  const year = asked && years.includes(asked) ? asked : years[0];
+  const yearList = years.map((y, i) => [i === 0 ? "" : String(y), i === 0 ? `${y} (latest)` : String(y)]);
+  const form = filterForm("csrs",
+    textField("q", "Search recommendation text", "", "e.g. pension, energy")
+    + yearSelect(yearList, year === years[0] ? "" : String(year))
+    + countriesSelect(country));
+  const res = await fetchDocuments(year, country);
+  if (stale(seq)) return;
+  if (res.error) return showError(res.error, "Could not load the CSR documents");
+  const docs = [...res.docs].sort((a, b) => countryName(a.country).localeCompare(countryName(b.country)));
+  const commission = docs.some((d) => isCommission(d.stage));
+  const nRecs = docs.reduce((s, d) => s + docStats(d).recs, 0);
+  const others = country ? years.filter((y) => y !== year)
+    .map((y) => `<a href="${esc(hrefFor("csrs", { year: y, country }))}">${y}</a>`).join(" · ") : "";
+  const head = `<h3 class="docs-head">${year} · ${fmtN(docs.length)} document${docs.length === 1 ? "" : "s"}`
+    + ` · ${fmtN(nRecs)} recommendation${nRecs === 1 ? "" : "s"}${docs.length ? ` ${stageBadge(commission ? COMMISSION_STAGE : COUNCIL_STAGE)}` : ""}</h3>`;
+  view(`${title}${csrsIntro()}${form}${csrsModeLinks(false, { year: year === years[0] ? "" : year, country })}`
+    + (res.derived ? `<p class="muted small" role="note">Documents rebuilt from the recommendations (document table not available yet).</p>` : "")
+    + head + (commission ? `<p class="notice-few" role="note">${esc(`${year}: ${COMMISSION_NOTE}`)}</p>` : "")
+    + (docs.length ? `<ul class="doc-grid">${docs.map(docCard).join("")}</ul>`
+      : `<p class="empty">No CSR document for ${country ? esc(countryName(country)) + " in " : ""}${year}.</p>`)
+    + (others ? `<p class="small">${esc(countryName(country))} in other years: ${others}</p>` : ""));
+  bindFilters();
+}
+
+/** All recommendations (one row each), with the text search: the former CSR list, now linked to the documents. */
+async function renderCsrList(p, seq, { title, years, country, year }) {
   const page = pageOf(p);
-  const f = { country: pick(p.get("country"), COUNTRIES), year: yearOf(p, "year"), q: p.get("q") || "" };
+  const f = { country, year, q: p.get("q") || "" };
   const res = await fetchPage((opts) => csrsQuery(f, opts), page);
   if (stale(seq)) return;
   if (res.redirectPage) return redirectToPage("csrs", p, res.redirectPage);
   const { data, error, count } = res;
   if (error) return showError(error, "Could not load CSRs");
 
-  const years = Object.fromEntries(CSR_YEARS.map((y) => [String(y), String(y)]));
   const form = filterForm("csrs",
-    textField("q", "Search CSR text", f.q, "e.g. pension, energy")
+    `<input type="hidden" name="view" value="recs">`
+    + textField("q", "Search recommendation text", f.q, "e.g. pension, energy")
     + countriesSelect(f.country)
-    + selectField("year", "Year", years, f.year ? String(f.year) : "", "All years"));
+    + yearSelect([["", "All years"], ...years.map((y) => [String(y), String(y)])], f.year ? String(f.year) : ""));
   // Server sorts "number" as text; re-sort the page numerically (10 after 9).
   const rows = [...data].sort(compareCsr).map((r) => [
-    td(hashLink("csr", r.csr_id, r.csr_id), "nowrap"), td(esc(countryName(r.country))), td(esc(r.year), "nowrap"),
+    td(hashLink("csr", r.csr_id, r.csr_id), "nowrap"),
+    td(hashLink("csrdoc", docIdOf(r.country, r.year), `${countryName(r.country)} ${r.year}`), "nowrap"),
     td(esc(r.number), "num"), td(esc(r.title), "title-cell"),
-    td(r.assessment ? `${esc(r.assessment)}${r.assessment_year ? ` <span class="muted">(${esc(r.assessment_year)})</span>` : ""}` : `<span class="muted">—</span>`),
+    td(r.assessment ? `${esc(r.assessment)}${r.assessment_year ? ` <span class="muted">(${esc(r.assessment_year)})</span>` : ""}`
+      : `<span class="muted">not yet assessed</span>`),
   ]);
-  view(`${heading("Country-specific recommendations")}${form}${pager("csrs", p, page, count)}`
-    + table(["CSR", "Country", "Year", "No.", "Title", "Latest assessment"], rows, "No CSR matches these filters.")
+  view(`${title}${csrsIntro()}${form}${csrsModeLinks(true, f)}${pager("csrs", p, page, count)}`
+    + table(["Recommendation", "Document", "No.", "Title", "Latest assessment"], rows, "No recommendation matches these filters.")
     + (data.length ? pager("csrs", p, page, count) : ""));
   bindFilters();
 }
 
-function partBlock(part) {
+/** A sub-part (or the recommendation itself when it has none) with its assessment and linked projects. */
+function partBlock(part, { tag = "h3", label = part.part_id, showText = true, showAssessment = true, commission = false } = {}) {
   const rank = { direct: 0, partial: 1 };
-  const links = [...(part.project_csr_links || [])].sort((a, b) => (rank[a.level] ?? 2) - (rank[b.level] ?? 2));
+  const links = [...arr(part.project_csr_links)].sort((a, b) => (rank[a.level] ?? 2) - (rank[b.level] ?? 2));
   const items = links.map((l) => {
     const pr = l.projects || {};
     const meta = [pr.programme, pr.year].filter(Boolean).map(esc).join(" · ");
@@ -511,41 +713,134 @@ function partBlock(part) {
       + `${meta ? `<span class="muted small">${meta}</span>` : ""}</div>`
       + `<p><span class="label">Rationale:</span> ${esc(l.rationale)}</p></li>`;
   }).join("");
-  const areas = (part.policy_areas || []).map(areaLabel).join(", ");
-  return `<div class="part"><h3>${esc(part.part_id)}</h3><p class="prose">${esc(part.text)}</p>`
+  const areas = arr(part.policy_areas).map(areaLabel).join(", ");
+  const assessment = !showAssessment ? "" : part.assessment ? esc(part.assessment) : commission ? "not yet assessed" : "";
+  const linked = commission && !links.length ? ""
+    : `<p class="label">Linked projects (${links.length})</p>` + (items ? `<ul class="link-list">${items}</ul>` : `<p class="empty">No project linked.</p>`);
+  return `<div class="part">${label ? `<${tag} class="part-h">${esc(label)}</${tag}>` : ""}`
+    + (showText ? `<p class="prose">${esc(part.text)}</p>` : "")
     + (areas ? `<p class="small"><span class="label">Policy areas:</span> ${esc(areas)}</p>` : "")
-    + (part.assessment ? `<p><span class="label">Assessment:</span> ${esc(part.assessment)}</p>` : "")
-    + `<p class="label">Linked projects (${links.length})</p>`
-    + (items ? `<ul class="link-list">${items}</ul>` : `<p class="empty">No project linked.</p>`) + `</div>`;
+    + (assessment ? `<p><span class="label">Assessment:</span> ${assessment}</p>` : "")
+    + linked + `</div>`;
+}
+
+/** True when the recommendation has no ECFIN sub-part: its only part is the recommendation itself. */
+function wholeRecommendation(csr, parts) {
+  return parts.length === 1 && parts[0].part_id === csr.csr_id;
+}
+
+const DOC_CSR_COLS = "csr_id,country,year,number,title,text,assessment,assessment_year,source_url";
+const DOC_PART_COLS = "part_id,text,policy_areas,assessment,project_csr_links(level,rationale,projects(project_id,title,programme,year))";
+
+async function fetchDocument(id) {
+  const ref = parseDocId(id);
+  if (!csrDocsMissing) {
+    const res = await sb.from("csr_documents")
+      .select(`doc_id,country,year,title,stage,n_recommendations,document_url,csrs(${DOC_CSR_COLS},csr_parts(${DOC_PART_COLS}))`)
+      .eq("doc_id", id).single();
+    if (!res.error && res.data) return { doc: res.data };
+    if (res.error && docsTableMissing(res.error)) csrDocsMissing = true;
+    else if (res.error && res.error.code !== "PGRST116") return { error: res.error };
+  }
+  if (!ref) return { doc: null };
+  // Not in csr_documents (table missing or not filled yet): rebuilt from the recommendations of that country and year.
+  const res = await sb.from("csrs").select(`${DOC_CSR_COLS},csr_parts(${DOC_PART_COLS})`).eq("country", ref.country).eq("year", ref.year);
+  if (res.error) return { error: res.error };
+  return { doc: deriveDocuments(res.data)[0] || null };
+}
+
+async function renderCsrDoc(id, seq) {
+  const res = await fetchDocument(id);
+  if (stale(seq)) return;
+  if (res.error) return showError(res.error, "Could not load the CSR document");
+  const d = res.doc;
+  if (!d) return showError({ message: `No document ${id}.` }, "CSR document not found");
+  const year = num(d.year);
+  const commission = isCommission(d.stage);
+  const recs = [...arr(d.csrs)].sort(csrNumber);
+  const s = docStats(d);
+  assistantContext = { kind: "csrdoc", label: `${countryName(d.country)} ${year} · CSR document`,
+    prompt: `Tell me about the ${year} country-specific recommendations for ${countryName(d.country)} (document id ${d.doc_id}): what they ask and how they were assessed` };
+  const facts = [
+    ["Stage", `${stageBadge(d.stage)}${commission ? ` <span class="muted small">not yet adopted by the Council</span>` : ""}`],
+    ["Recommendations", fmtN(s.recs)], ["Sub-parts", fmtN(s.parts)],
+    ["Linked projects", commission && !s.projects ? "none yet" : `${fmtN(s.projects)} <span class="ai-note">AI-assessed</span>`],
+    ["Main assessment", commission ? "not yet assessed" : s.dominant ? `${esc(s.dominant.label)} <span class="muted">(${s.dominant.n} of ${s.recs})</span>` : "—"],
+    ["Source", docSourceLink(d.document_url, d.stage) || "—"], ["Document ID", `<code>${esc(d.doc_id)}</code>`],
+  ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  const lineage = Object.hasOwn(COUNTRIES, d.country) && !commission
+    ? `<p><a class="btn btn-secondary" href="${esc(lineageHref(d.country, [year], `doc:${d.doc_id}`, s.projects === 0))}">Show in lineage network</a></p>` : "";
+  const recBlocks = recs.map((c) => {
+    const parts = [...arr(c.csr_parts)].sort((a, b) => String(a.part_id).localeCompare(String(b.part_id), "en", { numeric: true }));
+    const whole = wholeRecommendation(c, parts);
+    const assess = c.assessment
+      ? `<span class="label">Latest assessment${c.assessment_year ? ` (${esc(c.assessment_year)})` : ""}:</span> ${esc(c.assessment)}`
+      : `<span class="label">Assessment:</span> ${commission ? "not yet assessed" : "none"}`;
+    const body = whole ? partBlock(parts[0], { label: "", showAssessment: false, commission })
+      : parts.length ? parts.map((pt) => partBlock(pt, { tag: "h4", commission })).join("")
+        : `<p class="prose">${esc(c.text)}</p>`;
+    return `<section class="card rec" aria-labelledby="rec-${esc(c.csr_id)}"><div class="rec-head">`
+      + `<h3 id="rec-${esc(c.csr_id)}">${hashLink("csr", c.csr_id, `Recommendation ${c.number}`)}</h3>`
+      + `<span class="muted small">${whole ? "no sub-part" : `${parts.length} sub-part${parts.length === 1 ? "" : "s"}`}</span></div>`
+      + (c.title ? `<p class="rec-title">${esc(c.title)}</p>` : "") + `<p class="small">${assess}</p>${body}</section>`;
+  }).join("");
+  view(`<nav class="crumbs" aria-label="Breadcrumb"><a href="${esc(hrefFor("csrs", { year }))}">← CSRs ${year}</a></nav>`
+    + `<div class="card"><p class="muted small">${esc(countryName(d.country))} · ${year} · CSR document</p>`
+    + `<div class="title-row"><h2 class="detail-title" tabindex="-1">${esc(d.title)}</h2>${infoButton("csrlevels", "About the three levels")}</div>`
+    + `<dl class="facts">${facts}</dl>`
+    + (commission ? `<p class="notice-few" role="note">${esc(COMMISSION_NOTE)}</p>` : "")
+    + (d.derived ? `<p class="muted small" role="note">Document rebuilt from its recommendations (document table not available yet).</p>` : "")
+    + `${lineage}</div>`
+    + (recBlocks || `<div class="card"><p class="empty">No recommendation in this document.</p></div>`));
 }
 
 async function renderCsr(id, seq) {
   const [csr, parts] = await Promise.all([
-    sb.from("csrs").select("csr_id,country,year,number,title,text,policy_areas,assessment,assessment_year,source_url").eq("csr_id", id).single(),
-    sb.from("csr_parts").select("part_id,text,policy_areas,assessment,project_csr_links(level,rationale,projects(project_id,title,programme,year))")
-      .eq("csr_id", id).order("part_id"),
+    sb.from("csrs").select("*").eq("csr_id", id).single(),
+    sb.from("csr_parts").select(`${DOC_PART_COLS}`).eq("csr_id", id).order("part_id"),
   ]);
   if (stale(seq)) return;
   if (csr.error) return showError(csr.error, csr.error.code === "PGRST116" ? "CSR not found" : "Could not load the CSR");
   if (parts.error) return showError(parts.error, "Could not load the CSR sub-parts");
-
   const r = csr.data;
-  const projectIds = new Set(parts.data.flatMap((pt) => (pt.project_csr_links || []).map((l) => l.projects?.project_id).filter(Boolean)));
+  const docId = r.doc_id || docIdOf(r.country, r.year);
+  let doc = null;
+  if (!csrDocsMissing) {
+    const res = await sb.from("csr_documents").select("doc_id,title,stage,document_url").eq("doc_id", docId).single();
+    if (stale(seq)) return;
+    if (!res.error) doc = res.data;
+    else if (docsTableMissing(res.error)) csrDocsMissing = true;
+  }
+  const stage = doc?.stage || derivedStage(num(r.year), [r]);
+  const commission = isCommission(stage);
+  const list = [...parts.data].sort((a, b) => String(a.part_id).localeCompare(String(b.part_id), "en", { numeric: true }));
+  const whole = wholeRecommendation(r, list);
+
+  assistantContext = { kind: "csr", label: `${countryName(r.country)} ${r.year} · CSR ${r.number}`,
+    prompt: `Tell me about CSR ${r.country} ${r.year} CSR ${r.number} (id ${r.csr_id}): ${r.title}` };
+  const projectIds = new Set(list.flatMap((pt) => arr(pt.project_csr_links).map((l) => l.projects?.project_id).filter(Boolean)));
   const n = projectIds.size;
-  const areas = (r.policy_areas || []).map(areaLabel).join(", ");
+  const areas = arr(r.policy_areas).map(areaLabel).join(", ");
   const assessment = r.assessment
-    ? `<p><span class="label">Latest assessment${r.assessment_year ? ` (${esc(r.assessment_year)})` : ""}:</span> ${esc(r.assessment)}</p>` : "";
-  const source = safeUrl(r.source_url) ? `<p class="small">${extLink(r.source_url, "ECFIN CSR database")} ↗</p>` : "";
-  const lineage = Object.hasOwn(COUNTRIES, r.country)
+    ? `<p><span class="label">Latest assessment${r.assessment_year ? ` (${esc(r.assessment_year)})` : ""}:</span> ${esc(r.assessment)}</p>`
+    : `<p><span class="label">Assessment:</span> ${commission ? "not yet assessed" : "none"}</p>`;
+  const source = docSourceLink(r.source_url, stage);
+  const lineage = Object.hasOwn(COUNTRIES, r.country) && !commission
     ? `<p><a class="btn btn-secondary" href="${esc(lineageHref(r.country, [num(r.year)], `csr:${r.csr_id}`, n === 0))}">Show in lineage network</a></p>` : "";
-  view(`<a class="back" href="#csrs">← CSRs</a>`
-    + `<div class="card"><p class="muted small">${esc(countryName(r.country))} · ${esc(r.year)} · CSR ${esc(r.number)} · <code>${esc(r.csr_id)}</code></p>`
+  const supported = commission && !n
+    ? `<p><strong>No project linked yet</strong> <span class="muted small">(${esc(COMMISSION_STAGE)}: projects can support it from ${num(r.year) + 1})</span></p>`
+    : `<p><strong>${n} project${n === 1 ? "" : "s"} support${n === 1 ? "s" : ""} this CSR</strong> <span class="ai-note">AI-assessed</span></p>`;
+  const docLabel = `${countryName(r.country)} ${r.year} document`;
+  view(`<nav class="crumbs" aria-label="Breadcrumb"><a href="${esc(hrefFor("csrs", { year: r.year }))}">← CSRs ${esc(r.year)}</a>`
+    + ` <span aria-hidden="true">›</span> ${hashLink("csrdoc", docId, docLabel)} <span aria-hidden="true">›</span> <span>Recommendation ${esc(r.number)}</span></nav>`
+    + `<div class="card"><p class="muted small">${esc(countryName(r.country))} · ${esc(r.year)} · CSR ${esc(r.number)} · <code>${esc(r.csr_id)}</code> ${stageBadge(stage)}</p>`
     + `<h2 class="detail-title" tabindex="-1">${esc(r.title)}</h2>`
-    + `<p><strong>${n} project${n === 1 ? "" : "s"} support${n === 1 ? "s" : ""} this CSR</strong> <span class="ai-note">AI-assessed</span></p>`
-    + `<p class="prose">${esc(r.text)}</p>`
+    + `<p class="small">Part of ${hashLink("csrdoc", docId, doc?.title || docTitle(r.country, r.year))}</p>`
+    + supported + `<p class="prose">${esc(r.text)}</p>`
     + (areas ? `<p class="small"><span class="label">Policy areas:</span> ${esc(areas)}</p>` : "")
-    + `${assessment}${source}${lineage}</div>`
-    + `<div class="card"><h3>Sub-parts</h3>${parts.data.length ? parts.data.map(partBlock).join("") : `<p class="empty">No sub-part.</p>`}</div>`);
+    + `${assessment}${source ? `<p class="small">${source}</p>` : ""}${lineage}</div>`
+    + (whole ? (commission ? "" : `<div class="card"><h3>Linked projects</h3>${partBlock(list[0], { label: "", showText: false })}</div>`)
+      : `<div class="card"><h3>Sub-parts</h3>${list.length ? list.map((pt) => partBlock(pt)).join("") : `<p class="empty">No sub-part.</p>`}</div>`));
 }
 
 // ---------- anomalies ----------
@@ -674,9 +969,13 @@ function clearAiState() {
   impactErrors.clear();
   impactPending.clear();
   chatPending = false;
+  unmountChat();
+  closeAssistant({ focusLauncher: false });
   dashCache = null;
   lineageCache.clear();
   lineageState = null;
+  csrYearsCache = null;
+  csrDocsMissing = false;
   try {
     sessionStorage.removeItem(CHAT_KEY);
     for (let i = sessionStorage.length - 1; i >= 0; i--) {
@@ -909,14 +1208,31 @@ async function sendChat(text) {
   paintChat({ scroll: true, status });
 }
 
-async function renderChat(seq) {
-  await loadMarkdown();
-  if (stale(seq)) return;
-  view(`${heading("Chat")}`
-    + `<p class="muted">Ask about TSI projects and the country-specific recommendations. `
+// ---------- assistant drawer (floating launcher; the chat lives in a right-side panel) ----------
+
+const ASSISTANT_KEY = "tsi-assistant-open"; // "1" while the drawer is open (this browser session)
+const MOBILE_QUERY = "(max-width: 600px)";
+let assistantMounted = false; // chat markup built inside the drawer
+let assistantContext = null; // { kind, label, prompt } of the project or CSR page on screen
+
+function assistantIsMobile() {
+  return typeof window.matchMedia === "function" && window.matchMedia(MOBILE_QUERY).matches;
+}
+
+function assistantOpen() {
+  return Boolean($("assistant") && !$("assistant").hidden);
+}
+
+/** Builds the chat (history, examples, form, Word export, New conversation) inside the drawer, once per user. */
+function mountChat() {
+  const body = $("assistant-body");
+  if (!body || assistantMounted) return;
+  assistantMounted = true;
+  body.innerHTML = `<p class="muted small assistant-intro">Ask about TSI projects and the country-specific recommendations. `
     + `Answers use project records, AI summaries, CSRs and AI-assessed links; deliverable full texts are not searched here. `
-    + `Answers are generated by AI (Claude, Anthropic): verify the cited sources.</p>`
-    + `<div class="card chat"><div id="chat-log" class="chat-log"></div>`
+    + `Answers are generated by AI (Claude, Anthropic): verify the cited sources. <a href="#guide/assistant">How it works</a></p>`
+    + `<div id="assistant-context" class="assistant-context"></div>`
+    + `<div id="chat-log" class="chat-log assistant-log"></div>`
     + `<p id="chat-status" class="chat-status" role="status"></p>`
     + `<form id="chat-form" class="chat-form"><label for="chat-input">Your question</label>`
     + `<div class="chat-row"><textarea id="chat-input" rows="3" maxlength="${MAX_CONTENT}" `
@@ -925,7 +1241,7 @@ async function renderChat(seq) {
     + `<div class="chat-actions"><span class="muted small">Enter to send · Shift+Enter for a new line</span>`
     + `<span class="toolbar-actions"><button type="button" class="btn btn-secondary" id="chat-word" `
     + `aria-label="Export this conversation to Word">Export to Word</button>`
-    + `<button type="button" class="btn btn-secondary" id="chat-new">New conversation</button></span></div></form></div>`);
+    + `<button type="button" class="btn btn-secondary" id="chat-new">New conversation</button></span></div></form>`;
   const input = $("chat-input");
   input.value = chatDraft;
   input.addEventListener("input", () => { chatDraft = input.value; });
@@ -947,6 +1263,99 @@ async function renderChat(seq) {
     input.focus();
   });
   paintChat();
+  paintAssistantContext();
+  // Markdown libraries arrive later: repaint the answers once they are there.
+  if (!markdown) loadMarkdown().then((lib) => { if (lib && assistantMounted) paintChat(); });
+}
+
+/** Drops the chat markup (sign-out or another user): rebuilt on the next opening. */
+function unmountChat() {
+  assistantMounted = false;
+  const body = $("assistant-body");
+  if (body) body.innerHTML = "";
+}
+
+/** "Ask about this project/CSR" chip: pre-fills the question, the user still presses Send. */
+function paintAssistantContext() {
+  const box = $("assistant-context");
+  if (!box) return;
+  const c = assistantContext;
+  if (!c) {
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = `<button type="button" class="chip" id="assistant-ask">Ask about this ${{ csr: "CSR", csrdoc: "CSR document" }[c.kind] || "project"}</button>`
+    + `<span class="muted small assistant-context-label">${esc(c.label)}</span>`;
+  $("assistant-ask").addEventListener("click", () => {
+    const input = $("chat-input");
+    if (!input) return;
+    input.value = c.prompt.slice(0, MAX_CONTENT);
+    chatDraft = input.value;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  });
+}
+
+function syncAssistantMode() {
+  const panel = $("assistant");
+  if (!panel) return;
+  const modal = assistantOpen() && assistantIsMobile();
+  panel.setAttribute("aria-modal", String(modal));
+  document.body.classList.toggle("assistant-modal", modal);
+}
+
+function openAssistant({ focus = true } = {}) {
+  const panel = $("assistant");
+  const launcher = $("assistant-launcher");
+  if (!panel || !launcher || $("view").hidden) return;
+  mountChat();
+  panel.hidden = false;
+  launcher.hidden = true;
+  launcher.setAttribute("aria-expanded", "true");
+  storageSet(ASSISTANT_KEY, "1");
+  syncAssistantMode();
+  paintAssistantContext();
+  if (focus) ($("chat-input") || $("assistant-title")).focus();
+}
+
+function closeAssistant({ focusLauncher = true } = {}) {
+  const panel = $("assistant");
+  const launcher = $("assistant-launcher");
+  if (!panel || panel.hidden) return;
+  panel.hidden = true;
+  launcher.setAttribute("aria-expanded", "false");
+  launcher.hidden = $("view").hidden;
+  try { sessionStorage.removeItem(ASSISTANT_KEY); } catch { /* storage unavailable */ }
+  syncAssistantMode();
+  if (focusLauncher && !launcher.hidden) launcher.focus();
+}
+
+/** Launcher, Close, Escape, focus trap (full-screen mobile mode only), links that leave the drawer on mobile. */
+function bindAssistant() {
+  const panel = $("assistant");
+  const launcher = $("assistant-launcher");
+  if (!panel || !launcher) return;
+  launcher.addEventListener("click", () => openAssistant());
+  $("assistant-close").addEventListener("click", () => closeAssistant());
+  panel.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.stopPropagation(); // the page-level Escape handler must not act as well
+      closeAssistant();
+      return;
+    }
+    if (e.key !== "Tab" || !assistantIsMobile()) return;
+    const items = [...panel.querySelectorAll('a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+      .filter((el) => el.offsetParent !== null || el === document.activeElement);
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+  panel.addEventListener("click", (e) => {
+    const link = e.target instanceof Element ? e.target.closest('a[href^="#"]') : null;
+    if (link && assistantIsMobile()) closeAssistant({ focusLauncher: false }); // full screen: show the page the link opens
+  });
 }
 
 // ---------- impact ----------
@@ -1237,6 +1646,19 @@ const INFO = {
       <h3>Confidence</h3><p><strong>High</strong>, <strong>medium</strong> or <strong>low</strong>: the strength of the evidence
       found, not of the impact.</p>`,
   }),
+  csrlevels: () => ({
+    title: "CSR documents, recommendations and sub-parts",
+    html: `<p>Country-specific recommendations are read on three levels:</p><ol>
+      <li><strong>CSR document</strong>: one per Member State and year, so 27 per year. From 2016 to 2025 it is the
+        <em>Council recommendation</em> adopted in the European Semester. For 2026 it is the <em>Commission recommendation</em>
+        (the Commission's proposal, published in spring), not yet adopted by the Council.</li>
+      <li><strong>Recommendations</strong>: the numbered recommendations of a document (1 to 5).</li>
+      <li><strong>Sub-parts</strong>: each recommendation split by the ECFIN CSR database into its distinct requests
+        (e.g. 3.1, 3.2). Project links are assessed at this level. The 2026 recommendations have no sub-part: each
+        recommendation counts as a single sub-part.</li></ol>
+      <p>The 2026 recommendations are <strong>not yet assessed</strong>, and no project is linked to them yet: a recommendation
+        can only be supported by projects of the following years (2027 onwards).</p>`,
+  }),
   assessments: () => ({
     title: "CSR assessment",
     html: `<p>The Commission's latest yearly assessment of the implementation of each country-specific recommendation, from the
@@ -1244,7 +1666,9 @@ const INFO = {
       <li>From <strong>Full implementation</strong> through <strong>Substantial progress</strong>, <strong>Some progress</strong>
         and <strong>Limited progress</strong> to <strong>No progress</strong>.</li>
       <li><strong>Not assessed</strong>: the Commission did not assess the recommendation that year.</li>
-      <li><strong>None</strong>: no assessment yet.</li></ul>`,
+      <li><strong>Not yet assessed</strong>: no assessment yet, for instance the 2026 Commission recommendations.</li></ul>
+      <p>Assessments are counted per recommendation; a document's <em>main assessment</em> is the most frequent latest
+        assessment of its recommendations.</p>`,
   }),
   links: () => ({
     title: "Project–CSR links",
@@ -1254,6 +1678,8 @@ const INFO = {
       <p>So far only projects with a detail page are linked; projects known only by their title are not yet linked.</p>`,
   }),
 };
+
+const INFO_GUIDE = { results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage" };
 
 function infoButton(key, label = "About this chart") {
   return `<button type="button" class="info-btn" data-info="${key}" aria-label="${esc(label)}" aria-haspopup="dialog">ⓘ</button>`;
@@ -1267,7 +1693,8 @@ function openInfo(key, opener) {
   const content = INFO[key]?.();
   if (!dialog || !content) return;
   $("info-title").textContent = content.title;
-  $("info-body").innerHTML = content.html;
+  $("info-body").innerHTML = content.html
+    + (INFO_GUIDE[key] ? `<p class="info-more"><a href="#guide/${INFO_GUIDE[key]}">Read more in the guide</a></p>` : "");
   infoOpener = opener || null;
   if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.setAttribute("open", "");
   $("info-body").scrollTop = 0;
@@ -1282,11 +1709,170 @@ function bindInfoDialog() {
     if (button) openInfo(button.dataset.info, button);
   });
   $("info-close").addEventListener("click", () => dialog.close());
-  dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); }); // backdrop
+  dialog.addEventListener("click", (e) => { // backdrop, or a link to the guide
+    if (e.target === dialog || (e.target instanceof Element && e.target.closest('a[href^="#guide"]'))) dialog.close();
+  });
   dialog.addEventListener("close", () => {
     if (infoOpener?.isConnected) infoOpener.focus();
     infoOpener = null;
   });
+}
+
+// ---------- user guide (#guide, #guide/<section>; static English text, no database string) ----------
+
+/** Info dialog text reused in the guide (single source of truth), headings one level down. */
+function infoHtml(key) {
+  return INFO[key]().html.replace(/<(\/?)h3>/g, "<$1h4>");
+}
+
+const GUIDE = [
+  { id: "start", title: "Getting started", html: () => `
+    <p>The explorer is reserved for registered testers. Sign in with your e-mail address and password.</p>
+    <ul><li><strong>First sign-in</strong>: the administrator gives you a temporary password; you are asked to replace it with your
+      own (at least 12 characters) before anything else. You can change it later with <em>Change password</em> in the header.</li>
+    <li><strong>No password, or forgotten it?</strong> Use <em>Send me a sign-in link instead</em>: a one-time sign-in link (&ldquo;magic link&rdquo;) arrives by e-mail.
+      Only invited addresses receive it.</li>
+    <li>If your session expires, you are asked to sign in again; nothing you were reading is changed.</li></ul>
+    <p>The tabs give the main views: Dashboard, Projects, CSRs, Lineage, Anomalies, Impact and this Guide. The round button at the
+      bottom right opens the <a href="#guide/assistant">assistant</a> on any page.</p>` },
+  { id: "projects", title: "Projects", html: () => `
+    <p>All projects of the Technical Support Instrument (TSI) and of its predecessors SRSP and SRSS.</p>
+    <ul><li><strong>Filters</strong>: title search, country, programme, years, policy area, &ldquo;Linked to a CSR&rdquo; and
+      &ldquo;Has a detail page&rdquo;. Selects and checkboxes apply at once, the text search on Enter or <em>Apply</em>;
+      the address of the page keeps the filters, so you can bookmark or share it.</li>
+    <li><strong>Project page</strong>: programme, year, countries, policy area, results, deliverables, an AI-generated summary,
+      the CSRs it supports (AI-assessed), the latest impact analysis and a link to the lineage network.</li>
+    <li><strong>Detail page or listed only</strong>: a project with a <em>detail page</em> has its own page on
+      reforms-investments.ec.europa.eu (description, results, deliverables). Many projects are only <em>listed</em>: known by
+      their title in a TSI country factsheet or in the SRSP list of approved requests (PDF). Their page shows that listing as the
+      source, with the note that no project page was published.</li></ul>
+    <h4>Results</h4>${infoHtml("results")}` },
+  { id: "csrs", title: "CSRs", html: () => `
+    <p>Country-specific recommendations (CSRs) are addressed every year to each Member State in the European Semester.</p>
+    <h4>Three levels</h4>${infoHtml("csrlevels")}
+    <h4>The CSRs tab</h4>
+    <ul><li><strong>By document</strong> (default): choose a year (the latest by default) to see its 27 country documents, each with
+      its stage, number of recommendations, main assessment and number of linked projects, and a link to the source (the country
+      PDF for 2026, the ECFIN CSR database before). The country filter keeps one country and links to its other years.</li>
+    <li><strong>Document page</strong>: the numbered recommendations with their sub-parts, assessments and linked projects, and a
+      link to the lineage network.</li>
+    <li><strong>All recommendations</strong>: one row per recommendation, with the text search, country and year filters
+      (a text search always opens this list). Each row links to its recommendation page and to its document.</li>
+    <li><strong>Recommendation page</strong>: the full text, the sub-parts, their assessment, the linked projects, the document it
+      belongs to (breadcrumb at the top) and a link to the lineage network.</li></ul>
+    <h4>Assessments</h4>${infoHtml("assessments")}` },
+  { id: "lineage", title: "Lineage", html: () => `
+    <p>The lineage network shows, for one country, the chain from its CSR documents to their recommendations and to the projects
+      that support them.</p>
+    <ul><li><strong>Documents</strong> (left): the country's CSR document of each year, with its number of recommendations.</li>
+    <li><strong>Recommendations</strong> (middle): the recommendations of each document; the small coloured marker gives the
+      latest assessment.</li>
+    <li><strong>Projects</strong> (right): ordered to reduce crossings (each sits near the average height of its recommendations); the
+      marker gives the programme and a pill such as &ldquo;6/10&rdquo; the latest impact score.</li>
+    <li><strong>Lines</strong>: thin lines join a document to its recommendations; one line per recommendation–project pair,
+      solid = direct, dashed = partial (direct if at least one sub-part link is direct).</li>
+    <li><strong>Reading it</strong>: hover or focus a node to highlight its chain (a document lights up its recommendations and their
+      projects), click (or Enter) to pin the highlight and see the details below the graph; click again or press Escape to release
+      it. Hover a line for the sub-parts and the rationale.</li>
+    <li><strong>Filters</strong>: country, years (default 2019–2025; the 2026 recommendations have no project yet) and
+      &ldquo;Show CSRs without a project&rdquo;.
+      The table of links below the graph can be downloaded as CSV.</li></ul>
+    <h4>Links</h4>${infoHtml("links")}` },
+  { id: "dashboard", title: "Dashboard", html: () => `
+    <p>Figures across all projects and CSRs, loaded once per session (<em>Refresh</em> reloads them).</p>
+    <ul><li><strong>Tiles</strong>: projects (share with a detail page), deliverables, CSR documents (27 per year, with the total
+      documents, recommendations and sub-parts), project–CSR links (share of projects linked), impact analyses (mean score),
+      anomalies (high severity).</li>
+    <li><strong>Projects</strong>: by year and programme, by country, by policy area, by results.</li>
+    <li><strong>Impact analyses</strong>: score distribution, level, confidence, mean score by policy area and by country (greyed
+      when fewer than 2 projects), latest analyses.</li>
+    <li><strong>CSRs and lineage</strong>: CSR documents by year (hover a bar for its recommendations), latest assessment of the
+      recommendations (2026: not yet assessed), share of each country's recommendations supported by a project, links by level.</li>
+    <li><strong>Data quality</strong>: anomalies by type and severity.</li></ul>
+    <p><strong>Click-through</strong>: a bar opens the matching filtered list (a country's projects, a year's CSRs, the lineage
+      network of a country, the anomalies of a type and severity). Hover or focus a bar for its value and share; every chart
+      has a <em>Table</em> view. The <strong>ⓘ</strong> buttons explain how a figure is defined.</p>` },
+  { id: "anomalies", title: "Anomalies", html: () => `
+    <p>The Anomalies tab lists them with filters (type, severity, programme, years, country) and a CSV export. By default only high
+      and medium severities are shown.</p>${infoHtml("anomalies")}` },
+  { id: "assistant", title: "Assistant", html: () => `
+    <p>The round button at the bottom right opens the assistant beside the page (full screen on a phone). Escape or <em>Close</em>
+      closes it; the conversation is kept while the browser tab is open.</p>
+    <ul><li><strong>What it can answer</strong>: questions on TSI projects and CSRs: which projects work on a topic or in a country,
+      what a project covers, which CSRs a country received and how they were assessed, which projects support them.</li>
+    <li><strong>Data it uses</strong>: project records, AI summaries, CSRs and their sub-parts, AI-assessed links.
+      <strong>Deliverable full texts are not searched</strong> by the assistant.</li>
+    <li><strong>On a project or CSR page</strong>, <em>Ask about this project</em> (or CSR) pre-fills the question; you still press Send.</li>
+    <li><strong>Export to Word</strong> downloads the conversation as a .docx document.</li></ul>
+    <h4>Examples</h4><ul>${CHAT_EXAMPLES.map((q) => `<li>${esc(q)}</li>`).join("")}</ul>
+    <p>Answers are generated by AI (Claude, Anthropic) and can take up to 2 minutes: verify the cited sources.</p>` },
+  { id: "impact", title: "Impact analysis", html: () => `
+    <p>From the Impact tab (or <em>Impact analysis</em> on a project page), choose a project and run the analysis. It combines the
+      project data with a web search and ends with an impact score and a confidence level.</p>
+    <ul><li><strong>Duration and cost</strong>: 30 seconds to 2 minutes; each run uses a web search and a large language model,
+      so it has a cost. Run it when useful, not repeatedly.</li>
+    <li><strong>Saved analyses</strong>: each analysis with a score is kept. The project page shows the latest one, the Impact tab
+      the previous ones, and the dashboard their statistics.</li>
+    <li><strong>Export to Word</strong>: a report (new or saved) can be downloaded as a .docx document.</li></ul>
+    ${infoHtml("impact")}` },
+  { id: "data", title: "Data and updates", html: () => `
+    <ul><li><strong>Sources</strong>: reforms-investments.ec.europa.eu (TSI projects, detail pages, country factsheets, deliverables),
+      the SRSP list of approved requests (PDF), and the ECFIN CSR database (2016–2025 recommendations and their assessments) and the Commission's 2026 country-specific
+      recommendations (one PDF per Member State).</li>
+    <li><strong>Monthly update</strong>: an automated run each month adds new or changed projects, publications, CSRs and links
+      (incremental: only what changed is re-read; a full check runs quarterly), then refreshes the anomalies and this explorer.</li>
+    <li><strong>Data releases</strong>: each update is also published as a dated data release (data-YYYY-MM-DD) in the project's
+      repository, so the figures of a given date can be retrieved.</li></ul>` },
+  { id: "limits", title: "Limits and good practice", html: () => `
+    <ul><li>Summaries, project–CSR links, assistant answers and impact analyses are <strong>generated by AI</strong>: useful to find
+      and compare, not authoritative. Verify against the sources (project page, deliverables, CSR text) before use.</li>
+    <li>Links are assessed from the project text; projects known only by their title are not yet linked, so absence of a link is
+      not proof of absence of support.</li>
+    <li>Impact statistics rest on the analyses run so far: with few analyses they are indicative only.</li>
+    <li>Anomalies are deterministic checks of the publication, not judgements on the projects.</li>
+    <li>Cite the official sources, not the explorer, in documents.</li></ul>` },
+  { id: "glossary", title: "Glossary", html: () => `
+    <dl class="info-dl">
+    <dt>TSI</dt><dd>Technical Support Instrument (since 2021): EU programme of tailor-made technical support to Member States' reforms, managed by DG REFORM.</dd>
+    <dt>SRSP</dt><dd>Structural Reform Support Programme (2017–2020), the TSI's predecessor.</dd>
+    <dt>SRSS</dt><dd>Structural Reform Support Service: the Commission service that delivered technical support before DG REFORM was created in 2020.</dd>
+    <dt>CSR</dt><dd>Country-specific recommendation: guidance adopted by the Council for each Member State in the European Semester.</dd>
+    <dt>CSR document</dt><dd>The yearly set of recommendations addressed to one Member State: 27 per year. Council recommendation once
+      adopted; Commission recommendation while it is still a proposal (2026).</dd>
+    <dt>Recommendation</dt><dd>One numbered recommendation of a CSR document (1 to 5).</dd>
+    <dt>European Semester</dt><dd>The EU's yearly cycle of economic and social policy coordination, which produces the CSRs.</dd>
+    <dt>Detail page</dt><dd>A project's own page on reforms-investments.ec.europa.eu; projects without one are known only from a listing.</dd>
+    <dt>Sub-part</dt><dd>One distinct request inside a recommendation; the level at which project links are assessed.</dd>
+    <dt>Lineage</dt><dd>The chain from a CSR document to its recommendations and to the projects that support them, shown as a network per country.</dd></dl>` },
+];
+
+const GUIDE_IDS = GUIDE.map((s) => s.id);
+let guideTarget = null; // section to scroll to and focus after the render
+
+/** Guide markup (pure: also used by the render test). */
+function guideHtml(section, { mobile = false } = {}) {
+  const key = GUIDE_IDS.includes(section) ? section : "";
+  const toc = GUIDE.map((s) => `<li><a href="#guide/${s.id}"${s.id === key ? ' aria-current="location"' : ""}>${esc(s.title)}</a></li>`).join("");
+  const body = GUIDE.map((s) => `<section class="guide-section" id="guide-${s.id}" aria-labelledby="guide-h-${s.id}">`
+    + `<h3 id="guide-h-${s.id}" tabindex="-1">${esc(s.title)}</h3>${s.html()}</section>`).join("");
+  return `${heading("User guide")}<div class="guide-layout"><nav class="guide-toc" aria-label="Guide contents">`
+    + `<details id="guide-toc"${mobile ? "" : " open"}><summary>Contents</summary><ol>${toc}</ol></details></nav>`
+    + `<article class="guide">${body}</article></div>`;
+}
+
+function renderGuide(section) {
+  view(guideHtml(section, { mobile: assistantIsMobile() }));
+  guideTarget = GUIDE_IDS.includes(section) ? section : null;
+}
+
+/** After the render (and the heading focus): bring the requested section into view and give it the focus. */
+function focusGuideSection() {
+  if (!guideTarget) return;
+  const h = $(`guide-h-${guideTarget}`);
+  guideTarget = null;
+  if (!h) return;
+  h.scrollIntoView({ block: "start" });
+  h.focus({ preventScroll: true });
 }
 
 // ---------- dashboard (hand-made SVG; method of the dataviz skill) ----------
@@ -1298,7 +1884,7 @@ const SEVERITY_KEYS = [["high", "High"], ["medium", "Medium"], ["low", "Low"], [
 const ASSESSMENT_SCALE = [
   ["full implementation", "Full implementation", "o1"], ["substantial progress", "Substantial progress", "o2"],
   ["some progress", "Some progress", "o3"], ["limited progress", "Limited progress", "o4"],
-  ["no progress", "No progress", "o5"], ["not assessed", "Not assessed", "muted"], ["none", "No assessment", "muted"],
+  ["no progress", "No progress", "o5"], ["not assessed", "Not assessed", "muted"], ["none", "Not yet assessed", "faint"],
 ];
 const RESULT_LABELS = { achieved: "Results achieved", expected: "Results expected", none: "Not stated" };
 const LINK_LABELS = { direct: "Direct", partial: "Partial" };
@@ -1487,12 +2073,18 @@ function dashModel(raw) {
   const t = d.totals && typeof d.totals === "object" ? d.totals : {};
   const kv = (list) => arr(list).filter((x) => x && typeof x === "object").map((x) => ({ key: String(x.key ?? "none"), n: num(x.n) }));
   const projects = num(t.projects);
-  const csrYears = arr(d.csrs_by_year).map((x) => ({ year: num(x.year), n: num(x.n) })).filter((x) => x.year).sort((a, b) => a.year - b.year);
+  // csrs_by_year: {year, n_documents, n_recommendations} since migration 005 (n = documents); before it, n = recommendations.
+  const hasDocs = t.csr_documents !== undefined && t.csr_documents !== null;
+  const csrYears = arr(d.csrs_by_year).map((x) => {
+    const docs = x.n_documents !== undefined ? num(x.n_documents) : null;
+    return { year: num(x.year), docs, recs: x.n_recommendations !== undefined ? num(x.n_recommendations) : docs === null ? num(x.n) : 0 };
+  }).filter((x) => x.year).sort((a, b) => a.year - b.year);
   const scores = new Map(arr(d.impact_scores).map((x) => [num(x.score), num(x.n)]));
   const analysed = num(t.impact_projects) || [...scores.values()].reduce((s, n) => s + n, 0);
   return {
     totals: {
       projects, detail: num(t.projects_with_detail), deliverables: num(t.deliverables), csrs: num(t.csrs),
+      docs: hasDocs ? num(t.csr_documents) : null, docsLatest: hasDocs ? num(t.csr_documents_latest_year) : null,
       csrParts: num(t.csr_parts), links: num(t.links), linkedProjects: num(t.projects_with_links),
       reports: num(t.impact_reports), analysed, mean: t.impact_mean === null || t.impact_mean === undefined ? null : num(t.impact_mean),
       anomalies: num(t.anomalies), anomaliesHigh: num(t.anomalies_high),
@@ -1504,7 +2096,8 @@ function dashModel(raw) {
     byResults: kv(d.projects_by_results),
     csrYears,
     assessments: kv(d.csr_assessments),
-    coverage: arr(d.csr_coverage_by_country).map((x) => ({ key: String(x.country ?? x.key ?? ""), csrs: num(x.csrs), covered: num(x.csrs_with_project) }))
+    coverage: arr(d.csr_coverage_by_country).map((x) => ({ key: String(x.country ?? x.key ?? ""), csrs: num(x.csrs), covered: num(x.csrs_with_project),
+      docs: x.documents !== undefined ? num(x.documents) : null, docsCovered: num(x.documents_with_project) }))
       .filter((x) => x.key && x.csrs > 0),
     linksByLevel: kv(d.links_by_level),
     scores: Array.from({ length: 11 }, (_, s) => ({ score: s, n: scores.get(s) || 0 })),
@@ -1599,15 +2192,38 @@ function assessmentRows(m) {
   const rows = ASSESSMENT_SCALE.filter(([k]) => byKey.has(k)).map(([k, label, key]) => ({ key: k, label, n: byKey.get(k), color: key }));
   for (const [k, n] of byKey) if (!known.has(k)) rows.push({ key: k, label: k, n, color: "muted" });
   return rows.map((x) => ({ label: x.label, display: fmtN(x.n),
-    segs: [{ v: x.n, key: x.color, href: null, tip: { label: x.label, value: `${fmtN(x.n)} CSRs`, share: `${share(x.n, total)} of CSRs`, key: x.color } }] }));
+    segs: [{ v: x.n, key: x.color, href: null, tip: { label: x.label, value: `${fmtN(x.n)} recommendations`, share: `${share(x.n, total)} of recommendations`, key: x.color } }] }));
+}
+
+function csrYearsHaveDocs(m) {
+  return m.csrYears.some((x) => x.docs !== null);
+}
+
+function csrYearTitle(m) {
+  return csrYearsHaveDocs(m) ? "CSR documents by year" : "CSR recommendations by year";
+}
+
+/** One column per year: documents (one per Member State) when known, the recommendations in the tooltip and the table. */
+function csrYearCols(m) {
+  const docs = csrYearsHaveDocs(m);
+  return m.csrYears.map((x) => {
+    const v = docs ? num(x.docs) : x.recs;
+    const tip = docs
+      ? { label: String(x.year), value: `${fmtN(x.docs)} document${x.docs === 1 ? "" : "s"}`, share: `${fmtN(x.recs)} recommendations` }
+      : { label: String(x.year), value: `${fmtN(x.recs)} recommendations`, share: `${share(x.recs, m.totals.csrs)} of recommendations` };
+    return { label: String(x.year), segs: [{ v, key: "s1", href: hrefFor("csrs", { year: x.year }), tip }] };
+  });
 }
 
 function coverageRows(m) {
   return [...m.coverage].map((x) => ({ ...x, pct: x.csrs ? (100 * x.covered) / x.csrs : 0 }))
     .sort((a, b) => b.pct - a.pct || b.csrs - a.csrs).map((x) => ({
       label: countryName(x.key), display: `${Math.round(x.pct)}% (${x.covered}/${x.csrs})`, csrs: x.csrs, covered: x.covered,
+      docs: x.docs, docsCovered: x.docsCovered,
       segs: [{ v: x.pct, key: "s1", href: Object.hasOwn(COUNTRIES, x.key) ? hrefFor("lineage", { country: x.key }) : null,
-        tip: { label: countryName(x.key), value: `${Math.round(x.pct)}% of CSRs supported`, share: `${fmtN(x.covered)} of ${fmtN(x.csrs)} CSRs have a linked project` } }],
+        tip: { label: countryName(x.key), value: `${Math.round(x.pct)}% of recommendations supported`,
+          share: `${fmtN(x.covered)} of ${fmtN(x.csrs)} recommendations have a linked project`
+            + (x.docs !== null ? ` · ${fmtN(x.docsCovered)} of ${fmtN(x.docs)} documents` : "") } }],
     }));
 }
 
@@ -1639,12 +2255,9 @@ const DASH_CHARTS = {
     (x) => (Object.hasOwn(POLICY_AREAS, x.key) ? hrefFor("projects", { area: x.key }) : null)), w, { max: 10, title: "Mean impact score by policy area" }),
   meanCountry: (m, w) => hbarChart(meanRows(m.meanCountry, (x) => countryName(x.key),
     (x) => (Object.hasOwn(COUNTRIES, x.key) ? hrefFor("projects", { country: x.key }) : null)), w, { max: 10, title: "Mean impact score by country" }),
-  csrYear: (m, w) => vbarChart(m.csrYears.map((x) => ({
-    label: String(x.year),
-    segs: [{ v: x.n, key: "s1", href: hrefFor("csrs", { year: x.year }), tip: { label: String(x.year), value: `${fmtN(x.n)} CSRs`, share: `${share(x.n, m.totals.csrs)} of CSRs` } }],
-  })), w, { height: 180, title: "CSRs by year" }),
-  assessments: (m, w) => hbarChart(assessmentRows(m), w, { title: "Latest CSR assessment" }),
-  coverage: (m, w) => hbarChart(coverageRows(m), w, { max: 100, title: "CSRs supported by at least one project, by country" }),
+  csrYear: (m, w) => vbarChart(csrYearCols(m), w, { height: 180, title: csrYearTitle(m) }),
+  assessments: (m, w) => hbarChart(assessmentRows(m), w, { title: "Latest assessment of the recommendations" }),
+  coverage: (m, w) => hbarChart(coverageRows(m), w, { max: 100, title: "Recommendations supported by at least one project, by country" }),
   links: (m, w) => hbarChart(simpleRows(inOrder(m.linksByLevel, ["direct", "partial"]), {
     label: (x) => LINK_LABELS[x.key] || x.key, total: m.totals.links, unit: " links",
   }), w, { title: "Project–CSR links by level" }),
@@ -1670,8 +2283,8 @@ function figure(id, title, { sub = "", legendHtml = "", tableHtml = "", wide = f
     + `<div class="viz-slot" data-chart="${id}"></div>${tableHtml}</figure>`;
 }
 
-function tile(label, value, sub) {
-  return `<div class="kpi"><p class="kpi-label">${esc(label)}</p><p class="kpi-value">${esc(value)}</p>`
+function tile(label, value, sub, info = "") {
+  return `<div class="kpi"><p class="kpi-label">${esc(label)}${info ? ` ${infoButton(info, `About: ${label}`)}` : ""}</p><p class="kpi-value">${esc(value)}</p>`
     + (sub ? `<p class="kpi-sub">${esc(sub)}</p>` : "") + `</div>`;
 }
 
@@ -1681,7 +2294,10 @@ function dashboardHtml(m, at) {
   const tiles = `<div class="kpis">`
     + tile("Projects", fmtN(t.projects), t.projects ? `${share(t.detail, t.projects)} with a detail page` : "")
     + tile("Deliverables", fmtN(t.deliverables), "")
-    + tile(`CSRs (${years})`, fmtN(t.csrs), t.csrParts ? `${fmtN(t.csrParts)} sub-parts` : "")
+    + (t.docs !== null && t.docs > 0
+      ? tile(`CSR documents (${years})`, `${fmtN(t.docsLatest)} per year`,
+        `${fmtN(t.docs)} documents · ${fmtN(t.csrs)} recommendations${t.csrParts ? ` · ${fmtN(t.csrParts)} sub-parts` : ""}`, "csrlevels")
+      : tile(`CSRs (${years})`, fmtN(t.csrs), t.csrParts ? `${fmtN(t.csrParts)} sub-parts` : "", "csrlevels"))
     + tile("Project → CSR links", fmtN(t.links), t.projects ? `${share(t.linkedProjects, t.projects)} of projects linked` : "")
     + tile("Impact analyses", fmtN(t.reports), t.mean !== null && t.analysed ? `mean score ${t.mean.toFixed(1)}/10` : "none yet")
     + tile("Anomalies", fmtN(t.anomalies), `${fmtN(t.anomaliesHigh)} high severity`) + `</div>`;
@@ -1733,11 +2349,18 @@ function dashboardHtml(m, at) {
   const sevTotals = Object.fromEntries(SEVERITY_KEYS.map(([s]) => [s, m.anomalies.filter((x) => x.severity === s).reduce((a, x) => a + x.n, 0)]));
   const anomalyTypes = anomalyRows(m);
   const csrs = `<section class="dash-section" aria-labelledby="dash-csrs"><h3 id="dash-csrs">CSRs and lineage</h3><div class="dash-grid">`
-    + figure("csrYear", "CSRs by year", { sub: "Click a bar to list that year's CSRs.", tableHtml: dataTable(["Year", "CSRs"], m.csrYears.map((x) => [String(x.year), fmtN(x.n)])) })
-    + figure("assessments", "Latest CSR assessment", { info: "assessments", sub: "From full implementation to no progress.",
-      tableHtml: dataTable(["Assessment", "CSRs"], assessmentRows(m).map((r) => [r.label, r.display])) })
-    + figure("coverage", "CSRs supported by a project, by country", { wide: true, sub: "Share of the country's CSRs with at least one linked project (AI-assessed links). Click to open the lineage network.",
-      tableHtml: dataTable(["Country", "CSRs", "With a project", "Share"], coverageRows(m).map((r) => [r.label, fmtN(r.csrs), fmtN(r.covered), share(r.covered, r.csrs)])) })
+    + figure("csrYear", csrYearTitle(m), { info: "csrlevels",
+      sub: csrYearsHaveDocs(m) ? "One document per Member State and year; hover a bar for its recommendations. Click to open that year's documents."
+        : "Click a bar to list that year's documents.",
+      tableHtml: csrYearsHaveDocs(m)
+        ? dataTable(["Year", "Documents", "Recommendations"], m.csrYears.map((x) => [String(x.year), fmtN(x.docs), fmtN(x.recs)]))
+        : dataTable(["Year", "Recommendations"], m.csrYears.map((x) => [String(x.year), fmtN(x.recs)])) })
+    + figure("assessments", "Latest assessment of the recommendations", { info: "assessments", sub: "From full implementation to no progress; 2026 recommendations not yet assessed.",
+      tableHtml: dataTable(["Assessment", "Recommendations"], assessmentRows(m).map((r) => [r.label, r.display])) })
+    + figure("coverage", "Recommendations supported by a project, by country", { wide: true, sub: "Share of the country's recommendations with at least one linked project (AI-assessed links). Click to open the lineage network.",
+      tableHtml: m.coverage.some((x) => x.docs !== null)
+        ? dataTable(["Country", "Recommendations", "With a project", "Share", "Documents", "Documents with a project"], coverageRows(m).map((r) => [r.label, fmtN(r.csrs), fmtN(r.covered), share(r.covered, r.csrs), fmtN(r.docs ?? 0), fmtN(r.docsCovered)]))
+        : dataTable(["Country", "Recommendations", "With a project", "Share"], coverageRows(m).map((r) => [r.label, fmtN(r.csrs), fmtN(r.covered), share(r.covered, r.csrs)])) })
     + figure("links", "Project–CSR links by level", { info: "links", tableHtml: dataTable(["Level", "Links"], inOrder(m.linksByLevel, ["direct", "partial"]).map((x) => [LINK_LABELS[x.key] || x.key, fmtN(x.n)])) })
     + `</div></section>`;
   const quality = `<section class="dash-section" aria-labelledby="dash-quality"><h3 id="dash-quality">Data quality ${infoButton("anomalies", "About the anomalies")}</h3><div class="dash-grid">`
@@ -1868,13 +2491,14 @@ async function renderDashboard(seq) {
   paintDashboard();
 }
 
-// ---------- lineage: bipartite network CSR -> projects, per country (hand-made SVG) ----------
+// ---------- lineage: CSR documents -> recommendations -> projects, per country (hand-made SVG) ----------
 
 const LN_FROM = 2019;
 const LN_TO = 2025;
 const LN_NODE_H = 30; // two text lines
 const LN_STEP = 36; // vertical pitch of a node
-const LN_YEAR_H = 26; // year sub-heading in the CSR column
+const LN_HEAD_H = 22; // column headings
+const LN_GAP = 12; // between the recommendations of two documents
 const LN_MIN_COL = 96; // below this column width the labels are unreadable: list view instead
 const lineageCache = new Map(); // `${uid}|${country}|${from}|${to}` -> { csrs, scores }
 let lineageState = null; // { model, country, width, pinned }
@@ -1926,13 +2550,31 @@ function lineageModel(rows, scores, { unlinked = false, country = "" } = {}) {
   const projectList = [...projects.values()];
   const visibleEdges = edgeList.filter((e) => csrIndex.has(e.csr));
   for (const e of visibleEdges) e.parts.sort((a, b) => (a.level === b.level ? a.part.localeCompare(b.part) : a.level === "direct" ? -1 : 1));
+  // Documents: the country's CSR document of each year (csrdoc-<ISO>-<year>), with the indices of its recommendations shown.
+  const perYear = new Map();
+  for (const c of csrList) perYear.set(c.year, (perYear.get(c.year) || 0) + 1);
+  const docs = [];
+  const docOf = [];
+  shown.forEach((c, i) => {
+    let d = docs[docs.length - 1];
+    if (!d || d.year !== c.year) {
+      d = { id: docIdOf(country, c.year), year: c.year, recs: [], total: perYear.get(c.year) || 0, linked: false };
+      docs.push(d);
+    }
+    d.recs.push(i);
+    docOf[i] = docs.length - 1;
+    if (linkedCsrs.has(c.id)) d.linked = true;
+  });
   return {
     country,
-    csrs: shown.map((c) => ({ ...c, linked: linkedCsrs.has(c.id), info: assessmentInfo(c.assessment) })),
+    csrs: shown.map((c, i) => ({ ...c, doc: docOf[i], linked: linkedCsrs.has(c.id), info: assessmentInfo(c.assessment) })),
+    docs,
+    docIndex: new Map(docs.map((d, k) => [d.id, k])),
     projects: projectList,
     edges: visibleEdges,
     csrIndex,
     summary: {
+      docs: perYear.size, docsLinked: new Set(csrList.filter((c) => linkedCsrs.has(c.id)).map((c) => c.year)).size,
       csrs: csrList.length, csrsLinked: linkedCsrs.size, projects: projectList.length,
       links: edgeList.length, direct: edgeList.filter((e) => e.level === "direct").length,
       subLinks: edgeList.reduce((n, e) => n + e.parts.length, 0),
@@ -1940,25 +2582,29 @@ function lineageModel(rows, scores, { unlinked = false, country = "" } = {}) {
   };
 }
 
-/** Positions: CSRs by year then number; projects in barycentric order (mean centre of their CSRs), pulled towards it. */
+/**
+ * Positions in three columns: documents (one per year), their recommendations by number, projects in barycentric order
+ * (mean centre of their recommendations), pulled towards it. A document sits at the middle of its recommendations.
+ */
 function lineageLayout(model, width) {
   const W = Math.max(280, Math.floor(width) || 0);
   const narrow = W < 600;
-  const leftW = Math.round(narrow ? W * 0.4 : Math.min(300, W * 0.34));
-  const rightW = Math.round(narrow ? W * 0.42 : Math.min(380, W * 0.4));
+  const docW = narrow ? 52 : Math.round(Math.min(150, W * 0.15));
+  const leftW = Math.round(narrow ? Math.max(LN_MIN_COL, W * 0.33) : Math.min(270, W * 0.28)); // recommendations
+  const rightW = Math.round(narrow ? Math.max(LN_MIN_COL, W * 0.37) : Math.min(360, W * 0.36));
   const rightX = W - rightW;
+  const leftX = docW + Math.max(8, Math.round((rightX - docW - leftW) * 0.4));
   const csrPos = [];
-  const headers = [];
-  let y = 0;
-  let year = null;
-  model.csrs.forEach((c, i) => {
-    if (c.year !== year) {
-      year = c.year;
-      headers.push({ year, y });
-      y += LN_YEAR_H;
+  const docPos = [];
+  let y = LN_HEAD_H;
+  arr(model.docs).forEach((d, k) => {
+    if (k) y += LN_GAP;
+    const start = y;
+    for (const i of d.recs) {
+      csrPos[i] = y;
+      y += LN_STEP;
     }
-    csrPos[i] = y;
-    y += LN_STEP;
+    docPos[k] = Math.round((start + y - LN_STEP + LN_NODE_H) / 2 - LN_NODE_H / 2);
   });
   const leftH = y;
   const centre = (i) => csrPos[i] + LN_NODE_H / 2;
@@ -1971,7 +2617,7 @@ function lineageLayout(model, width) {
   }).filter((o) => Number.isFinite(o.bary))
     .sort((a, b) => a.bary - b.bary || String(b.p.year).localeCompare(String(a.p.year)) || String(a.p.title).localeCompare(String(b.p.title)));
   // Forward pass: as close to the barycentre as the minimum pitch allows; backward pass: keep within the height.
-  const top = LN_YEAR_H;
+  const top = LN_HEAD_H;
   const ys = [];
   order.forEach((o, k) => {
     const target = Math.max(top, o.bary - LN_NODE_H / 2);
@@ -1984,7 +2630,7 @@ function lineageLayout(model, width) {
   }
   const projPos = new Map(order.map((o, k) => [o.p.id, ys[k]]));
   const height = Math.ceil(Math.max(leftH, order.length ? ys[order.length - 1] + LN_STEP : 0)) + 4;
-  return { W, narrow, leftW, rightW, rightX, csrPos, headers, projPos, order: order.map((o) => o.p.id), height,
+  return { W, narrow, docW, leftX, leftW, rightW, rightX, csrPos, docPos, projPos, order: order.map((o) => o.p.id), height,
     readable: leftW >= LN_MIN_COL && rightW >= LN_MIN_COL };
 }
 
@@ -1996,36 +2642,54 @@ function lnAria(parts) {
 function lineageSvg(model, width) {
   const L = lineageLayout(model, width);
   const cc = model.country;
-  const x1 = L.leftW;
+  const x0 = L.docW;
+  const x1 = L.leftX + L.leftW;
   const x2 = L.rightX;
-  const dx = (x2 - x1) / 2;
+  const curve = (xa, ya, xb, yb) => {
+    const dx = (xb - xa) / 2;
+    return `M${px(xa)} ${px(ya)}C${px(xa + dx)} ${px(ya)} ${px(xb - dx)} ${px(yb)} ${px(xb)} ${px(yb)}`;
+  };
   const csrIdx = model.csrIndex;
   let edges = "";
+  model.csrs.forEach((c, i) => { // document -> recommendation (structure, always drawn)
+    const dy = L.docPos[c.doc];
+    if (dy === undefined) return;
+    edges += `<path class="ln-tree" data-t="${i}" d="${curve(x0, dy + LN_NODE_H / 2, L.leftX, L.csrPos[i] + LN_NODE_H / 2)}"/>`;
+  });
   model.edges.forEach((e, i) => {
     const ci = csrIdx.get(e.csr);
     const py = L.projPos.get(e.project);
     if (ci === undefined || py === undefined) return;
-    const ya = L.csrPos[ci] + LN_NODE_H / 2;
-    const yb = py + LN_NODE_H / 2;
-    const d = `M${px(x1)} ${px(ya)}C${px(x1 + dx)} ${px(ya)} ${px(x2 - dx)} ${px(yb)} ${px(x2)} ${px(yb)}`;
+    const d = curve(x1, L.csrPos[ci] + LN_NODE_H / 2, x2, py + LN_NODE_H / 2);
     edges += `<g class="ln-edge ln-${e.level}" data-e="${i}"><path class="ln-line" d="${d}"/><path class="ln-hit" d="${d}"/></g>`;
   });
-  let nodes = "";
-  for (const h of L.headers) {
-    nodes += `<text class="ln-year" x="2" y="${h.y + 17}">${esc(h.year)}</text>`;
-  }
   const textW1 = (w) => w - 20 - 6; // marker + padding
+  const colh = (x, w, full, short) => `<text class="ln-colh" x="${x}" y="13">${esc(full.length * 7.2 <= w ? full : short)}</text>`;
+  let nodes = colh(0, L.docW, "DOCUMENTS", "DOCS") + colh(L.leftX, L.leftW, "RECOMMENDATIONS", "RECS") + colh(L.rightX, L.rightW, "PROJECTS", "PROJ.");
+  arr(model.docs).forEach((d, k) => {
+    const y = L.docPos[k];
+    const recs = `${fmtN(d.total)} recommendation${d.total === 1 ? "" : "s"}`;
+    const line1 = `${cc} ${d.year}`.trim();
+    const t1 = line1.length * CH <= L.docW - 12 ? line1 : String(d.year);
+    const t2 = recs.length * 6.4 <= L.docW - 12 ? recs : fitText(`${fmtN(d.total)} rec.`, L.docW - 12, 6.4);
+    nodes += `<g class="ln-node ln-doc${d.linked ? "" : " ln-unlinked"}" data-node="d${k}" tabindex="0" role="button" aria-pressed="false"`
+      + ` aria-label="${lnAria([`${countryName(cc)} ${d.year} CSR document`, recs])}">`
+      + `<rect class="ln-box ln-docbox" x="0.5" y="${y}" width="${L.docW - 1}" height="${LN_NODE_H}" rx="4"/>`
+      + `<text class="ln-t1" x="6" y="${y + 13}">${esc(t1)}</text>`
+      + `<text class="ln-t2" x="6" y="${y + 25}">${esc(t2)}</text></g>`;
+  });
   model.csrs.forEach((c, i) => {
     const y = L.csrPos[i];
+    const x = L.leftX;
     const full = `${cc} ${c.year} · CSR ${c.number}`;
     const label = full.length * CH <= textW1(L.leftW) ? full : fitText(`CSR ${c.number}`, textW1(L.leftW));
     const n = model.edges.filter((e) => e.csr === c.id).length;
     nodes += `<g class="ln-node ln-csr${c.linked ? "" : " ln-unlinked"}" data-node="c${i}" tabindex="0" role="button" aria-pressed="false"`
       + ` aria-label="${lnAria([full, c.info.label, `${n} project${n === 1 ? "" : "s"}`])}">`
-      + `<rect class="ln-box" x="0.5" y="${y}" width="${L.leftW - 1}" height="${LN_NODE_H}" rx="4"/>`
-      + `<rect class="viz-fill-${esc(c.info.key)}" x="5" y="${y + 5}" width="8" height="${LN_NODE_H - 10}" rx="2"/>`
-      + `<text class="ln-t1" x="20" y="${y + 13}">${esc(label)}</text>`
-      + `<text class="ln-t2" x="20" y="${y + 25}">${esc(fitText(c.info.label, textW1(L.leftW), 6.4))}</text></g>`;
+      + `<rect class="ln-box" x="${x + 0.5}" y="${y}" width="${L.leftW - 1}" height="${LN_NODE_H}" rx="4"/>`
+      + `<rect class="viz-fill-${esc(c.info.key)}" x="${x + 5}" y="${y + 5}" width="8" height="${LN_NODE_H - 10}" rx="2"/>`
+      + `<text class="ln-t1" x="${x + 20}" y="${y + 13}">${esc(label)}</text>`
+      + `<text class="ln-t2" x="${x + 20}" y="${y + 25}">${esc(fitText(c.info.label, textW1(L.leftW), 6.4))}</text></g>`;
   });
   model.projects.forEach((p) => {
     const y = L.projPos.get(p.id);
@@ -2047,7 +2711,7 @@ function lineageSvg(model, width) {
       + `</g>`;
   });
   const svg = `<svg class="ln-svg" viewBox="0 0 ${L.W} ${L.height}" width="100%" height="${L.height}" role="group"`
-    + ` aria-label="${esc(`Network of CSRs and supporting projects, ${countryName(cc)}`)}">`
+    + ` aria-label="${esc(`Network of CSR documents, recommendations and supporting projects, ${countryName(cc)}`)}">`
     + `<g class="ln-edges">${edges}</g><g class="ln-nodes">${nodes}</g></svg>`;
   return { svg, layout: L };
 }
@@ -2059,45 +2723,61 @@ function lineageRows(model) {
   return model.edges.flatMap((e) => e.parts.map((pt) => {
     const c = csrs.get(e.csr) || {};
     const p = projects.get(e.project) || {};
-    return { csr_id: e.csr, csr_year: c.year, csr_number: c.number, part_id: pt.part, project_id: e.project, project_title: p.title,
+    return { doc_id: docIdOf(model.country, c.year), csr_id: e.csr, csr_year: c.year, csr_number: c.number, part_id: pt.part, project_id: e.project, project_title: p.title,
       programme: p.programme, project_year: p.year, level: pt.level, basis: pt.basis, rationale: pt.rationale };
   }));
 }
 
-const LN_CSV_COLS = ["csr_id", "csr_year", "csr_number", "part_id", "project_id", "project_title", "programme", "project_year", "level", "basis", "rationale"];
+const LN_CSV_COLS = ["doc_id", "csr_id", "csr_year", "csr_number", "part_id", "project_id", "project_title", "programme", "project_year", "level", "basis", "rationale"];
 
 function lineageTable(model) {
   const rows = lineageRows(model).map((r) => [
+    td(hashLink("csrdoc", r.doc_id, `${model.country} ${r.csr_year}`), "nowrap"),
     td(hashLink("csr", r.csr_id, r.csr_id), "nowrap"), td(esc(r.part_id), "nowrap"),
     td(hashLink("project", r.project_id, r.project_title || r.project_id), "title-cell"), td(badge(r.level)), td(esc(r.rationale)),
   ]);
-  return table(["CSR", "Sub-part", "Project", "Level", "Rationale"], rows, "No link.");
+  return table(["Document", "Recommendation", "Sub-part", "Project", "Level", "Rationale"], rows, "No link.");
 }
 
 function lineageLegend() {
   const line = (cls) => `<svg class="ln-key" width="26" height="10" aria-hidden="true"><line class="ln-line ${cls}" x1="1" y1="5" x2="25" y2="5"/></svg>`;
   const sw = (key, label) => `<li><span class="viz-key viz-key-${key}" aria-hidden="true"></span>${esc(label)}</li>`;
   return `<div class="ln-legend">`
-    + `<ul class="viz-legend"><li>${line("ln-direct-key")}Direct link</li><li>${line("ln-partial-key")}Partial link</li>`
+    + `<ul class="viz-legend"><li>${line("ln-tree-key")}Document → recommendation</li><li>${line("ln-direct-key")}Direct link</li><li>${line("ln-partial-key")}Partial link</li>`
     + `<li><span class="ln-pill-key" aria-hidden="true">6/10</span>Latest impact score</li>`
     + `<li>${infoButton("links", "About the links")}</li></ul>`
-    + `<ul class="viz-legend"><li class="muted">CSR assessment ${infoButton("assessments", "About the CSR assessment")}</li>${ASSESSMENT_SCALE.filter(([k]) => k !== "none").map(([, label, key]) => sw(key, label)).join("")}${sw("muted", "None")}</ul>`
+    + `<ul class="viz-legend"><li class="muted">CSR assessment ${infoButton("assessments", "About the CSR assessment")}</li>${ASSESSMENT_SCALE.filter(([k]) => k !== "none").map(([, label, key]) => sw(key, label)).join("")}${sw("faint", "Not yet assessed")}</ul>`
     + `<ul class="viz-legend"><li class="muted">Programme:</li>${PROGRAMMES.map((p) => sw(programmeKey(p), p)).join("")}</ul></div>`;
 }
 
 function lineageSummary(s, { country = "", from = null, to = null } = {}) {
   const plural = (n, word) => `${fmtN(n)} ${word}${n === 1 ? "" : "s"}`;
   const where = [country ? countryName(country) : "", from && to ? (from === to ? String(from) : `${from}–${to}`) : ""].filter(Boolean).join(", ");
-  return `${where ? `${where}: ` : ""}${plural(s.csrs, "CSR")} (${fmtN(s.csrsLinked)} with at least one project) · `
-    + `${plural(s.projects, "project")} · ${plural(s.links, "CSR–project pair")} (${fmtN(s.direct)} direct)`
+  return `${where ? `${where}: ` : ""}${s.docs !== undefined ? `${plural(s.docs, "CSR document")} · ` : ""}`
+    + `${plural(s.csrs, "recommendation")} (${fmtN(s.csrsLinked)} with at least one project) · `
+    + `${plural(s.projects, "project")} · ${plural(s.links, "recommendation–project pair")} (${fmtN(s.direct)} direct)`
     + ` from ${plural(s.subLinks ?? s.links, "sub-part link")}`;
 }
 
 /** Detail panel of the pinned node (links to the CSR or project page). */
 function lineageDetail(model, key) {
-  if (!key) return `<p class="muted small">Click a CSR or a project to pin its links and see the details here.</p>`;
+  if (!key) return `<p class="muted small">Click a document, a recommendation or a project to pin its links and see the details here.</p>`;
   const projects = new Map(model.projects.map((p) => [p.id, p]));
   const csrs = new Map(model.csrs.map((c) => [c.id, c]));
+  if (key[0] === "d") {
+    const d = model.docs[Number(key.slice(1))];
+    if (!d) return "";
+    const items = d.recs.map((i) => {
+      const c = model.csrs[i];
+      const n = model.edges.filter((e) => e.csr === c.id).length;
+      return `<li>${hashLink("csr", c.id, `CSR ${c.number}`)} <span class="muted small">${esc(c.title)} · ${esc(c.info.label)} · `
+        + `${n} project${n === 1 ? "" : "s"}</span></li>`;
+    }).join("");
+    const hidden = d.total - d.recs.length;
+    return `<h3>${esc(`${model.country} ${d.year} · CSR document`)}</h3>`
+      + `<p class="small">${fmtN(d.total)} recommendation${d.total === 1 ? "" : "s"}${hidden > 0 ? ` (${fmtN(hidden)} without a project not shown)` : ""}</p>`
+      + `<ul class="ln-list">${items}</ul><p>${hashLink("csrdoc", d.id, "Open the document")}</p>`;
+  }
   if (key[0] === "c") {
     const c = model.csrs[Number(key.slice(1))];
     if (!c) return "";
@@ -2108,7 +2788,7 @@ function lineageDetail(model, key) {
     return `<h3>${esc(`${model.country} ${c.year} · CSR ${c.number}`)}</h3><p>${esc(c.title)}</p>`
       + `<p class="small"><span class="label">Assessment:</span> ${esc(c.info.label)}${c.assessmentYear ? ` (${esc(c.assessmentYear)})` : ""}</p>`
       + (items ? `<ul class="ln-list">${items}</ul>` : `<p class="empty">No project linked.</p>`)
-      + `<p>${hashLink("csr", c.id, "Open the CSR")}</p>`;
+      + `<p>${hashLink("csr", c.id, "Open the recommendation")} · ${hashLink("csrdoc", docIdOf(model.country, c.year), `${model.country} ${c.year} document`)}</p>`;
   }
   const id = model.projects.length ? lineageState?.layout?.order?.[Number(key.slice(1))] : null;
   const p = projects.get(id);
@@ -2127,6 +2807,15 @@ function lineageDetail(model, key) {
 function lineageTipLines(model, target) {
   const order = lineageState?.layout?.order || [];
   const short = (s, n) => (String(s ?? "").length > n ? `${String(s).slice(0, n - 1)}…` : String(s ?? ""));
+  if (target.node?.[0] === "d") {
+    const d = model.docs[Number(target.node.slice(1))];
+    if (!d) return null;
+    const ids = new Set(d.recs.map((i) => model.csrs[i].id));
+    const linked = d.recs.filter((i) => model.csrs[i].linked).length;
+    const projects = new Set(model.edges.filter((e) => ids.has(e.csr)).map((e) => e.project)).size;
+    return [`${model.country} ${d.year} · CSR document`, `${d.total} recommendation${d.total === 1 ? "" : "s"}`,
+      `${linked} with a project`, `${projects} project${projects === 1 ? "" : "s"}`];
+  }
   if (target.node?.[0] === "c") {
     const c = model.csrs[Number(target.node.slice(1))];
     if (!c) return null;
@@ -2150,6 +2839,32 @@ function lineageTipLines(model, target) {
   return [`${e.level === "direct" ? "Direct" : "Partial"} link`, `CSR ${c.number} (${c.year}) → ${short(p.title, 80)}`, ...parts];
 }
 
+/** Nodes, links and document lines lit by a node: its whole chain (document -> recommendations -> projects). */
+function lineageChain(model, order, key) {
+  const nodes = new Set([key]);
+  const edges = new Set();
+  const trees = new Set();
+  const recs = new Set();
+  if (key[0] === "d") for (const i of model.docs[Number(key.slice(1))]?.recs || []) recs.add(i);
+  else if (key[0] === "c") recs.add(Number(key.slice(1)));
+  const project = key[0] === "p";
+  model.edges.forEach((e, i) => {
+    const ci = model.csrIndex.get(e.csr);
+    const pk = `p${order.indexOf(e.project)}`;
+    if (project ? pk === key : recs.has(ci)) {
+      edges.add(i);
+      nodes.add(pk);
+      if (project) recs.add(ci);
+    }
+  });
+  for (const i of recs) {
+    nodes.add(`c${i}`);
+    trees.add(i);
+    if (model.csrs[i]?.doc !== undefined) nodes.add(`d${model.csrs[i].doc}`);
+  }
+  return { nodes, edges, trees };
+}
+
 function lineageHighlight(key) {
   const root = $("ln-graph");
   const s = lineageState;
@@ -2157,17 +2872,11 @@ function lineageHighlight(key) {
   root.querySelectorAll(".on").forEach((el) => el.classList.remove("on"));
   root.classList.toggle("has-focus", Boolean(key));
   if (!key) return;
-  const order = s.layout.order;
+  const chain = lineageChain(s.model, s.layout.order, key);
   const on = (sel) => root.querySelector(sel)?.classList.add("on");
-  on(`[data-node="${key}"]`);
-  s.model.edges.forEach((e, i) => {
-    const ck = `c${s.model.csrIndex.get(e.csr)}`;
-    const pk = `p${order.indexOf(e.project)}`;
-    if (ck === key || pk === key) {
-      on(`[data-e="${i}"]`);
-      on(`[data-node="${ck === key ? pk : ck}"]`);
-    }
-  });
+  for (const n of chain.nodes) on(`[data-node="${n}"]`);
+  for (const i of chain.edges) on(`[data-e="${i}"]`);
+  for (const i of chain.trees) on(`[data-t="${i}"]`);
 }
 
 function lineagePin(key) {
@@ -2346,7 +3055,7 @@ async function renderLineage(p, seq) {
   const form = filterForm("lineage", countriesSelect(country)
     + yearField("from", "From year", from) + yearField("to", "To year", to)
     + checkField("unlinked", "Show CSRs without a project", unlinked));
-  const intro = `<p class="muted">Country-specific recommendations (left, by year) and the projects that support them (right). `
+  const intro = `<p class="muted">CSR documents (left, one per year), their recommendations (middle) and the projects that support them (right). `
     + `Links assessed by AI from the project text: verify before use. ${infoButton("links", "About the links")}</p>`;
   if (!country) {
     view(`${heading("Lineage")}${intro}${form}`
@@ -2370,23 +3079,23 @@ async function renderLineage(p, seq) {
   lineageState = { model, country, pinned: null, layout: null, width: 0 };
   view(`${head}<p class="ln-summary"><strong>${esc(lineageSummary(model.summary, { country, from, to }))}</strong></p>`
     + `<div class="card ln-card">${lineageLegend()}`
-    + `<div id="ln-wrap" class="ln-wrap"><div class="ln-cols" aria-hidden="true"><span>CSRs</span><span>Projects</span></div>`
+    + `<div id="ln-wrap" class="ln-wrap">`
     + `<div id="ln-graph" class="ln-graph"></div><div id="ln-tip" class="viz-tip ln-tip" role="tooltip" hidden></div></div>`
     + `<div id="ln-detail" class="ln-detail" aria-live="polite"></div>`
     + `<details class="viz-table"><summary>Table of links</summary>`
-    + `<div class="toolbar"><span class="muted small">One row per CSR sub-part and project.</span>`
+    + `<div class="toolbar"><span class="muted small">One row per sub-part and project.</span>`
     + `<button type="button" class="btn btn-secondary" id="ln-csv">Download CSV</button></div>${lineageTable(model)}</details></div>`);
   bindFilters();
   bindLineage();
   $("ln-csv").addEventListener("click", () => saveCsv(`lineage-${country}-${from}-${to}.csv`, LN_CSV_COLS, lineageRows(model)));
   paintLineageGraph();
   $("ln-detail").innerHTML = lineageDetail(model, null);
-  // Selection passed by the CSR or project page (#lineage?...&sel=csr:ID or sel=project:ID).
-  const m = /^(csr|project):(.+)$/.exec(sel);
+  // Selection passed by the document, CSR or project page (#lineage?...&sel=doc:ID, csr:ID or project:ID).
+  const m = /^(doc|csr|project):(.+)$/.exec(sel);
   if (m) {
-    const key = m[1] === "csr"
-      ? (model.csrIndex.has(m[2]) ? `c${model.csrIndex.get(m[2])}` : null)
-      : (lineageState.layout?.order.includes(m[2]) ? `p${lineageState.layout.order.indexOf(m[2])}` : null);
+    const key = m[1] === "doc" ? (model.docIndex.has(m[2]) ? `d${model.docIndex.get(m[2])}` : null)
+      : m[1] === "csr" ? (model.csrIndex.has(m[2]) ? `c${model.csrIndex.get(m[2])}` : null)
+        : (lineageState.layout?.order.includes(m[2]) ? `p${lineageState.layout.order.indexOf(m[2])}` : null);
     if (key) {
       lineagePin(key);
       $("ln-graph").querySelector(`[data-node="${key}"]`)?.scrollIntoView({ block: "center" });
@@ -2394,7 +3103,7 @@ async function renderLineage(p, seq) {
   }
 }
 
-/** #lineage link that opens the network on a CSR or a project (years widened to include it). */
+/** #lineage link that opens the network on a document, a recommendation or a project (years widened to include it). */
 function lineageHref(country, years, sel, unlinked = false) {
   const ys = years.filter((y) => Number.isFinite(y) && y > 1900);
   return hrefFor("lineage", { country, from: Math.min(LN_FROM, ...ys), to: Math.max(LN_TO, ...ys), unlinked: unlinked ? "1" : "", sel });
@@ -2406,6 +3115,12 @@ function showScreen(name) {
   for (const id of ["config-error", "login", "change-password", "denied"]) $(id).hidden = id !== name;
   $("tabs").hidden = name !== "app";
   $("view").hidden = name !== "app";
+  // The assistant exists only in the explorer (not on the sign-in, password or access-denied screens).
+  if (name !== "app") {
+    $("assistant").hidden = true;
+    document.body.classList.remove("assistant-modal");
+  }
+  $("assistant-launcher").hidden = name !== "app" || assistantOpen();
 }
 
 function showSession(session) {
@@ -2427,25 +3142,39 @@ async function isTester(session) {
 }
 
 async function route(seq) {
-  const { route: r, id, params: p } = params();
-  const viewKey = ["project", "csr", "impact"].includes(r) && id ? `${r}/${id}`
-    : (["dashboard", "lineage", "csrs", "anomalies", "chat", "impact"].includes(r) ? r : "projects");
+  let { route: r, id, params: p } = params();
+  let focusAssistant = false;
+  if (r === "chat") {
+    // Former Chat tab: the assistant now opens over the default view (old links keep working).
+    history.replaceState(null, "", `${location.pathname}${location.search}#projects`);
+    ({ route: r, id, params: p } = params());
+    openAssistant({ focus: false });
+    focusAssistant = true;
+  }
+  assistantContext = null;
+  const viewKey = ["project", "csr", "csrdoc", "impact"].includes(r) && id ? `${r}/${id}`
+    : (["dashboard", "lineage", "csrs", "anomalies", "impact", "guide"].includes(r) ? r : "projects");
   setActiveTab(r);
   loading();
   try {
     if (r === "project" && id) await renderProject(id, seq);
     else if (r === "csr" && id) await renderCsr(id, seq);
+    else if (r === "csrdoc" && id) await renderCsrDoc(id, seq);
     else if (r === "dashboard") await renderDashboard(seq);
     else if (r === "lineage") await renderLineage(p, seq);
     else if (r === "csrs") await renderCsrs(p, seq);
     else if (r === "anomalies") await renderAnomalies(p, seq);
-    else if (r === "chat") await renderChat(seq);
+    else if (r === "guide") renderGuide(id);
     else if (r === "impact") await renderImpact(id, p, seq);
     else { setActiveTab("projects"); await renderProjects(p, seq); }
   } catch (e) {
     if (!stale(seq)) showError(e, "Unexpected error");
   }
-  if (!stale(seq)) restoreFocus(viewKey);
+  if (stale(seq)) return;
+  restoreFocus(viewKey);
+  focusGuideSection();
+  paintAssistantContext();
+  if (focusAssistant) $("chat-input")?.focus();
 }
 
 async function render() {
@@ -2490,6 +3219,7 @@ async function render() {
     return;
   }
   showScreen("app");
+  if (storageGet(ASSISTANT_KEY) === "1" && !assistantOpen()) openAssistant({ focus: false }); // still open in this session
   await route(seq);
 }
 
@@ -2627,10 +3357,12 @@ async function init() {
     if (lineageState?.pinned && $("ln-graph")) lineagePin(lineageState.pinned);
   });
   bindInfoDialog();
+  bindAssistant();
   let resizeTimer = 0;
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
+      syncAssistantMode();
       const root = $("dash");
       if (root && root.clientWidth !== dashWidth) paintDashCharts();
       const wrap = $("ln-wrap");
