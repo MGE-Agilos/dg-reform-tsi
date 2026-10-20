@@ -30,8 +30,8 @@
       <a href="#csrs" data-tab="csrs">CSRs</a>
       <a href="#lineage" data-tab="lineage">Lineage</a>
       <a href="#anomalies" data-tab="anomalies">Anomalies</a>
-      <a href="#chat" data-tab="chat">Chat</a>
       <a href="#impact" data-tab="impact">Impact</a>
+      <a href="#guide" data-tab="guide">Guide</a>
     </div>
   </nav>
 
@@ -90,6 +90,23 @@
       <div id="info-body" class="info-body"></div>
     </div>
   </dialog>
+
+  <button type="button" id="assistant-launcher" class="assistant-launcher" aria-label="Open the assistant"
+          aria-controls="assistant" aria-expanded="false" hidden>
+    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" focusable="false">
+      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.6c-.5.4-1.3.1-1.3-.6V16A2.5 2.5 0 0 1 4 13.5z"
+            fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="8.5" cy="9.5" r="1.1" fill="currentColor"/><circle cx="12" cy="9.5" r="1.1" fill="currentColor"/><circle cx="15.5" cy="9.5" r="1.1" fill="currentColor"/>
+    </svg>
+  </button>
+
+  <aside id="assistant" class="assistant" role="dialog" aria-modal="false" aria-labelledby="assistant-title" hidden>
+    <div class="assistant-head">
+      <h2 id="assistant-title" tabindex="-1">Assistant</h2>
+      <button type="button" id="assistant-close" class="btn btn-secondary" aria-label="Close the assistant">Close</button>
+    </div>
+    <div id="assistant-body" class="assistant-body"></div>
+  </aside>
 
   <footer class="site-footer">
     <div class="wrap">
