@@ -457,3 +457,6 @@ div.title-row:has(> h2) { margin-bottom: 12px; }
 
 /* Source of a project known only from a listing (factsheet, PDF list). */
 .source-line { margin-top: 2px; color: var(--muted); overflow-wrap: anywhere; }
+
+/* Word export: error message in the status line next to the button. */
+.note-error { color: var(--high); font-style: normal; }

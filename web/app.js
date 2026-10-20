@@ -6,6 +6,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY, PROXY_URL } from "./config.js";
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
 const MARKED_JS = "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
 const PURIFY_JS = "https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.es.mjs";
+const DOCX_JS = "https://cdn.jsdelivr.net/npm/docx@9.5.1/+esm"; // Word export, loaded on first use
 const PROXY_TIMEOUT_MS = 160000; // above tsi-assistant's 150 s deadline (and haystack-proxy's 130 s), so their errors arrive first
 const MD_TAGS = ["p", "a", "ul", "ol", "li", "strong", "em", "b", "i", "code", "pre", "blockquote",
   "h1", "h2", "h3", "h4", "table", "thead", "tbody", "tr", "th", "td", "hr", "br"];
@@ -77,6 +78,10 @@ let chatDraft = ""; // text being typed, kept across re-renders
 const impactPending = new Set(); // project ids whose analysis is running
 const impactReports = new Map(); // project id -> { report, at }, mirrored in sessionStorage
 const impactErrors = new Map(); // project id -> last error message
+let wordLib = null; // { D: docx namespace, W: ./word-export.js, lexer } once loaded
+let wordLoading = null; // Promise while loading
+let currentEmail = ""; // e-mail of the signed-in user (Word export "Exported by")
+let impactProject = null; // project shown on the Impact or project page (Word export of its reports)
 
 // ---------- helpers ----------
 
@@ -423,6 +428,7 @@ async function renderProject(id, seq) {
   if (links.error) return showError(links.error, "Could not load the CSR links");
 
   const r = proj.data;
+  impactProject = r;
   const rank = { direct: 0, partial: 1 };
   const sorted = [...links.data].sort((a, b) => (rank[a.level] ?? 2) - (rank[b.level] ?? 2) || a.part_id.localeCompare(b.part_id));
   const facts = [
@@ -636,7 +642,10 @@ async function downloadCsv(f) {
 /** Download rows (objects) as CSV: separator ";" for Excel with Belgian/French regional settings; UTF-8 BOM and CRLF. */
 function saveCsv(filename, cols, rows) {
   const lines = [cols.map(csvCell).join(";"), ...rows.map((r) => cols.map((c) => csvCell(r[c])).join(";"))];
-  const blob = new Blob(["\uFEFF" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" });
+  saveBlob(filename, new Blob(["\uFEFF" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" }));
+}
+
+function saveBlob(filename, blob) {
   const url = URL.createObjectURL(blob);
   const a = Object.assign(document.createElement("a"), { href: url, download: filename });
   document.body.appendChild(a);
@@ -752,6 +761,65 @@ async function callProxy(service, messages) {
   throw new Error(proxyMessage(res.status, body));
 }
 
+// ---------- Word export (docx-js, generated in the browser) ----------
+
+/** docx-js, the export module and marked's lexer, loaded once on demand; rejects if a library cannot be loaded. */
+async function loadWord() {
+  if (wordLib) return wordLib;
+  if (!wordLoading) {
+    wordLoading = Promise.all([import(DOCX_JS), import("./word-export.js"), loadMarkdown()])
+      .then(([D, W, mdLib]) => {
+        if (!mdLib) throw new Error("the Markdown library could not be loaded");
+        wordLib = { D, W, lexer: (text) => mdLib.marked.lexer(text) };
+        return wordLib;
+      })
+      .finally(() => { wordLoading = null; });
+  }
+  return wordLoading;
+}
+
+/** Project fields for the Word information table (labels, names; link only to a real https project page). */
+function wordProject(r) {
+  const src = sourceInfo(r?.url, { listing: r?.detail_page === false });
+  return {
+    project_id: r?.project_id || "", title: r?.title || r?.project_id || "", programme: r?.programme || "",
+    year: r?.year ?? "", countries: countriesText(r?.countries), policy_area: areaLabel(r?.policy_area),
+    url: src && !src.listing ? src.url : null,
+  };
+}
+
+/** Build (lib -> { doc, name }) and download a .docx; progress and errors in `note` (a role=status element). */
+async function exportWord(button, note, build) {
+  if (!button || button.dataset.busy) return;
+  const epoch = aiEpoch;
+  const label = button.textContent;
+  button.dataset.busy = "1";
+  button.disabled = true;
+  button.textContent = "Preparing…";
+  if (note) { note.textContent = "Preparing document…"; note.classList.remove("note-error"); }
+  try {
+    const lib = await loadWord().catch((e) => {
+      throw new Error(`could not load the Word library (${e?.message || "network error"}). Check your connection and try again.`);
+    });
+    const { doc, name } = await build(lib);
+    const blob = await lib.D.Packer.toBlob(doc);
+    if (epoch !== aiEpoch) return;
+    saveBlob(name, blob);
+    if (note) note.textContent = "Word document downloaded.";
+  } catch (e) {
+    if (epoch !== aiEpoch) return;
+    if (note) {
+      note.textContent = `Could not create the Word document: ${e?.message || e}`;
+      note.classList.add("note-error");
+    }
+  } finally {
+    delete button.dataset.busy;
+    button.textContent = label;
+    // The chat button stays disabled while a question is pending or the conversation is empty.
+    button.disabled = button.id === "chat-word" ? chatPending || !getChat().length : false;
+  }
+}
+
 // ---------- chat ----------
 
 const usable = (m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim();
@@ -796,8 +864,10 @@ function paintChat({ scroll = false, status = "" } = {}) {
   }
   log.innerHTML = html;
   $("chat-status").textContent = chatPending ? "Thinking… (up to 2 minutes)" : status;
+  $("chat-status").classList.remove("note-error");
   $("chat-send").disabled = chatPending;
   $("chat-new").disabled = chatPending || (!history.length && !chatError);
+  $("chat-word").disabled = chatPending || !history.length;
   log.querySelectorAll("[data-example]").forEach((b) => b.addEventListener("click", () => sendChat(CHAT_EXAMPLES[b.dataset.example])));
   $("chat-retry")?.addEventListener("click", () => sendChat(null));
   if (scroll) log.lastElementChild?.scrollIntoView({ block: "start", behavior: "smooth" });
@@ -853,7 +923,9 @@ async function renderChat(seq) {
     + `placeholder="e.g. Which projects support pension reforms in Portugal?"></textarea>`
     + `<button type="submit" class="btn" id="chat-send">Send</button></div>`
     + `<div class="chat-actions"><span class="muted small">Enter to send · Shift+Enter for a new line</span>`
-    + `<button type="button" class="btn btn-secondary" id="chat-new">New conversation</button></div></form></div>`);
+    + `<span class="toolbar-actions"><button type="button" class="btn btn-secondary" id="chat-word" `
+    + `aria-label="Export this conversation to Word">Export to Word</button>`
+    + `<button type="button" class="btn btn-secondary" id="chat-new">New conversation</button></span></div></form></div>`);
   const input = $("chat-input");
   input.value = chatDraft;
   input.addEventListener("input", () => { chatDraft = input.value; });
@@ -864,6 +936,10 @@ async function renderChat(seq) {
     }
   });
   $("chat-form").addEventListener("submit", (e) => { e.preventDefault(); sendChat(input.value); });
+  $("chat-word").addEventListener("click", () => exportWord($("chat-word"), $("chat-status"), ({ D, W, lexer }) => {
+    const date = new Date();
+    return { doc: W.buildChatDocument(D, lexer, { messages: getChat(), email: currentEmail, date }), name: W.chatFileName(date) };
+  }));
   $("chat-new").addEventListener("click", () => {
     setChat([]);
     chatError = "";
@@ -932,7 +1008,8 @@ function paintImpact(id, status = "") {
     const at = new Date(saved.at);
     html += `<div class="card"><div class="toolbar"><h3 class="section-label">Impact report <span class="ai-note">AI-generated</span></h3>`
       + `<span class="toolbar-actions"><span id="copy-note" class="muted small" role="status"></span>`
-      + `<button type="button" class="btn btn-secondary" id="impact-copy">Copy report</button></span></div>`
+      + `<button type="button" class="btn btn-secondary" id="impact-copy">Copy report</button>`
+      + `<button type="button" class="btn btn-secondary" id="impact-word" aria-label="Export this report to Word">Export to Word</button></span></div>`
       + (Number.isNaN(at.getTime()) ? "" : `<p class="muted small">Generated ${esc(at.toLocaleString("en-GB"))}</p>`)
       + `<div class="md">${md(saved.report)}</div></div>`;
   }
@@ -944,6 +1021,13 @@ function paintImpact(id, status = "") {
     } catch {
       $("copy-note").textContent = "Copy failed: select the text manually.";
     }
+  });
+  $("impact-word")?.addEventListener("click", () => {
+    const project = impactProject?.project_id === id ? impactProject : { project_id: id };
+    exportWord($("impact-word"), $("copy-note"), ({ D, W, lexer }) => ({
+      doc: W.buildImpactDocument(D, lexer, { project: wordProject(project), report: saved.report, at: saved.at, source: "web", email: currentEmail }),
+      name: W.impactFileName(id, new Date(saved.at)),
+    }));
   });
 }
 
@@ -974,13 +1058,14 @@ async function runImpact(r) {
 async function renderImpact(id, p, seq) {
   if (!id) return renderImpactSearch(p, seq);
   const [proj, previous] = await Promise.all([
-    sb.from("projects").select("project_id,title,programme,year,countries").eq("project_id", id).single(),
+    sb.from("projects").select("project_id,title,programme,year,countries,policy_area,url,detail_page").eq("project_id", id).single(),
     impactHistoryQuery(id, 5),
     loadMarkdown(),
   ]);
   if (stale(seq)) return;
   if (proj.error) return showError(proj.error, proj.error.code === "PGRST116" ? "Project not found" : "Could not load the project");
   const r = proj.data;
+  impactProject = r;
   const meta = [r.programme, r.year, countriesText(r.countries)].filter(Boolean).map(esc).join(" · ");
   view(`<a class="back" href="#impact">← Choose another project</a>`
     + `<div class="card"><p class="muted small">Impact analysis</p><h2 class="detail-title" tabindex="-1">${esc(r.title)}</h2>`
@@ -1013,15 +1098,34 @@ function impactLine(r) {
 function reportToggle(r) {
   if (!/^\d+$/.test(String(r?.id ?? ""))) return "";
   const id = String(r.id);
-  return `<button type="button" class="btn btn-secondary" data-report="${id}" aria-expanded="false" aria-controls="report-${id}">Show report</button>`;
+  return `<span class="muted small" id="word-note-${id}" role="status"></span>`
+    + `<button type="button" class="btn btn-secondary" data-report="${id}" aria-expanded="false" aria-controls="report-${id}">Show report</button>`
+    + `<button type="button" class="btn btn-secondary" data-word="${id}" aria-label="Export this saved report to Word">Export to Word</button>`;
 }
 
 function reportBody(r) {
   return /^\d+$/.test(String(r?.id ?? "")) ? `<div class="md report-body" id="report-${r.id}" hidden></div>` : "";
 }
 
-/** "Show report" buttons: the report text is loaded on first opening, rendered through md(). */
+/** "Show report" buttons: the report text is loaded on first opening, rendered through md().
+ * "Export to Word" buttons: the saved report (impact_reports row) as a .docx. */
 function bindReportToggles(container) {
+  container?.querySelectorAll("button[data-word]").forEach((button) => {
+    button.addEventListener("click", () => exportWord(button, $(`word-note-${button.dataset.word}`), async ({ D, W, lexer }) => {
+      const { data: row, error } = await sb.from("impact_reports")
+        .select("id,project_id,title,score,level,confidence,report,created_at,source").eq("id", button.dataset.word).single();
+      if (error) throw new Error(error.message || "Could not load the report");
+      if (!row?.report?.trim()) throw new Error("This saved analysis has no report text.");
+      const project = impactProject?.project_id === row.project_id ? impactProject : { project_id: row.project_id, title: row.title };
+      return {
+        doc: W.buildImpactDocument(D, lexer, {
+          project: wordProject(project), report: row.report, at: row.created_at, source: row.source || "",
+          score: { score: row.score, level: row.level, confidence: row.confidence }, email: currentEmail,
+        }),
+        name: W.impactFileName(row.project_id, new Date(row.created_at)),
+      };
+    }));
+  });
   container?.querySelectorAll("button[data-report]").forEach((button) => {
     button.addEventListener("click", async () => {
       const id = button.dataset.report;
@@ -2306,7 +2410,8 @@ function showScreen(name) {
 
 function showSession(session) {
   $("session").hidden = !session;
-  $("session-email").textContent = session?.user?.email || "";
+  currentEmail = session?.user?.email || "";
+  $("session-email").textContent = currentEmail;
 }
 
 async function isTester(session) {
