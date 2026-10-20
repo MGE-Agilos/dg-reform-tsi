@@ -120,10 +120,14 @@ language sql stable security invoker set search_path = public as $$
                                                    'documents', coalesce(dc.total, 0),
                                                    'documents_with_project', coalesce(dc.cov, 0))
                                 order by s.k), '[]'::jsonb)
+      -- Couverture hors recommandations de la Commission (annee en cours, aucun projet ne peut encore les soutenir).
       from (select c.country as k, count(*) as total, count(cv.csr_id) as cov
-            from public.csrs c left join covered cv on cv.csr_id = c.csr_id group by 1) s
+            from public.csrs c left join covered cv on cv.csr_id = c.csr_id
+            left join public.csr_documents d on d.doc_id = c.doc_id
+            where d.stage is distinct from 'Commission recommendation' group by 1) s
       left join (select d.country, count(*) as total, count(cd.doc_id) as cov
                  from public.csr_documents d left join covered_docs cd on cd.doc_id = d.doc_id
+                 where d.stage is distinct from 'Commission recommendation'
                  group by 1) dc on dc.country = s.k
     ),
     'links_by_level', (
