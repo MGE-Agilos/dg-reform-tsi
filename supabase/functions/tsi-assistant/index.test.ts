@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   handle, agentLoop, runTool, validate, allowedOrigins, corsHeaders, answerText, csrMatches, normalizeCsr, canonicalCsrId,
+  canonicalDocId, docIdOf,
   HttpError, CHAT_SYSTEM, impactSystem, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
   withCacheBreakpoint, emptyStats, parseImpact, extractVerdict, extractProject, jwtSub, SAVE_TIMEOUT_MS,
 } from "./index.ts";
@@ -552,6 +553,63 @@ test("get_project and get_csr: embedded links, canonical CSR id", async () => {
   assert.equal(canonicalCsrId("CSR-hr-2022-3"), "csr-HR-2022-3");
   const none = await runTool("get_project", { project_id: "zz" }, { ...CTX, fetchImpl: async () => json([]) });
   assert.match(none, /^No project with id "zz"/);
+});
+
+test("search_csrs shows the document of each recommendation (best effort lookup in csr_documents)", async () => {
+  const rows = [
+    { csr_id: "csr-HR-2026-1", country: "HR", year: 2026, title: "Croatia 2026 CSR 1", text: "Adhere to the path.", assessment: null, assessment_year: null, rank: 0.4 },
+    { csr_id: "csr-HR-2022-1", country: "HR", year: 2022, title: "Croatia 2022 CSR 1", text: "Improve health.", assessment: "Some progress", assessment_year: 2023, rank: 0.3 },
+  ];
+  const docs = [{ doc_id: "csrdoc-HR-2026", title: "Croatia — 2026 country-specific recommendations", stage: "Commission recommendation", document_url: "https://ec.example/HR.pdf" }];
+  const calls: string[] = [];
+  const impl = async (url: string) => { calls.push(url); return json(url.includes("/rpc/") ? rows : docs); };
+  const out = await runTool("search_csrs", { query: "fiscal" }, { ...CTX, fetchImpl: impl });
+  assert.match(calls[1], /\/rest\/v1\/csr_documents\?select=doc_id,title,stage,document_url&doc_id=in\.\(csrdoc-HR-2026,csrdoc-HR-2022\)$/);
+  assert.match(out, /^2 CSR recommendations/);
+  assert.match(out, /Document: csrdoc-HR-2026 — Croatia — 2026 country-specific recommendations \(Commission recommendation, not yet adopted by the Council nor assessed; https:\/\/ec\.example\/HR\.pdf\)/);
+  assert.match(out, /Document: csrdoc-HR-2022\n/);
+  // csr_documents absent (migration 005 not applied): the search result stands
+  const fallback = async (url: string) => url.includes("/rpc/") ? json(rows) : json({ message: "missing" }, 404);
+  const plain = await runTool("search_csrs", { query: "fiscal" }, { ...CTX, fetchImpl: fallback });
+  assert.match(plain, /Document: csrdoc-HR-2026\n   Adhere to the path\./);
+});
+
+test("get_csr: document id lists its recommendations; a recommendation shows its document", async () => {
+  const doc = { doc_id: "csrdoc-HR-2022", country: "HR", year: 2022, title: "Croatia — 2022 country-specific recommendations", stage: "Council recommendation", document_url: "https://ec.example/db", n_recommendations: 2,
+    csrs: [
+      { csr_id: "csr-HR-2022-10", number: "10", text: "Tax.", assessment: null, assessment_year: null, csr_parts: [] },
+      { csr_id: "csr-HR-2022-1", number: "1", text: "Improve health.", assessment: "Some progress", assessment_year: 2023,
+        csr_parts: [{ part_id: "csr-HR-2022-1.1", project_csr_links: [{ project_id: "p1" }] }, { part_id: "csr-HR-2022-1.2", project_csr_links: [{ project_id: "p1" }, { project_id: "p2" }] }] },
+    ] };
+  const calls: string[] = [];
+  const impl = async (url: string) => { calls.push(url); return json(url.includes("/csr_documents?") && url.includes("csrdoc-HR-2022") ? [doc] : []); };
+  const ctx = { ...CTX, fetchImpl: impl };
+  const out = await runTool("get_csr", { csr_id: "CSRDOC-hr-2022" }, ctx);
+  assert.match(calls[0], /\/rest\/v1\/csr_documents\?select=.*&doc_id=eq\.csrdoc-HR-2022&limit=1$/);
+  assert.match(out, /^CSR document csrdoc-HR-2022 — HR 2022 — Croatia — 2022 country-specific recommendations/);
+  assert.match(out, /Stage: Council recommendation — Source: https:\/\/ec\.example\/db/);
+  assert.match(out, /- csr-HR-2022-1 — Assessment \(2023\): Some progress — 2 sub-parts; linked projects \(AI-assessed\): 2\n  Improve health\.\n- csr-HR-2022-10 — no assessment — linked projects \(AI-assessed\): 0/);
+  assert.match(await runTool("get_csr", { csr_id: "hr-2021" }, ctx), /^No CSR document with id "csrdoc-HR-2021"/);
+  assert.equal(canonicalDocId("csr-hr-2022"), "csrdoc-HR-2022");
+  assert.equal(canonicalDocId("csr-HR-2022-1"), null);
+  assert.equal(docIdOf("HR", 2026), "csrdoc-HR-2026");
+
+  const rec = { csr_id: "csr-HR-2026-1", country: "HR", year: 2026, number: "1", title: "Croatia 2026 CSR 1", text: "Adhere to the path.", assessment: null, assessment_year: null,
+    source_url: "https://ec.example/HR.pdf", doc_id: "csrdoc-HR-2026",
+    csr_documents: { doc_id: "csrdoc-HR-2026", title: "Croatia — 2026 country-specific recommendations", stage: "Commission recommendation", document_url: "https://ec.example/HR.pdf" },
+    csr_parts: [{ part_id: "csr-HR-2026-1", text: "Adhere to the path.", assessment: null, project_csr_links: [] }] };
+  const recCalls: string[] = [];
+  const r = await runTool("get_csr", { csr_id: "csr-HR-2026-1" }, { ...CTX, fetchImpl: async (url: string) => { recCalls.push(url); return json([rec]); } });
+  assert.match(decodeURIComponent(recCalls[0]), /select=csr_id,.*doc_id,csr_documents\(doc_id,title,stage,document_url\),csr_parts\(/);
+  assert.match(r, /Document: csrdoc-HR-2026 — Croatia — 2026 country-specific recommendations \(Commission recommendation, not yet adopted/);
+  assert.match(r, /Assessment: not yet assessed \(Commission recommendation: https:\/\/ec\.example\/HR\.pdf\)/);
+});
+
+test("chat prompt explains the three CSR levels and the 2026 Commission recommendations", () => {
+  assert.match(CHAT_SYSTEM, /three levels/);
+  assert.match(CHAT_SYSTEM, /csrdoc-HR-2025/);
+  assert.match(CHAT_SYSTEM, /2026 ones are Commission recommendations/);
+  assert.match(CHAT_SYSTEM, /2016-2026/);
 });
 
 test("prompts: chat rules and filter values, impact scoring rubric", () => {

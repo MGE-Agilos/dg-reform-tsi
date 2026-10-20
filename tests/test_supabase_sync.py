@@ -77,7 +77,7 @@ def make_output(tmp_path):
 
 def test_build_rows_tables_and_projects(tmp_path):
     rows = build_rows(make_output(tmp_path), current_year=2026)
-    assert list(TABLES) == ["projects", "csrs", "csr_parts", "project_csr_links", "anomalies"]
+    assert list(TABLES) == ["projects", "csr_documents", "csrs", "csr_parts", "project_csr_links", "anomalies"]
     assert list(rows) == [*TABLES, "impact_reports"] and rows["impact_reports"] == []
     p1, p2 = sorted(rows["projects"], key=lambda r: r["project_id"])
     assert p1 == {"project_id": "p1", "title": "Public administration reform", "programme": "TSI", "year": 2024,
@@ -92,6 +92,11 @@ def test_build_rows_csrs_parts_links_anomalies(tmp_path):
     (csr,) = rows["csrs"]
     assert csr["csr_id"] == "csr-HR-2022-1" and csr["assessment"] == "Some Progress" and csr["assessment_year"] == 2023
     assert csr["policy_areas"] == ["Public administration"] and csr["title"] == "Croatia 2022 CSR 1"
+    assert csr["doc_id"] == "csrdoc-HR-2022" and csr["source_url"].startswith("https://ec.europa.eu/")
+    assert rows["csr_documents"] == [{"doc_id": "csrdoc-HR-2022", "country": "HR", "year": 2022,
+                                      "title": "Croatia — 2022 country-specific recommendations",
+                                      "stage": "Council recommendation", "n_recommendations": 1,
+                                      "document_url": csr["source_url"]}]
     assert [p["part_id"] for p in rows["csr_parts"]] == ["csr-HR-2022-1.1", "csr-HR-2022-1.2"]
     assert rows["csr_parts"][0]["csr_id"] == "csr-HR-2022-1"
     assert rows["project_csr_links"] == [{"project_id": "p1", "part_id": "csr-HR-2022-1.1", "level": "direct",
@@ -126,18 +131,22 @@ def recorder(fail_on=None):
 
 
 def test_push_deletes_then_inserts_in_batches(tmp_path):
-    rows = {"projects": [{"project_id": f"p{i}"} for i in range(1201)], "csrs": [], "csr_parts": [],
+    rows = {"projects": [{"project_id": f"p{i}"} for i in range(1201)], "csr_documents": [{"doc_id": "d"}],
+            "csrs": [], "csr_parts": [],
             "project_csr_links": [{"project_id": "p1", "part_id": "x"}], "anomalies": [{"type": "t"}]}
     calls, client = recorder()
     summary = push(rows, "https://abc.supabase.co", "service-key", client=client, backup=tmp_path / "rows.json")
     methods = [(m, p.removeprefix("/rest/v1/")) for m, p, *_ in calls]
-    assert methods[:5] == [("DELETE", "project_csr_links"), ("DELETE", "csr_parts"), ("DELETE", "csrs"),
-                           ("DELETE", "projects"), ("DELETE", "anomalies")]
-    assert methods[5:] == [("POST", "projects")] * 3 + [("POST", "project_csr_links"), ("POST", "anomalies")]
-    assert [c[5] for c in calls[5:8]] == [500, 500, 201]
+    assert methods[:6] == [("DELETE", "project_csr_links"), ("DELETE", "csr_parts"), ("DELETE", "csrs"),
+                           ("DELETE", "csr_documents"), ("DELETE", "projects"), ("DELETE", "anomalies")]
+    assert methods[6:] == [("POST", "projects")] * 3 + [("POST", "csr_documents"), ("POST", "project_csr_links"),
+                                                        ("POST", "anomalies")]
+    assert calls[3][2] == "doc_id=not.is.null"
+    assert [c[5] for c in calls[6:9]] == [500, 500, 201]
     assert calls[0][2] == "project_id=not.is.null"
     assert all(c[3] == "service-key" and c[4] == "Bearer service-key" for c in calls)
-    assert summary == {"projects": 1201, "csrs": 0, "csr_parts": 0, "project_csr_links": 1, "anomalies": 1}
+    assert summary == {"projects": 1201, "csr_documents": 1, "csrs": 0, "csr_parts": 0, "project_csr_links": 1,
+                       "anomalies": 1}
     assert json.loads((tmp_path / "rows.json").read_text(encoding="utf-8"))["projects"][0] == {"project_id": "p0"}
 
 
@@ -264,3 +273,23 @@ def test_push_without_impact_key_leaves_impact_reports_alone(tmp_path):
     calls, client = recorder()
     push({t: [] for t in TABLES}, "https://abc.supabase.co", "k", client=client, backup=tmp_path / "r.json")
     assert not any(p.endswith("impact_reports") for _, p, *_ in calls)
+
+
+def test_build_rows_include_commission_recommendations_and_their_documents(tmp_path):
+    from tsi_agent.csr_commission import PUBLICATION_ID
+    out = make_output(tmp_path)
+    (out / "csr" / "publications").mkdir()
+    (out / "csr" / "publications" / f"{PUBLICATION_ID}.md").write_text(
+        "## Recommendation - Croatia\n\nSource: https://ec.example/HR.pdf\n\n--- page 1 ---\n"
+        "HEREBY RECOMMENDS that Croatia take action in 2026 and 2027 to:\n1. Adhere to the path.\n"
+        "2. Ensure continuity.\nDone at Brussels,\n", encoding="utf-8")
+    rows = build_rows(out, current_year=2026)
+    assert [d["doc_id"] for d in rows["csr_documents"]] == ["csrdoc-HR-2022", "csrdoc-HR-2026"]
+    hr26 = rows["csr_documents"][1]
+    assert hr26["stage"] == "Commission recommendation" and hr26["n_recommendations"] == 2
+    assert hr26["document_url"] == "https://ec.example/HR.pdf"
+    new = [c for c in rows["csrs"] if c["year"] == 2026]
+    assert [c["csr_id"] for c in new] == ["csr-HR-2026-1", "csr-HR-2026-2"]
+    assert all(c["assessment"] is None and c["doc_id"] == "csrdoc-HR-2026" for c in new)
+    assert [p["part_id"] for p in rows["csr_parts"] if p["year"] == 2026] == ["csr-HR-2026-1", "csr-HR-2026-2"]
+    assert all(set(r) == set(rows["csrs"][0]) for r in rows["csrs"])  # memes cles (insertion groupee)

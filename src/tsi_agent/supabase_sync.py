@@ -20,16 +20,19 @@ import yaml
 
 from tsi_agent.anomalies import detect, load_csr_links, load_projects, load_publications
 from tsi_agent.chunking import INTRO, SUMMARY, split_sections
-from tsi_agent.csr import build_csrs, read_rows
+from tsi_agent.csr import build_documents
+from tsi_agent.csr_commission import load_all_csrs
 from tsi_agent.llm import read_dotenv
 from tsi_agent.render import parse_front_matter
 
-TABLES = ("projects", "csrs", "csr_parts", "project_csr_links", "anomalies")
-# Suppression : liens avant les tables qu'ils referencent ; insertion dans l'ordre inverse.
-DELETE_ORDER = ("project_csr_links", "csr_parts", "csrs", "projects", "anomalies")
-INSERT_ORDER = ("projects", "csrs", "csr_parts", "project_csr_links", "anomalies")
+TABLES = ("projects", "csr_documents", "csrs", "csr_parts", "project_csr_links", "anomalies")
+# Suppression : liens avant les tables qu'ils referencent ; insertion dans l'ordre inverse
+# (csr_documents : migration 005, cle etrangere csrs.doc_id).
+DELETE_ORDER = ("project_csr_links", "csr_parts", "csrs", "csr_documents", "projects", "anomalies")
+INSERT_ORDER = ("projects", "csr_documents", "csrs", "csr_parts", "project_csr_links", "anomalies")
 # Filtre PostgREST couvrant toutes les lignes (DELETE sans filtre refuse) : colonne non nulle de chaque table.
-DELETE_FILTER = {"projects": "project_id=not.is.null", "csrs": "csr_id=not.is.null",
+DELETE_FILTER = {"projects": "project_id=not.is.null", "csr_documents": "doc_id=not.is.null",
+                 "csrs": "csr_id=not.is.null",
                  "csr_parts": "part_id=not.is.null", "project_csr_links": "project_id=not.is.null",
                  "anomalies": "id=not.is.null"}
 IMPACT_TABLE = "impact_reports"
@@ -133,13 +136,16 @@ def build_rows(output_dir: Path, current_year: int | None = None) -> dict[str, l
         if isinstance(fm, dict) and fm.get("project_id"):
             projects.append(_project_row(fm, body))
     csr_rows, part_rows = [], []
-    xlsx = output_dir / "csr" / "csr_full.xlsx"
-    for csr in build_csrs(read_rows(xlsx)) if xlsx.exists() else []:
+    csrs = load_all_csrs(output_dir)  # base ECFIN et recommandations de la Commission (2026)
+    doc_rows = [{"doc_id": d.doc_id, "country": d.country, "year": d.year, "title": d.title, "stage": d.stage,
+                 "n_recommendations": d.n_recommendations, "document_url": d.document_url}
+                for d in build_documents(csrs)]
+    for csr in csrs:
         latest = csr.latest_assessment
         csr_rows.append({"csr_id": csr.csr_id, "country": csr.country, "year": csr.year, "number": csr.number,
                          "title": csr.title, "text": csr.text, "policy_areas": csr.policy_areas,
                          "assessment": latest[1] if latest else None, "assessment_year": latest[0] if latest else None,
-                         "source_url": "https://ec.europa.eu/economy_finance/country-specific-recommendations-database/"})
+                         "source_url": csr.source_url, "doc_id": csr.doc_id})
         for part in csr.subparts or ([csr.full] if csr.full else []):
             part_rows.append({"part_id": part.part_id, "csr_id": csr.csr_id, "country": csr.country,
                               "year": csr.year, "text": part.text, "policy_areas": part.policy_areas,
@@ -164,7 +170,7 @@ def build_rows(output_dir: Path, current_year: int | None = None) -> dict[str, l
     anomalies = [{**asdict(a), "project_id": a.project_id or None}
                  for a in detect(load_projects(output_dir), load_publications(output_dir),
                                  current_year or date.today().year, csr_links=load_csr_links(output_dir))]
-    return {"projects": projects, "csrs": csr_rows, "csr_parts": part_rows, "project_csr_links": links,
+    return {"projects": projects, "csr_documents": doc_rows, "csrs": csr_rows, "csr_parts": part_rows, "project_csr_links": links,
             "anomalies": anomalies, IMPACT_TABLE: impact_rows(output_dir)}
 
 

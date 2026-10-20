@@ -5,7 +5,8 @@
 // Single self-contained file, no imports: paste it into Supabase (Edge Functions > Via Editor), keep "Verify JWT" on.
 // Secrets (Edge Functions > Secrets): TSI_ANTHROPIC_API_KEY (preferred) or ANTHROPIC_API_KEY; optional TSI_MODEL (default claude-sonnet-5-5), ALLOWED_ORIGINS.
 // SUPABASE_URL and SUPABASE_ANON_KEY are provided (if SUPABASE_ANON_KEY is missing, the caller's apikey header, i.e. the
-// public anon key, is used). Needs supabase/migrations/002_search.sql (tsi_search_projects, tsi_search_csrs).
+// public anon key, is used). Needs supabase/migrations/002_search.sql (tsi_search_projects, tsi_search_csrs) and
+// 005_csr_documents.sql (csr_documents, csrs.doc_id).
 // Impact analyses are kept (best effort) in public.impact_reports (003_dashboard.sql) with SUPABASE_SERVICE_ROLE_KEY
 // (provided by Supabase); the response is {answer, saved}.
 // The pure logic is exported and tested with Node: node --experimental-strip-types --test supabase/functions/tsi-assistant/index.test.ts
@@ -80,8 +81,9 @@ Tools:
 - list_projects: exact counts and lists of projects over the whole corpus, with filters (countries, years,
   programme, policy area, detail page, title words, csr).
 - get_project: one project's record and its links to CSRs (level, rationale, CSR part text, assessment).
-- search_csrs: full-text search over EU country-specific recommendations (CSRs, European Semester 2016-2025).
-- get_csr: one CSR, its sub-parts, their assessments and the projects linked to them.
+- search_csrs: full-text search over EU country-specific recommendations (CSRs, European Semester 2016-2026).
+- get_csr: one CSR, its sub-parts, their assessments and the projects linked to them; or, with a document id
+  (csrdoc-HR-2025), one CSR document and all its recommendations.
 
 Rules:
 1. Answer in the language of the user's question.
@@ -111,6 +113,12 @@ Rules:
 14. For CSR questions, call search_csrs or get_csr. Do not state that a project implements a CSR unless a tool result
     says so. To list the projects linked to a CSR, call list_projects with csr (a CSR id or a prefix such as
     csr-HR-2022) or get_csr.
+15. CSRs have three levels: each year the Commission addresses one CSR document to each Member State (27 per
+    year, id csrdoc-HR-2025); a document contains numbered recommendations (1 to about 6, id csr-HR-2025-1); the
+    Commission's CSR database splits each recommendation into sub-parts (csr-HR-2025-1.2), which carry the
+    assessments and the links to projects. Say "recommendation" for csr-CC-YYYY-N and "document" for the yearly
+    set. The 2016-2025 recommendations were adopted by the Council; the 2026 ones are Commission recommendations,
+    not yet adopted by the Council nor assessed, without sub-parts: say so when you use them.
 
 ${FILTER_VALUES}`;
 
@@ -200,7 +208,7 @@ const GET_PROJECT = {
 };
 const SEARCH_CSRS = {
   name: "search_csrs",
-  description: "Full-text search (English) over EU country-specific recommendations (European Semester 2016-2025). Returns CSR ids, country, year, title, text excerpt and latest assessment.",
+  description: "Full-text search (English) over EU country-specific recommendations (European Semester 2016-2026). Returns CSR recommendation ids, country, year, title, the CSR document they belong to, text excerpt and latest assessment.",
   input_schema: {
     type: "object",
     properties: {
@@ -214,10 +222,10 @@ const SEARCH_CSRS = {
 };
 const GET_CSR = {
   name: "get_csr",
-  description: "One CSR (e.g. csr-HR-2022-1): its text, assessment, sub-parts with their assessments, and the projects linked to each sub-part (AI-assessed links).",
+  description: "One CSR recommendation (e.g. csr-HR-2022-1): its document, text, assessment, sub-parts with their assessments, and the projects linked to each sub-part (AI-assessed links). With a document id (e.g. csrdoc-HR-2022): the document (stage, link) and all its recommendations with their assessment and number of linked projects.",
   input_schema: {
     type: "object",
-    properties: { csr_id: { type: "string", description: "CSR id such as csr-HR-2022-1 (a sub-part id such as csr-HR-2022-1.2 is accepted)." } },
+    properties: { csr_id: { type: "string", description: "CSR recommendation id such as csr-HR-2022-1 (a sub-part id such as csr-HR-2022-1.2 is accepted), or CSR document id such as csrdoc-HR-2022." } },
     required: ["csr_id"],
   },
 };
@@ -305,6 +313,17 @@ export function csrMatches(csrs: unknown, wanted: string | null): string[] {
 export function canonicalCsrId(value: string): string | null {
   const m = /^(?:csr-)?([a-z]{2})-(\d{4})-(\d+)(?:\.\d+)?$/i.exec(value.trim());
   return m ? `csr-${m[1].toUpperCase()}-${m[2]}-${m[3]}` : null;
+}
+
+/** Canonical CSR document id (csrdoc-CC-YYYY) from csrdoc-CC-YYYY or a country-year prefix (csr-CC-YYYY, CC-YYYY). */
+export function canonicalDocId(value: string): string | null {
+  const m = /^(?:csrdoc-|csr-)?([a-z]{2})-(\d{4})$/i.exec(value.trim());
+  return m ? `csrdoc-${m[1].toUpperCase()}-${m[2]}` : null;
+}
+
+/** Document id of a CSR recommendation (csrdoc-CC-YYYY), from its country and year. */
+export function docIdOf(country: string, year: number): string {
+  return `csrdoc-${country}-${year}`;
 }
 
 // ---------- tool execution (PostgREST with the tester's token) ----------
@@ -477,6 +496,28 @@ async function getProject(input: Input, ctx: ToolContext): Promise<string> {
 }
 
 type CsrRow = { csr_id: string; country: string; year: number; title: string; text: string; assessment: string | null; assessment_year: number | null };
+type DocRow = { doc_id: string; country?: string; year?: number; title: string; stage: string; document_url: string | null; n_recommendations?: number };
+
+const COMMISSION_STAGE = "Commission recommendation";
+
+/** "Document csrdoc-HR-2026 — title (stage, not yet assessed; link)"; id only when the document row is unknown. */
+function documentLine(id: string, doc: DocRow | null | undefined): string {
+  if (!doc) return `Document: ${id}`;
+  const notes = [doc.stage + (doc.stage === COMMISSION_STAGE ? ", not yet adopted by the Council nor assessed" : "")];
+  if (doc.document_url) notes.push(doc.document_url);
+  return `Document: ${doc.doc_id} — ${clip(doc.title, 200)} (${notes.join("; ")})`;
+}
+
+/** Documents by id (best effort: an error or a missing table gives an empty map). */
+async function documentsById(ctx: ToolContext, ids: string[]): Promise<Map<string, DocRow>> {
+  const out = new Map<string, DocRow>();
+  if (!ids.length) return out;
+  try {
+    const rows = await db(ctx, `csr_documents?select=doc_id,title,stage,document_url&doc_id=in.(${ids.map(encodeURIComponent).join(",")})`);
+    if (Array.isArray(rows)) for (const d of rows as DocRow[]) out.set(d.doc_id, d);
+  } catch { /* documents are extra context: the search result stands without them */ }
+  return out;
+}
 
 async function searchCsrs(input: Input, ctx: ToolContext): Promise<string> {
   const q = reqString(input, "query");
@@ -485,10 +526,12 @@ async function searchCsrs(input: Input, ctx: ToolContext): Promise<string> {
     lim: limitOf(input, 10, 20),
   }) as CsrRow[];
   if (!Array.isArray(rows) || !rows.length) return `No CSR matches "${q}" with these filters.`;
-  const lines = [`${rows.length} CSRs (best matches first; assessments from the Commission's CSR database):`];
+  const docs = await documentsById(ctx, [...new Set(rows.map((c) => docIdOf(c.country, c.year)))]);
+  const lines = [`${rows.length} CSR recommendations (best matches first; assessments from the Commission's CSR database):`];
   rows.forEach((c, i) => {
     lines.push(`${i + 1}. ${c.csr_id} — ${c.country} ${c.year} — ${clip(c.title, 200)}`
       + (c.assessment ? ` — Assessment${c.assessment_year ? ` (${c.assessment_year})` : ""}: ${clip(c.assessment, 120)}` : ""));
+    lines.push(`   ${documentLine(docIdOf(c.country, c.year), docs.get(docIdOf(c.country, c.year)))}`);
     lines.push(`   ${clip(c.text, 800)}`);
   });
   return lines.join("\n");
@@ -496,19 +539,58 @@ async function searchCsrs(input: Input, ctx: ToolContext): Promise<string> {
 
 type PartRow = { part_id: string; text: string; assessment: string | null; project_csr_links: { level: string; rationale: string; projects: ProjectRow | null }[] | null };
 
+type DocCsrRow = { csr_id: string; number: string; text: string; assessment: string | null; assessment_year: number | null;
+  csr_parts: { part_id: string; project_csr_links: { project_id: string }[] | null }[] | null };
+
+async function getCsrDocument(id: string, ctx: ToolContext): Promise<string> {
+  const select = "doc_id,country,year,title,stage,document_url,n_recommendations,"
+    + "csrs(csr_id,number,text,assessment,assessment_year,csr_parts(part_id,project_csr_links(project_id)))";
+  const rows = await db(ctx, `csr_documents?select=${encodeURIComponent(select)}&doc_id=${eq(id)}&limit=1`) as
+    (DocRow & { csrs: DocCsrRow[] | null })[];
+  if (!Array.isArray(rows) || !rows.length) return `No CSR document with id "${id}". Use search_csrs to find its recommendations.`;
+  const d = rows[0];
+  const recs = (d.csrs || []).sort((a, b) => a.csr_id.localeCompare(b.csr_id, "en", { numeric: true }));
+  const lines = [
+    `CSR document ${d.doc_id} — ${d.country} ${d.year} — ${d.title}`,
+    `Stage: ${d.stage}${d.stage === COMMISSION_STAGE ? " (not yet adopted by the Council nor assessed)" : ""}`
+      + (d.document_url ? ` — Source: ${d.document_url}` : ""),
+    `Recommendations: ${recs.length}`,
+  ];
+  for (const r of recs) {
+    const parts = r.csr_parts || [];
+    const projects = new Set(parts.flatMap((p) => (p.project_csr_links || []).map((l) => l.project_id)));
+    const assessment = r.assessment
+      ? `Assessment${r.assessment_year ? ` (${r.assessment_year})` : ""}: ${clip(r.assessment, 120)}`
+      : (d.stage === COMMISSION_STAGE ? "not yet assessed" : "no assessment");
+    const subparts = parts.length && !(parts.length === 1 && parts[0].part_id === r.csr_id) ? `${parts.length} sub-parts; ` : "";
+    lines.push(`- ${r.csr_id} — ${assessment} — ${subparts}linked projects (AI-assessed): ${projects.size}`);
+    lines.push(`  ${clip(r.text, 600)}`);
+  }
+  lines.push("Call get_csr with a recommendation id for its sub-parts and linked projects.");
+  return lines.join("\n");
+}
+
 async function getCsr(input: Input, ctx: ToolContext): Promise<string> {
   const raw = reqString(input, "csr_id", 60);
+  const docId = canonicalDocId(raw);
+  if (docId) return await getCsrDocument(docId, ctx);
   const id = canonicalCsrId(raw);
-  if (!id) throw new ToolError("csr_id must look like csr-HR-2022-1");
-  const select = "csr_id,country,year,number,title,text,assessment,assessment_year,source_url,"
+  if (!id) throw new ToolError("csr_id must look like csr-HR-2022-1 (recommendation) or csrdoc-HR-2022 (document)");
+  const select = "csr_id,country,year,number,title,text,assessment,assessment_year,source_url,doc_id,"
+    + "csr_documents(doc_id,title,stage,document_url),"
     + "csr_parts(part_id,text,assessment,project_csr_links(level,rationale,projects(project_id,title,programme,year,url)))";
   const rows = await db(ctx, `csrs?select=${encodeURIComponent(select)}&csr_id=${eq(id)}&limit=1`) as
-    (CsrRow & { source_url: string | null; csr_parts: PartRow[] | null })[];
+    (CsrRow & { source_url: string | null; doc_id?: string | null; csr_documents?: DocRow | null; csr_parts: PartRow[] | null })[];
   if (!Array.isArray(rows) || !rows.length) return `No CSR with id "${id}". Use search_csrs to find it.`;
   const c = rows[0];
+  const doc = c.csr_documents ?? null;
+  const commission = doc?.stage === COMMISSION_STAGE;
   const lines = [
     `CSR ${c.csr_id} — ${c.country} ${c.year} — ${c.title}`,
-    `Assessment${c.assessment_year ? ` (${c.assessment_year})` : ""}: ${c.assessment || "none"} (Commission's CSR database${c.source_url ? `: ${c.source_url}` : ""})`,
+    documentLine(c.doc_id || docIdOf(c.country, c.year), doc),
+    commission && !c.assessment
+      ? `Assessment: not yet assessed (Commission recommendation${c.source_url ? `: ${c.source_url}` : ""})`
+      : `Assessment${c.assessment_year ? ` (${c.assessment_year})` : ""}: ${c.assessment || "none"} (Commission's CSR database${c.source_url ? `: ${c.source_url}` : ""})`,
     `Text: ${clip(c.text, 2500)}`,
   ];
   const parts = (c.csr_parts || []).sort((a, b) => a.part_id.localeCompare(b.part_id, "en", { numeric: true }));
