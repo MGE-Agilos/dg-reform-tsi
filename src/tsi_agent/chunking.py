@@ -119,9 +119,15 @@ def chunk_deliverable(rel_path: str, fm: dict[str, Any], body: str, **split: int
 
 def chunk_csr(rel_path: str, fm: dict[str, Any], body: str, **split: int) -> list[Document]:
     """Fiche CSR : texte complet (introduction), evaluation, sous-parties. Pas de domaine de projet (taxonomies
-    differentes) ni de programme."""
+    differentes) ni de programme.
+
+    Fiche de recommandation (`csr_id`, `csr_level: recommendation`) ou de document (`csr_level: document`, id
+    `doc_id` csrdoc-<ISO>-<annee>) ; `csr_level` passe dans les metadonnees (ajoute sans changer CHUNKER_VERSION :
+    les fiches CSR sont toutes reecrites par csr-build, donc revectorisees)."""
+    document = fm.get("csr_level") == "document"
     base: dict[str, Any] = {
-        "doc_id": fm["csr_id"], "doc_type": "csr", "source_file": rel_path, "source_url": fm.get("source_url"),
+        "doc_id": fm["doc_id"] if document else fm["csr_id"], "doc_type": "csr",
+        "csr_level": "document" if document else "recommendation", "source_file": rel_path, "source_url": fm.get("source_url"),
         "context_header": context_header(fm), "title": fm.get("title"), "year": fm.get("year"),
         "countries": fm.get("countries"), "programme": None, "policy_area": None, "detail_page": None,
     }
@@ -148,7 +154,7 @@ def chunk_file(rel_path: str, text: str, *, threshold: int = SPLIT_THRESHOLD_WOR
         raise ValueError("front matter is not a mapping")
     if fm.get("publication_id"):
         return chunk_deliverable(rel_path, fm, body, **split)
-    if fm.get("csr_id"):
+    if fm.get("csr_id") or (fm.get("csr_level") == "document" and fm.get("doc_id")):
         return chunk_csr(rel_path, fm, body, **split)
     doc_id = fm.get("project_id") or fm.get("doc_id")
     if not doc_id:

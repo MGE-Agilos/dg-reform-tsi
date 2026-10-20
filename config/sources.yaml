@@ -28,3 +28,9 @@ programme_docs:
   - id: tsi-performance
     title: Technical Support Instrument - programme performance
     url: "https://commission.europa.eu/strategy-and-policy/eu-budget/performance-and-reporting/programme-performance-statements/technical-support-instrument-performance_en"
+# Publications qui ne sont pas des livrables de projet : recommandations par pays (CSR) du Semestre europeen, liees
+# par erreur depuis des pages projet. Motifs (sous-chaines, sans casse) cherches dans l'id, le titre et l'URL de la
+# publication : ecartees par `deliverables`, retirees des projets ; texte integral garde dans output/csr/publications/.
+deliverable_exclude_patterns:
+  - country-specific-recommendations
+  - country specific recommendation

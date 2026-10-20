@@ -20,7 +20,7 @@ from pydantic import ValidationError
 
 from tsi_agent import runlog
 from tsi_agent.components.claude_cli import LLMQuotaExceeded
-from tsi_agent.deliverables_state import DeliverableEntry, DeliverableStore
+from tsi_agent.deliverables_state import DeliverableEntry, DeliverableStore, is_excluded
 from tsi_agent.http import DEFAULT_USER_AGENT, FetchError, PoliteFetcher, shared_fetcher
 from tsi_agent.ids import slug_from_url
 from tsi_agent.models import (DeliverableContent, DeliverableFileText, DeliverableRecord, DeliverableText,
@@ -57,11 +57,14 @@ class PublicationDiscoverer(_Http):
 
     def __init__(self, output_dir: str = "output", cache_dir: str = ".cache/http", min_interval_s: float = 2.0,
                  user_agent: str = DEFAULT_USER_AGENT, sitemap_url: str | None = None,
-                 sitemap_options: dict[str, Any] | None = None, sitemap_failure_memory_s: float = 0):
+                 sitemap_options: dict[str, Any] | None = None, sitemap_failure_memory_s: float = 0,
+                 exclude_patterns: list[str] | None = None):
         """:param sitemap_options: parametres de lecture du sitemap (config.sitemap_options).
         :param sitemap_failure_memory_s: si la lecture du sitemap (marqueur de l'etat, ecrit par `run`) a echoue il y a
-            moins de N s, une seule tentative rapide au lieu de la lecture patiente (0 : toujours patiente)."""
+            moins de N s, une seule tentative rapide au lieu de la lecture patiente (0 : toujours patiente).
+        :param exclude_patterns: publications ecartees (id ou URL contenant un motif, sans casse) : publications CSR."""
         self.output_dir = output_dir
+        self.exclude_patterns = list(exclude_patterns or [])
         self.sitemap_options = dict(sitemap_options or {})
         self.sitemap_failure_memory_s = sitemap_failure_memory_s
         self._sitemap_status = "not_requested"
@@ -127,6 +130,7 @@ class PublicationDiscoverer(_Http):
                     missing.append(project_id)
                     continue
                 links, from_state = sorted(known_by_project[project_id]), from_state + 1
+            links = [u for u in links if not is_excluded(self.exclude_patterns, u, slug_from_url(u))]
             projects += bool(links)
             for url in links:
                 pub = by_url.setdefault(url, Publication(publication_id=slug_from_url(url), url=url,
@@ -149,9 +153,12 @@ class PublicationFetcher(_Http):
     """Pages de publication ; seules les publications nouvelles ou dont les fichiers ont change sont retraitees."""
 
     def __init__(self, output_dir: str = "output", cache_dir: str = ".cache/http", min_interval_s: float = 2.0,
-                 user_agent: str = DEFAULT_USER_AGENT, recheck_days: int = 7):
-        """:param recheck_days: une publication traitee depuis moins de N jours n'est pas reverifiee (sauf full)."""
+                 user_agent: str = DEFAULT_USER_AGENT, recheck_days: int = 7,
+                 exclude_patterns: list[str] | None = None):
+        """:param recheck_days: une publication traitee depuis moins de N jours n'est pas reverifiee (sauf full).
+        :param exclude_patterns: publication dont le titre de page contient un motif : ecartee (publications CSR)."""
         self.output_dir = output_dir
+        self.exclude_patterns = list(exclude_patterns or [])
         self.cache_dir = cache_dir
         self.min_interval_s = min_interval_s
         self.user_agent = user_agent
@@ -218,6 +225,9 @@ class PublicationFetcher(_Http):
                 runlog.event("PublicationFetcher", "alert", pub.publication_id, "warning",
                              message=f"publication page unavailable: {exc}")
                 failed.append(pub.publication_id)
+                continue
+            if is_excluded(self.exclude_patterns, parse.title):
+                runlog.event("PublicationFetcher", "classify", pub.publication_id, "excluded")
                 continue
             files = select_files(parse)
             pub = pub.model_copy(update={"title": parse.title or pub.publication_id, "date": parse.date,
@@ -528,16 +538,42 @@ class DeliverableSummarizer:
 class DeliverableWriter:
     """Met a jour output/state/deliverables.json et la section Deliverables des fichiers projet concernes."""
 
-    def __init__(self, output_dir: str = "output"):
+    def __init__(self, output_dir: str = "output", exclude_patterns: list[str] | None = None):
+        """:param exclude_patterns: publications deja enregistrees dont l'id, le titre ou l'URL contient un motif :
+            retirees de l'etat et de leurs projets a chaque run ; leur texte integral est garde dans
+            output/csr/publications/ (source des CSR de la Commission, hors couche vectorisee des livrables)."""
         self.output_dir = output_dir
+        self.exclude_patterns = list(exclude_patterns or [])
         self._store: ProjectStore | None = None
+
+    def _remove_excluded(self, state: DeliverableStore) -> set[str]:
+        """Publications exclues retirees de l'etat ; renvoie les projets a mettre a jour."""
+        affected: set[str] = set()
+        root = Path(self.output_dir)
+        for pid, old in state.all().items():
+            if not is_excluded(self.exclude_patterns, pid, old.title, old.url):
+                continue
+            affected |= set(old.project_ids)
+            state.remove(pid)
+            text = root / old.full_text_path
+            kept = root / "csr" / "publications" / text.name
+            if text.exists():
+                kept.parent.mkdir(parents=True, exist_ok=True)
+                if kept.exists():  # copie deja completee (csr-build --fetch-missing) : elle l'emporte
+                    _retry_on_lock(text.unlink)
+                else:
+                    _retry_on_lock(lambda: text.replace(kept))
+            runlog.event("DeliverableWriter", "write", pid, "excluded_removed", projects=old.project_ids)
+        return affected
 
     @component.output_types(stats=dict[str, int])
     def run(self, records: list[DeliverableRecord], unchanged: list[Publication] | None = None,
             discovered: list[Publication] | None = None, complete: bool = False) -> dict[str, Any]:
         state = DeliverableStore(self.output_dir)
         today = date.today().isoformat()
-        affected: set[str] = set()
+        before = len(state.all())
+        affected: set[str] = self._remove_excluded(state)
+        excluded_removed = before - len(state.all())
         for rec in records:
             pub = rec.text.publication
             old = state.get(pub.publication_id)
@@ -584,4 +620,4 @@ class DeliverableWriter:
                 updated += 1
                 runlog.event("DeliverableWriter", "write", project_id, "project_section", deliverables=len(entries))
         return {"stats": {"publications": len(records), "projects_updated": updated,
-                          "orphans_removed": orphans_removed}}
+                          "orphans_removed": orphans_removed, "excluded_removed": excluded_removed}}

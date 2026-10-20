@@ -75,7 +75,7 @@ def build_chat_pipeline(settings: Settings, policy_areas: list[str], *, chat_gen
                       outputs_to_string={"source": "result"}, **_SOURCES_IO),
         ComponentTool(CsrSearch(text_embedder=embedder, retriever=retriever), name="search_csrs",
                       description="Search the EU country-specific recommendations (CSRs, European Semester "
-                                  "2016-2025) and the Commission's latest assessment of their implementation; "
+                                  "2016-2026) and the Commission's latest assessment of their implementation; "
                                   "returns numbered passages [n] with the CSR id.",
                       outputs_to_string={"source": "result"}, **_SOURCES_IO),
         ComponentTool(ProjectLister(document_store=store), name="list_projects",

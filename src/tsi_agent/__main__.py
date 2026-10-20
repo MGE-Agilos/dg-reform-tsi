@@ -130,9 +130,14 @@ def main(argv: list[str] | None = None) -> int:
     anom.add_argument("--out", help="dossier du rapport (défaut : <output_dir>/reports)")
     anom.add_argument("--year", type=int, help="année de référence pour la gravité (défaut : année courante)")
     sub.add_parser("csr-fetch", help="télécharger la base CSR d'ECFIN (export Qlik complet, xlsx)")
-    csrb = sub.add_parser("csr-build", help="fiches Markdown des CSR (output/csr) depuis l'export ECFIN")
+    csrb = sub.add_parser("csr-build", help="fiches Markdown des CSR (output/csr) : export ECFIN, recommandations 2026 "
+                                            "de la Commission (texte des PDF) et un document par pays et par an")
     csrb.add_argument("--year-from", type=int, default=2016)
     csrb.add_argument("--year-to", type=int, default=2025)
+    csrb.add_argument("--skip-commission", action="store_true",
+                      help="ne pas inclure les recommandations 2026 de la Commission")
+    csrb.add_argument("--fetch-missing", action="store_true",
+                      help="télécharger les PDF anglais des pays sans recommandation 2026 trouvée (page de publication)")
     link = sub.add_parser("csr-link", help="lier les projets aux CSR (LLM du fournisseur configuré ; cache, reprise sur quota)")
     link.add_argument("--limit", type=int, help="nombre maximal de projets envoyés au LLM")
     link.add_argument("--project", action="append", dest="projects", help="id de projet (répétable)")
@@ -223,14 +228,33 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2))
         return 0
     if args.command == "csr-build":
-        from tsi_agent.csr import build_csrs, read_rows, write_csrs
+        from tsi_agent.csr import build_csrs, build_documents, read_rows, write_csrs, write_documents
         source = Path(settings.output_dir) / "csr" / "csr_full.xlsx"
         if not source.exists():
             print(f"ERREUR : {source} introuvable — lancer d'abord `python -m tsi_agent csr-fetch`", file=sys.stderr)
             return 1
         rows = read_rows(source)
-        written = write_csrs(build_csrs(rows, args.year_from, args.year_to), source.parent)
-        print(json.dumps({"rows": len(rows), "csr_files": written, "dir": str(source.parent)}, indent=2))
+        csrs = build_csrs(rows, args.year_from, args.year_to)
+        result: dict = {"rows": len(rows)}
+        if not args.skip_commission:
+            from tsi_agent import csr_commission
+            commission = _commission(settings, args.fetch_missing)
+            if commission is None:
+                return 1
+            csrs = csr_commission.with_commission(csrs, commission.csrs)
+            report = commission.report()
+            result["commission"] = report
+            for alert in report["alerts"]:
+                print(f"ATTENTION (CSR {csr_commission.YEAR}) : {alert}", file=sys.stderr)
+            if report["missing_countries"]:
+                print(f"ATTENTION (CSR {csr_commission.YEAR}) : aucune recommandation pour "
+                      f"{', '.join(report['missing_countries'])}"
+                      + ("" if args.fetch_missing else " — relancer avec --fetch-missing pour télécharger leurs PDF"),
+                      file=sys.stderr)
+        written = write_csrs(csrs, source.parent)
+        documents = write_documents(build_documents(csrs), source.parent)
+        print(json.dumps({**result, "csr_files": written, "csr_documents": documents, "dir": str(source.parent)},
+                         indent=2, ensure_ascii=False))
         return 0
     if args.command == "csr-link":
         from tsi_agent import runlog
@@ -243,7 +267,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERREUR : {source} introuvable — lancer d'abord `python -m tsi_agent csr-fetch`", file=sys.stderr)
             return 2
         try:
-            csrs = build_csrs(read_rows(source))
+            from tsi_agent import csr_commission
+            csrs = csr_commission.with_commission(build_csrs(read_rows(source)),
+                                                  csr_commission.load(Path(settings.output_dir)).csrs)
         except Exception as exc:
             print(f"ERREUR : lecture de {source} impossible : {exc!r}", file=sys.stderr)
             return 2
@@ -367,7 +393,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             summary = run_deliverables(settings, full=args.full, limit=args.limit, chunk_size=args.chunk_size,
                                        model=args.model, recheck_all=args.recheck_all,
-                                       sitemap_url=sources.get("sitemap_url"))
+                                       sitemap_url=sources.get("sitemap_url"),
+                                       exclude_patterns=sources.get("deliverable_exclude_patterns"))
         except Exception as exc:
             print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
@@ -405,6 +432,29 @@ def main(argv: list[str] | None = None) -> int:
         print(format_discovery(report, discovery["file"]))
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     return run_exit_code(summary)
+
+
+def _commission(settings: Settings, fetch_missing: bool):
+    """Recommandations de la Commission (texte local) ; `fetch_missing` : PDF des pays manquants telecharges (fetcher
+    poli) et ajoutes a la copie locale. None (message d'erreur affiche) si le telechargement echoue."""
+    from tsi_agent import csr_commission
+    from tsi_agent.http import FetchError, shared_fetcher
+    output_dir = Path(settings.output_dir)
+    commission = csr_commission.load(output_dir)
+    if not fetch_missing or not commission.missing_countries:
+        return commission
+    try:
+        fetcher = shared_fetcher(settings.cache_dir, settings.min_interval_s, settings.user_agent)
+        added = csr_commission.fetch_missing(fetcher, commission.missing_countries)
+    except (FetchError, OSError) as exc:
+        print(f"ERREUR : téléchargement des PDF CSR impossible : {exc}", file=sys.stderr)
+        return None
+    if added:
+        path = csr_commission.find_source(output_dir)
+        existing = path.read_text(encoding="utf-8") if path else None
+        csr_commission.save_source(output_dir, csr_commission.merge_texts(existing, added))
+        commission = csr_commission.load(output_dir)
+    return commission
 
 
 EXIT_SITEMAP_UNAVAILABLE = 3

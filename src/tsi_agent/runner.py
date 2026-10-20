@@ -211,18 +211,21 @@ def run_index(settings: Settings, *, full: bool = False, embedder: Any = None, r
 def run_deliverables(settings: Settings, *, full: bool = False, limit: int | None = None,
                      chunk_size: int | None = None, model: str | None = None, run_id: str | None = None,
                      recheck_all: bool = False, sitemap_url: str | None = None,
+                     exclude_patterns: list[str] | None = None,
                      pipeline_factory: PipelineFactory = build_deliverables_pipeline) -> dict[str, Any]:
     """Livrables des projets, par lots : chaque lot est ecrit avant le suivant (reprise sur limite de souscription).
 
     `sitemap_url` : les pages de publication connues dont la date du sitemap n'a pas change ne sont pas relues
     (sauf `full` ou `recheck_all`, qui relit toutes les pages sans retraiter les fichiers inchanges).
+    `exclude_patterns` : publications CSR ecartees des livrables et retirees des projets (config/sources.yaml).
 
     Un lot lit au plus `settings.deliverables_fetch_chunk` pages de publication (et envoie au plus `chunk_size`
     publications au LLM) ; le writer enregistre le lot (dates du sitemap comprises) avant le suivant, si bien qu'une
     interruption (budget de temps) garde les lots termines. Fin : plus rien a lire, ou un lot qui ne lit rien."""
     chunk = chunk_size if chunk_size is not None else settings.chunk_size
     with runlog.open_run(settings.logs_dir, run_id) as run:
-        pipeline = pipeline_factory(settings, model=model, sitemap_url=sitemap_url)
+        pipeline = pipeline_factory(settings, model=model, sitemap_url=sitemap_url,
+                                    exclude_patterns=exclude_patterns)
         budget = limit
         chunks = 0
         quota = False

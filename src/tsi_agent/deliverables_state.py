@@ -28,6 +28,14 @@ class DeliverableEntry(BaseModel):
     sitemap_lastmod: str | None = None
 
 
+def is_excluded(patterns: list[str] | None, *values: str | None) -> bool:
+    """Vrai si un motif (sous-chaine, sans casse) figure dans une des valeurs (id, titre, URL de la publication).
+
+    Motifs : `deliverable_exclude_patterns` de config/sources.yaml (publications CSR, qui ne sont pas des livrables)."""
+    wanted = [p.strip().lower() for p in patterns or [] if p and p.strip()]
+    return any(p in str(v).lower() for p in wanted for v in values if v)
+
+
 def _date_key(entry: DeliverableEntry) -> datetime:
     try:
         return datetime.strptime(entry.date or "", "%d %B %Y")

@@ -217,7 +217,7 @@ class CsrSearch(ProjectSearch):
     def run(self, query: str, countries: list[str] | None = None, year_from: int | None = None,
             year_to: int | None = None, known_sources: list[dict] | None = None) -> dict[str, Any]:
         """Semantic search in the country-specific recommendations (CSRs) addressed to EU Member States in the
-        European Semester (2016-2025), with their sub-parts and the Commission's latest assessment of their
+        European Semester (2016-2026), with their sub-parts and the Commission's latest assessment of their
         implementation. Returns numbered passages [n] with the CSR id (e.g. csr-FR-2023-1), to cite.
 
         :param query: What to look for, in English (e.g. "sustainability of the pension system").

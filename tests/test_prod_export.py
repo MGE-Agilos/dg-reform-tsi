@@ -159,10 +159,28 @@ def test_export_includes_csr_files(tmp_path):
     assert meta == {"Topic": "TSI-BDG", "corpus": CORPUS, "doc_type": "csr", "doc_id": "csr-FR-2023-1",
                     "title": "France 2023 CSR 1", "countries": ["FR"], "year": 2023, "projects": [],
                     "source_url": "https://ec.europa.eu/economy_finance/country-specific-recommendations-database/",
-                    "chunks": 2}
+                    "csr_level": "recommendation", "chunks": 2}
     text = (out / "tsi-csr-FR-2023-1.md").read_text(encoding="utf-8")
     assert text.startswith("# France 2023 CSR 1 — 2023 — France — Introduction\n")
     assert "Document id: csr-FR-2023-1" in text and "Detail page" not in text
+
+
+def test_export_includes_csr_document_files(tmp_path):
+    from tsi_agent.csr import build_documents, render_document
+    from tsi_agent.csr import Csr, Part
+
+    output = tmp_path / "output"
+    (output / "csr").mkdir(parents=True)
+    (output / "csr" / "csr-FR-2023-1.md").write_text(CSR_MD, encoding="utf-8")
+    doc = build_documents([Csr("FR", 2023, "1", Part("csr-FR-2023-1", "Improve pensions.", [], []))])[0]
+    (output / "csr" / "csrdoc-FR-2023.md").write_text(render_document(doc), encoding="utf-8")
+    out = tmp_path / "build" / "files"
+    manifest = export(output, out)
+    assert manifest["files_by_type"] == {"csr": 2} and manifest["meta_type_problems"] == []
+    meta = json.loads((out / "tsi-csr-doc-FR-2023.md.meta.json").read_text(encoding="utf-8"))
+    assert meta["doc_type"] == "csr" and meta["doc_id"] == "csrdoc-FR-2023" and meta["csr_level"] == "document"
+    assert meta["countries"] == ["FR"] and meta["year"] == 2023 and meta["title"] == doc.title
+    assert "Document id: csrdoc-FR-2023" in (out / "tsi-csr-doc-FR-2023.md").read_text(encoding="utf-8")
 
 
 def test_project_file_keeps_its_prod_name(tmp_path):

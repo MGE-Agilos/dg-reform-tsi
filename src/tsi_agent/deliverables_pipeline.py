@@ -17,17 +17,20 @@ def default_deliverables_generator(settings: Settings, model: str | None = None)
 
 
 def build_deliverables_pipeline(settings: Settings, *, chat_generator: Any = None, model: str | None = None,
-                                sitemap_url: str | None = None) -> Pipeline:
-    """`sitemap_url` : sitemap du site (dates <lastmod> des pages de publication, mode incremental)."""
+                                sitemap_url: str | None = None, exclude_patterns: list[str] | None = None) -> Pipeline:
+    """`sitemap_url` : sitemap du site (dates <lastmod> des pages de publication, mode incremental).
+    `exclude_patterns` : publications qui ne sont pas des livrables (CSR ; config/sources.yaml)."""
+    exclude = list(exclude_patterns or [])
     http = {"cache_dir": settings.cache_dir, "min_interval_s": settings.min_interval_s,
             "user_agent": settings.user_agent}
     p = Pipeline()
     p.add_component("discoverer", PublicationDiscoverer(output_dir=settings.output_dir, sitemap_url=sitemap_url,
                                                         sitemap_options=sitemap_options(settings),
                                                         sitemap_failure_memory_s=settings.sitemap_failure_memory_s,
-                                                        **http))
+                                                        exclude_patterns=exclude, **http))
     p.add_component("publications", PublicationFetcher(output_dir=settings.output_dir,
-                                                        recheck_days=settings.deliverables_recheck_days, **http))
+                                                        recheck_days=settings.deliverables_recheck_days,
+                                                        exclude_patterns=exclude, **http))
     p.add_component("texts", DeliverableTextExtractor(output_dir=settings.output_dir,
                                                       deliverables_dir=settings.deliverables_dir,
                                                       max_pdf_mb=settings.deliverables_max_pdf_mb, **http))
@@ -35,7 +38,7 @@ def build_deliverables_pipeline(settings: Settings, *, chat_generator: Any = Non
         chat_generator=chat_generator or default_deliverables_generator(settings, model),
         max_concurrency=settings.max_concurrency, pricing=settings.pricing,
         max_words=settings.deliverables_max_words))
-    p.add_component("writer", DeliverableWriter(output_dir=settings.output_dir))
+    p.add_component("writer", DeliverableWriter(output_dir=settings.output_dir, exclude_patterns=exclude))
     p.connect("discoverer.publications", "publications.publications")
     p.connect("discoverer.sitemap_status", "publications.sitemap_status")
     p.connect("publications.to_process", "texts.publications")

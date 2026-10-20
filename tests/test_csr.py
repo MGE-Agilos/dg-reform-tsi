@@ -117,3 +117,83 @@ def test_year_number_robustness_and_ordering():
     assert not any(c.number == "1a" for c in csrs.values())
     assert csrs["csr-FR-2023-2"].full is not None and csrs["csr-FR-2023-2"].number == "2"
     assert [p.part_id for p in csrs["csr-FR-2023-3"].subparts] == ["csr-FR-2023-3.9", "csr-FR-2023-3.10"]
+
+
+# ---------- couche document (pays x annee) ----------
+
+from tsi_agent.csr import (COMMISSION_STAGE, COUNCIL_STAGE, SOURCE_URL, Csr, Part, build_documents,  # noqa: E402
+                           render_document, write_documents)
+
+
+def test_recommendation_front_matter_has_document_stage_and_level():
+    fr = {c.csr_id: c for c in build_csrs(ROWS)}["csr-FR-2023-1"]
+    assert fr.doc_id == "csrdoc-FR-2023" and fr.stage == COUNCIL_STAGE == "Council recommendation"
+    fm, _ = parse_front_matter(render_csr(fr))
+    assert fm["doc_id"] == "csrdoc-FR-2023" and fm["stage"] == "Council recommendation"
+    assert fm["csr_level"] == "recommendation" and fm["source_url"] == SOURCE_URL
+
+
+def test_build_documents_groups_by_country_and_year():
+    docs = build_documents(build_csrs(ROWS + [row(nbr="2", text="Second.")]))
+    assert [d.doc_id for d in docs] == ["csrdoc-CZ-2019", "csrdoc-FR-2023"]
+    fr = docs[1]
+    assert fr.title == "France — 2023 country-specific recommendations"
+    assert fr.n_recommendations == 2 and [c.csr_id for c in fr.recommendations] == ["csr-FR-2023-1", "csr-FR-2023-2"]
+    assert fr.stage == "Council recommendation" and fr.document_url == SOURCE_URL
+    assert fr.country == "FR" and fr.year == 2023
+
+
+def commission_csr(number="1", text="Adhere to the net expenditure path. Reinforce defence spending."):
+    part = Part(f"csr-HR-2026-{number}", text, [], [])
+    return Csr("HR", 2026, number, part, [], stage=COMMISSION_STAGE, source_url="https://ec.example/HR.pdf")
+
+
+def test_commission_recommendation_is_not_yet_assessed_and_cites_its_pdf():
+    csr = commission_csr()
+    fm, body = parse_front_matter(render_csr(csr))
+    assert fm["stage"] == "Commission recommendation" and fm["source_url"] == "https://ec.example/HR.pdf"
+    assert fm["assessment"] is None and fm["subparts"] == []
+    assert "Not yet assessed" in body and "https://ec.example/HR.pdf" in body
+    doc = build_documents([csr, commission_csr("2", "Ensure continuity of RRF reforms.")])[0]
+    assert doc.stage == "Commission recommendation" and doc.document_url == "https://ec.example/HR.pdf"
+
+
+def test_render_document_lists_recommendations_with_summary_and_assessment():
+    docs = build_documents(build_csrs(ROWS) + [commission_csr()])
+    fr = next(d for d in docs if d.doc_id == "csrdoc-FR-2023")
+    fm, body = parse_front_matter(render_document(fr))
+    assert fm["doc_id"] == "csrdoc-FR-2023" and fm["csr_level"] == "document" and fm["countries"] == ["FR"]
+    assert fm["year"] == 2023 and fm["stage"] == "Council recommendation" and fm["n_recommendations"] == 1
+    assert fm["recommendations"] == ["csr-FR-2023-1"] and fm["title"] == fr.title
+    assert body.startswith(f"# {fr.title}\n")
+    assert "## Recommendations" in body
+    assert "- csr-FR-2023-1: Improve the sustainability of the pension system and of healthcare. " \
+           "(Latest assessment (2025): Some Progress; 2 sub-parts)" in body
+    hr = next(d for d in docs if d.doc_id == "csrdoc-HR-2026")
+    hr_body = parse_front_matter(render_document(hr))[1]
+    assert "Commission recommendation" in hr_body and "(Not yet assessed)" in hr_body
+
+
+def test_document_summary_is_clipped():
+    long = "Word " * 200
+    doc = build_documents([commission_csr(text=long.strip() + ".")])[0]
+    line = next(x for x in render_document(doc).splitlines() if x.startswith("- csr-HR-2026-1:"))
+    assert len(line) < 400 and "…" in line
+
+
+def test_write_documents_replaces_old_document_files_and_chunks_as_csr_document(tmp_path):
+    out = tmp_path / "csr"
+    out.mkdir()
+    (out / "csrdoc-XX-2000.md").write_text("old", encoding="utf-8")
+    (out / "csr-FR-2023-1.md").write_text("keep", encoding="utf-8")
+    assert write_documents(build_documents(build_csrs(ROWS)), out) == 2
+    assert sorted(p.name for p in out.glob("csrdoc-*.md")) == ["csrdoc-CZ-2019.md", "csrdoc-FR-2023.md"]
+    assert (out / "csr-FR-2023-1.md").read_text(encoding="utf-8") == "keep"
+    docs = chunk_file("csr/csrdoc-FR-2023.md", (out / "csrdoc-FR-2023.md").read_text(encoding="utf-8"))
+    meta = docs[0].meta
+    assert meta["doc_type"] == "csr" and meta["doc_id"] == "csrdoc-FR-2023" and meta["csr_level"] == "document"
+    assert meta["countries"] == ["FR"] and meta["year"] == 2023
+    write_csrs(build_csrs(ROWS), out)
+    assert (out / "csrdoc-FR-2023.md").exists()  # write_csrs ne supprime que les fiches de recommandation
+    rec = chunk_file("csr/csr-FR-2023-1.md", (out / "csr-FR-2023-1.md").read_text(encoding="utf-8"))
+    assert rec[0].meta["doc_id"] == "csr-FR-2023-1" and rec[0].meta["csr_level"] == "recommendation"

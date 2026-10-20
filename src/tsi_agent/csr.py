@@ -1,5 +1,8 @@
 """Recommandations par pays (CSR) du Semestre europeen : base ECFIN (export Qlik) -> une fiche Markdown par CSR.
 
+Trois niveaux : document (un par Etat membre et par annee, `csrdoc-<ISO>-<annee>`, derive des recommandations),
+recommandation (`csr-<ISO>-<annee>-<n>`) et sous-partie (`csr-<ISO>-<annee>-<n>.<m>`, base ECFIN seulement).
+
 L'export a une ligne par CSR ("1") ou sous-partie ("1.2") et par version annuelle d'evaluation ("2025 - Semester
 Cycle (June)") : texte et domaines de la derniere version, historique des evaluations garde. Les domaines CSR
 (taxonomie ECFIN) restent dans le front matter et le texte : ce ne sont pas les domaines des projets.
@@ -20,6 +23,9 @@ COLUMNS = ("Country", "Year", "CSR Nbr", "Version", "Text", "Policy Area(s)", "E
 _VERSION_YEAR = re.compile(r"^\s*(\d{4})")
 _EMPTY = {"", "-"}
 NOT_ASSESSED = "Not Assessed"
+COUNCIL_STAGE = "Council recommendation"  # CSR adoptees (base ECFIN)
+COMMISSION_STAGE = "Commission recommendation"  # propositions de la Commission, pas encore adoptees ni evaluees
+SUMMARY_CHARS = 300
 
 
 def _clean(value) -> str:
@@ -71,10 +77,16 @@ class Csr:
     number: str
     full: Part | None
     subparts: list[Part] = field(default_factory=list)
+    stage: str = COUNCIL_STAGE
+    source_url: str = SOURCE_URL
 
     @property
     def csr_id(self) -> str:
         return f"csr-{self.country}-{self.year}-{self.number}"
+
+    @property
+    def doc_id(self) -> str:
+        return document_id(self.country, self.year)
 
     @property
     def title(self) -> str:
@@ -100,6 +112,44 @@ class Csr:
     @property
     def assessment(self) -> str | None:
         return self.full.assessment if self.full else None
+
+
+def document_id(country: str, year: int) -> str:
+    return f"csrdoc-{country}-{year}"
+
+
+@dataclass
+class CsrDocument:
+    """Document de recommandations d'un Etat membre pour une annee (27 par an)."""
+    country: str
+    year: int
+    stage: str
+    document_url: str
+    recommendations: list[Csr]
+
+    @property
+    def doc_id(self) -> str:
+        return document_id(self.country, self.year)
+
+    @property
+    def title(self) -> str:
+        return f"{name_from_iso(self.country)} — {self.year} country-specific recommendations"
+
+    @property
+    def n_recommendations(self) -> int:
+        return len(self.recommendations)
+
+
+def build_documents(csrs: list[Csr]) -> list[CsrDocument]:
+    """Documents par (pays, annee), recommandations par numero ; etape et lien de la premiere recommandation."""
+    grouped: dict[tuple[str, int], list[Csr]] = defaultdict(list)
+    for csr in csrs:
+        grouped[(csr.country, csr.year)].append(csr)
+    docs = []
+    for (country, year), recs in sorted(grouped.items()):
+        recs = sorted(recs, key=lambda c: _number_key(c.number))
+        docs.append(CsrDocument(country, year, recs[0].stage, recs[0].source_url, recs))
+    return docs
 
 
 def read_rows(path: Path) -> list[dict]:
@@ -159,8 +209,12 @@ def _subpart_line(p: Part) -> str:
 def render_csr(csr: Csr) -> str:
     front = {"csr_id": csr.csr_id, "title": csr.title, "countries": [csr.country], "year": csr.year,
              "number": csr.number, "policy_areas": csr.policy_areas, "assessment": csr.assessment,
-             "subparts": [p.part_id for p in csr.subparts], "source_url": SOURCE_URL}
+             "subparts": [p.part_id for p in csr.subparts], "source_url": csr.source_url,
+             "doc_id": csr.doc_id, "stage": csr.stage, "csr_level": "recommendation"}
     lines = [f"# {csr.title}", "", csr.text]
+    if csr.stage == COMMISSION_STAGE:
+        lines += ["", f"{COMMISSION_STAGE} of {csr.year} (not yet adopted by the Council). Not yet assessed. "
+                      f"Source: {csr.source_url}"]
     if csr.policy_areas:
         lines += ["", f"Policy areas: {'; '.join(csr.policy_areas)}."]
     if csr.assessments:
@@ -172,6 +226,54 @@ def render_csr(csr: Csr) -> str:
     if csr.subparts:
         lines += ["", "## Sub-parts", ""] + [_subpart_line(p) for p in csr.subparts]
     return render(front, "\n".join(lines))
+
+
+def _summary(text: str, limit: int = SUMMARY_CHARS) -> str:
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(",;:")
+    return cut + "…"
+
+
+def _recommendation_line(csr: Csr) -> str:
+    if csr.latest_assessment:
+        year, value = csr.latest_assessment
+        facts = [f"Latest assessment ({year}): {value}"]
+    else:
+        facts = ["Not yet assessed" if csr.stage == COMMISSION_STAGE else "No assessment"]
+    if csr.subparts:
+        facts.append(f"{len(csr.subparts)} sub-parts")
+    return f"- {csr.csr_id}: {_summary(csr.text)} ({'; '.join(facts)})"
+
+
+def render_document(doc: CsrDocument) -> str:
+    front = {"doc_id": doc.doc_id, "title": doc.title, "countries": [doc.country], "year": doc.year,
+             "stage": doc.stage, "n_recommendations": doc.n_recommendations,
+             "recommendations": [c.csr_id for c in doc.recommendations], "source_url": doc.document_url,
+             "csr_level": "document"}
+    if doc.stage == COMMISSION_STAGE:
+        intro = (f"{COMMISSION_STAGE} for a Council recommendation on the economic, social, employment, structural "
+                 f"and budgetary policies of {name_from_iso(doc.country)} ({doc.year} European Semester): "
+                 f"{doc.n_recommendations} recommendations, not yet adopted by the Council nor assessed. "
+                 f"Document: {doc.document_url}")
+    else:
+        intro = (f"{COUNCIL_STAGE}s addressed to {name_from_iso(doc.country)} in the {doc.year} European Semester: "
+                 f"{doc.n_recommendations} recommendations. Texts and assessments from the Commission's CSR "
+                 f"database: {doc.document_url}")
+    lines = [f"# {doc.title}", "", intro, "", "## Recommendations", ""]
+    lines += [_recommendation_line(c) for c in doc.recommendations]
+    return render(front, "\n".join(lines))
+
+
+def write_documents(docs: list[CsrDocument], out_dir: Path) -> int:
+    """Une fiche par document dans out_dir (fiches csrdoc-*.md precedentes supprimees, autres fichiers gardes)."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob("csrdoc-*.md"):
+        old.unlink()
+    for doc in docs:
+        (out_dir / f"{doc.doc_id}.md").write_text(render_document(doc), encoding="utf-8", newline="\n")
+    return len(docs)
 
 
 def write_csrs(csrs: list[Csr], out_dir: Path) -> int:

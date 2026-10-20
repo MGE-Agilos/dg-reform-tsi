@@ -237,7 +237,7 @@ def test_writer_updates_state_and_project_files(tmp_path):
     w = DeliverableWriter(output_dir=str(tmp_path))
     w._store = store
     stats = w.run(records=[record_for()])["stats"]
-    assert stats == {"publications": 1, "projects_updated": 1, "orphans_removed": 0}
+    assert stats == {"publications": 1, "projects_updated": 1, "orphans_removed": 0, "excluded_removed": 0}
     fm, body = parse_front_matter(store.read_project_file("slo"))
     assert fm["deliverables"] == 1 and list(fm).index("deliverables") == list(fm).index("results") + 1
     assert body.index("## Context") < body.index("## Deliverables (AI-generated summary)") < body.index("## Sources")

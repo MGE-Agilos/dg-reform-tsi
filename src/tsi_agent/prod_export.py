@@ -30,7 +30,7 @@ _HEADING = re.compile(r"^[ \t]{0,3}(?:#+(?:[ \t]+|$))+", re.MULTILINE)
 META_TYPES: dict[str, type] = {
     "Topic": str, "corpus": str, "doc_type": str, "doc_id": str, "title": str, "countries": list, "programme": str,
     "year": int, "policy_area": str, "results": str, "projects": list, "multi_country": bool, "detail_page": bool,
-    "source_url": str, "listing_titles": list, "csrs": list, "chunks": int,
+    "source_url": str, "listing_titles": list, "csrs": list, "csr_level": str, "chunks": int,
 }
 
 
@@ -69,6 +69,8 @@ def file_meta(docs: list[Document]) -> dict:
                           if doc_type == "project" else None,
         "csrs": (list(first["csrs"]) or None) if doc_type == "project" and isinstance(first.get("csrs"), list)
                  else None,
+        # niveau d'une fiche CSR : "document" (pays x annee) ou "recommendation"
+        "csr_level": first.get("csr_level") if doc_type == "csr" else None,
         "chunks": len(docs),
     }
     meta = {}
@@ -119,8 +121,11 @@ def export(output_dir: Path, out_dir: Path) -> dict:
             if not docs:
                 skipped.append(rel)
                 continue
-            stem = path.name.removeprefix("csr-") if doc_type == "csr" else path.name
-            name = f"{PREFIX}{doc_type}-{stem}"  # tsi-csr-FR-2023-1.md ; projets : tsi-project-<nom>.md
+            stem = path.name
+            if doc_type == "csr":  # tsi-csr-FR-2023-1.md ; document : tsi-csr-doc-FR-2023.md
+                stem = (f"doc-{stem.removeprefix('csrdoc-')}" if stem.startswith("csrdoc-")
+                        else stem.removeprefix("csr-"))
+            name = f"{PREFIX}{doc_type}-{stem}"  # projets : tsi-project-<nom>.md
             target = out_dir / name
             target.write_text("\n".join(section(d) for d in docs), encoding="utf-8", newline="\n")
             meta = file_meta(docs)

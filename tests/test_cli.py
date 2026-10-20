@@ -304,3 +304,87 @@ def test_supabase_sync_without_credentials_is_a_clean_error(tmp_path, capsys, mo
     sources.write_text("{}\n", encoding="utf-8")
     assert cli.main(["--settings", str(settings), "--sources", str(sources), "supabase-sync"]) == 1
     assert "SUPABASE_SERVICE_KEY" in capsys.readouterr().err
+
+
+def _csr_build_setup(tmp_path):
+    import openpyxl
+    from tsi_agent.csr import COLUMNS
+
+    out = tmp_path / "output"
+    (out / "csr").mkdir(parents=True)
+    wb = openpyxl.Workbook()
+    wb.active.append(list(COLUMNS))
+    wb.active.append(["France", "2025", "1", "2025 - Semester Cycle (June)", "Do X.", "Healthcare", "-", "No",
+                      "Annual", "Some Progress"])
+    wb.save(out / "csr" / "csr_full.xlsx")
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(f"output_dir: {out.as_posix()}\ncache_dir: {(tmp_path / 'cache').as_posix()}\n",
+                        encoding="utf-8")
+    return out, settings
+
+
+COMMISSION_TEXT = """# CSR 2026
+
+## Commission Recommendation - Croatia
+
+Source: https://ec.example/HR.pdf
+
+--- page 1 ---
+HEREBY RECOMMENDS that Croatia take action in 2026 and 2027 to:
+1. Adhere to the net expenditure path.
+2. Ensure continuity of reforms.
+Done at Brussels,
+
+## Commission Recommendation - Malta
+
+Source: https://ec.example/MT.pdf
+
+--- page 1 ---
+Recitals only.
+"""
+
+
+def test_csr_build_includes_commission_recommendations_and_documents(tmp_path, capsys):
+    from tsi_agent.csr_commission import PUBLICATION_ID
+    out, settings = _csr_build_setup(tmp_path)
+    (out / "deliverables").mkdir()
+    (out / "deliverables" / f"{PUBLICATION_ID}.md").write_text(COMMISSION_TEXT, encoding="utf-8")
+    assert cli.main(["--settings", str(settings), "csr-build"]) == 0
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
+    assert summary["csr_files"] == 3 and summary["csr_documents"] == 2
+    assert summary["commission"]["by_country"] == {"HR": 2, "MT": 0}
+    assert "MT: no 'HEREBY RECOMMENDS ... to:' part" in captured.err and "--fetch-missing" in captured.err
+    names = sorted(p.name for p in (out / "csr").glob("*.md"))
+    assert names == ["csr-FR-2025-1.md", "csr-HR-2026-1.md", "csr-HR-2026-2.md", "csrdoc-FR-2025.md",
+                     "csrdoc-HR-2026.md"]
+    assert "stage: Commission recommendation" in (out / "csr" / "csr-HR-2026-1.md").read_text(encoding="utf-8")
+    assert cli.main(["--settings", str(settings), "csr-build", "--skip-commission"]) == 0
+    assert "commission" not in json.loads(capsys.readouterr().out)
+    assert sorted(p.name for p in (out / "csr").glob("*.md")) == ["csr-FR-2025-1.md", "csrdoc-FR-2025.md"]
+
+
+def test_csr_build_fetch_missing_completes_the_local_copy(tmp_path, capsys, monkeypatch):
+    from tsi_agent import csr_commission, http
+    out, settings = _csr_build_setup(tmp_path)
+    seen = {}
+
+    def fake_fetch(fetcher, countries, **kw):
+        seen["countries"] = countries
+        return COMMISSION_TEXT.split("\n\n", 1)[1]
+
+    monkeypatch.setattr(http, "shared_fetcher", lambda *a: object())
+    monkeypatch.setattr(csr_commission, "fetch_missing", fake_fetch)
+    assert cli.main(["--settings", str(settings), "csr-build", "--fetch-missing"]) == 0
+    assert len(seen["countries"]) == 27
+    kept = out / "csr" / "publications" / f"{csr_commission.PUBLICATION_ID}.md"
+    assert "Commission Recommendation - Croatia" in kept.read_text(encoding="utf-8")
+    assert json.loads(capsys.readouterr().out)["commission"]["recommendations"] == 2
+    assert not list((out / "csr" / "publications").glob("*.tmp"))
+
+    def boom(fetcher, countries, **kw):
+        raise http.FetchError("https://x", "HTTP 503", 503)
+
+    monkeypatch.setattr(csr_commission, "fetch_missing", boom)
+    assert cli.main(["--settings", str(settings), "csr-build", "--fetch-missing"]) == 1
+    assert "téléchargement des PDF CSR impossible" in capsys.readouterr().err
