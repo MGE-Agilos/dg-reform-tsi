@@ -86,10 +86,14 @@ one, the English meaning is given in parentheses.
 
 ## Update (each time)
 
-8. **Run the full update**:
+8. **Run the update** (all the steps, **incremental** by default):
    ```powershell
    .\deploy\updater\update.ps1
    ```
+   Incremental means that only new pages and pages whose date in the site's sitemap has changed are
+   downloaded again, and only content that really changed is sent to the LLM; a monthly update usually takes
+   10 to 20 minutes. Use `-RecheckAll` (below) for a full check of every page, recommended once a quarter.
+
    The script checks the settings and the LLM (the key in `openai` mode, the `claude` command in `claude_cli`
    mode), runs the seven steps below, and shows the folder to import (`deploy\prod\build\files`), the figures
    of the manifest (`deploy\prod\build\manifest.json`) and a summary of the runs. A quota (exit code 1), an
@@ -153,7 +157,7 @@ To remove it:
 powershell -ExecutionPolicy Bypass -File .\deploy\updater\unregister-task.ps1
 ```
 
-**What runs.** The full update of step 8, then `supabase-sync` (`-Sync`), the release `data-YYYY-MM-DD`
+**What runs.** The incremental update of step 8 (a full check in January, April, July and October), then `supabase-sync` (`-Sync`), the release `data-YYYY-MM-DD`
 (`-Publish`; `data-YYYY-MM-DD-HHMM` if a release of the day already exists) and, with `-Index`, the vector index.
 In January, April, July and October the scheduled run is a **full check** (`--recheck-all` for `run` and
 `deliverables`): every detail and publication page is read again whatever its sitemap date; only changed pages go
