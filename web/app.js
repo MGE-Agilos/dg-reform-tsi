@@ -1847,7 +1847,133 @@ const GUIDE = [
 ];
 
 const GUIDE_IDS = GUIDE.map((s) => s.id);
+
+// Illustrated part of the guide (screenshots in web/guide/, relative paths: the site is served under a sub-path).
+// Screenshots taken on 20 Oct 2026 with the real data of that day; the figures quoted in the steps are read off them.
+const GUIDE_PROJECT = "technical-support-transforming-existing-fully-state-administered-funded-pension-scheme-lithuania";
+const GUIDE_SHOT_DATE = "20 October 2026";
+const GUIDE_ESSENTIALS = [
+  { icon: "▦", title: "Tabs", text: "Dashboard, Projects, CSRs, Lineage, Anomalies, Impact and Guide. The ? button in the header brings you back here." },
+  { icon: "⚲", title: "Filters", text: "Each list has its filters (country, programme, years, text search…). The address of the page keeps them: bookmark or share it." },
+  { icon: "⇄", title: "Click through", text: "Bars, cards and names open the matching view: a country's projects, a CSR document, a project page, a lineage network." },
+  { icon: "ⓘ", title: "Definitions", text: "The ⓘ buttons explain how a figure or a link level is defined, with a link to the reference below." },
+  { icon: "✦", title: "Assistant", text: "The round button at the bottom right opens the assistant beside any page. On a project or CSR page it offers to ask about it." },
+  { icon: "⎙", title: "Export", text: "Lists download as CSV; impact reports and assistant conversations export to Word." },
+];
+const GUIDE_STEPS = [
+  { img: "01-dashboard.jpg", to: "#dashboard", title: "Start from the big picture",
+    alt: "Dashboard: tiles with the totals and the chart of projects by year and programme",
+    text: `The <strong>Dashboard</strong> sums up the whole data set: 2,157 projects (39% with a detail page), 536 deliverables,
+      27 CSR documents per year (294 documents, 1,049 recommendations and 3,363 sub-parts for 2016–2026), 1,339 project–CSR links
+      (28% of projects linked), 5 impact analyses (mean score 4.2/10) and 1,884 anomalies, 262 of them high severity. The first
+      chart splits the projects by year and programme: TSI 1,185, SRSP 890, SRSS 82. Click a bar to open the matching list.` },
+  { img: "02-csrs.jpg", to: "#csrs", title: "Browse the CSR documents of a year",
+    alt: "CSRs tab: the 27 country documents of 2026 as cards",
+    text: `The <strong>CSRs</strong> tab opens on the latest year: 2026, 27 documents, 146 recommendations. They are still
+      <em>Commission recommendations</em>: not yet adopted by the Council, not yet assessed, and no project is linked yet (a
+      recommendation can only be supported by projects of the following years). Each card gives the number of recommendations,
+      the main assessment and the linked projects, with links to the document page and its PDF. Choose an earlier year to see
+      assessments and links.` },
+  { img: "03-document.jpg", to: "#csrdoc/csrdoc-LT-2023", title: "Open a country's CSR document",
+    alt: "CSR document page: Lithuania, 2023 country-specific recommendations",
+    text: `The <strong>Lithuania — 2023</strong> document is a Council recommendation with 4 recommendations split into 18
+      sub-parts. 5 projects are linked to it (AI-assessed) and its main assessment is <em>Some progress</em> (3 of 4
+      recommendations). Below, each recommendation lists its sub-parts with their policy areas, assessment and linked projects:
+      sub-part 1.6, &ldquo;social protection&rdquo;, is partially supported by the Lithuanian pension project followed in the
+      next steps.` },
+  { img: "04-lineage.jpg", to: `#lineage?country=LT&sel=${encodeURIComponent(`project:${GUIDE_PROJECT}`)}`, title: "Follow the lineage",
+    alt: "Lineage network of Lithuania with the pension project pinned: its chain to two recommendations is highlighted",
+    text: `<em>Show in lineage network</em> draws the chain for the whole country. Lithuania, 2019–2025: 7 CSR documents,
+      25 recommendations (10 with at least one project), 23 projects and 35 recommendation–project pairs (11 direct) from 44
+      sub-part links. With the pension project pinned, its chain lights up: a solid line (direct link) to LT 2021 · CSR 1 and a
+      dashed line (partial link) to LT 2023 · CSR 1; the pill <em>2/10</em> is its latest impact score.` },
+  { img: "05-project.jpg", to: `#project/${GUIDE_PROJECT}`, title: "Read the project page",
+    alt: "Project page: Technical Support in transforming the existing fully state-administered funded pension scheme in Lithuania",
+    text: `The project page gives the record (TSI, 2024, Lithuania, labour market and social protection, results achieved,
+      1 deliverable, detail page on the Commission's site), the AI summary (a project implemented by the ILO on the second
+      pension pillar) and the <strong>supported CSRs</strong>: 2, one direct (csr-LT-2021-1.4) and one partial (csr-LT-2023-1.6),
+      each with its rationale. The latest impact analysis is shown at the top: 2/10, weak, medium confidence, 7 Oct 2026.` },
+  { img: "06-impact.jpg", to: `#impact/${GUIDE_PROJECT}`, title: "Check the impact analysis",
+    alt: "Impact tab: the saved analysis of the Lithuanian pension project, report open",
+    text: `<em>Impact analysis</em> opens the project in the <strong>Impact</strong> tab. Its saved analysis (2/10, weak,
+      medium confidence, 7 Oct 2026) opens with <em>Show report</em>: the overall verdict finds solid analytical outputs, but a
+      parallel 2025 reform moved the second pillar in the opposite direction and the project closed two months early. Every
+      claim cites numbered sources. <em>Export to Word</em> downloads the report; a new analysis takes 30 seconds to 2 minutes
+      and has a cost.` },
+  { img: "07-anomalies.jpg", to: "#anomalies", title: "Keep an eye on data quality",
+    alt: "Anomalies tab: high and medium severity anomalies, first page",
+    text: `The <strong>Anomalies</strong> tab lists rule-based checks of the Commission's publication. By default it shows the
+      high and medium severities: 719 anomalies over 15 pages, starting with TSI projects listed in a country factsheet but with
+      no project page published. Filter by type, severity, programme, years or country, and download the list as CSV.` },
+  { img: "08-assistant.jpg", to: `#project/${GUIDE_PROJECT}`, assistant: true, title: "Ask the assistant",
+    alt: "Assistant drawer open beside the project page, with the question about this project pre-filled",
+    text: `The round button at the bottom right opens the <strong>assistant</strong> beside the page. On a project page,
+      <em>Ask about this project</em> pre-fills the question; you still press <em>Send</em>. Examples get you started, and the
+      conversation can be exported to Word. Answers use the project records, summaries, CSRs and links (not the deliverable
+      full texts) and are generated by AI: verify the cited sources.` },
+];
+const GUIDE_CASES = [
+  { title: "Croatia's lineage", text: "One of the densest networks: 68 sub-part links from Croatian recommendations to projects.", to: "#lineage?country=HR", cta: "Open the network" },
+  { title: "Best-covered country", text: "Belgium has the highest share of recommendations supported by a project: 65% (22 of 34).", to: "#lineage?country=BE", cta: "See Belgium" },
+  { title: "Highest impact score", text: "Barnahus Slovenia (SRSP 2019), support for children victims of violence: 8/10, strong.", to: "#impact/barnahus-slovenia-supporting-children-victims-violence", cta: "Read the analysis" },
+  { title: "A multi-country project", text: "Inclusive education in Portugal, Italy and Spain: one project linked to four CSRs of three countries.", to: "#project/combatting-disparities-access-inclusive-education-portugal-italy-and-spain", cta: "Open the project" },
+  { title: "Search the 2026 recommendations", text: "Full-text search in all recommendations, here “pension” in the 2026 documents.", to: "#csrs?view=recs&year=2026&q=pension", cta: "Run the search" },
+  { title: "Possible duplicates", text: "Projects that look published twice: a quick check before counting projects.", to: "#anomalies?type=possible_duplicate&severity=all", cta: "See the list" },
+];
+const GUIDE_ASK = [
+  "Which projects support Lithuania's recommendations on pensions?",
+  "What CSRs did Lithuania receive in 2023, and how were they assessed?",
+  "Which countries have projects on e-health or the digitalisation of healthcare?",
+  "Which projects work on public procurement in the Baltic states?",
+  ...CHAT_EXAMPLES.slice(0, 2),
+];
+const GUIDE_TIPS = [
+  "Summaries, project–CSR links, assistant answers and impact analyses are generated by AI: verify against the sources before use.",
+  "The 2026 recommendations are Commission proposals: not yet assessed and not yet linked to projects.",
+  "Projects known only by their title are not linked yet: no link does not mean no support.",
+  "Impact statistics rest on the analyses run so far (5 in October 2026): indicative only.",
+  "Anomalies are deterministic checks of the publication, not judgements on the projects.",
+  "The data are updated every month: the figures in the screenshots may have changed since.",
+];
+// Parts of the guide page, reachable as #guide/<id> like the reference sections.
+const GUIDE_PARTS = [["essentials", "Essentials"], ["scenario", "Scenario"], ["cases", "Other cases"], ["ask", "Questions"],
+  ["tips", "Good to know"], ["reference", "Reference"]];
+const GUIDE_PART_IDS = GUIDE_PARTS.map(([id]) => id);
 let guideTarget = null; // section to scroll to and focus after the render
+
+function guidePart(id, title, inner, intro = "") {
+  return `<section class="guide-part" id="guide-${id}" aria-labelledby="guide-h-${id}">`
+    + `<h3 id="guide-h-${id}" tabindex="-1">${esc(title)}</h3>${intro ? `<p class="guide-intro">${esc(intro)}</p>` : ""}${inner}</section>`;
+}
+
+/** Illustrated part: hero, essentials, scenario with screenshots, cases, questions, tips (static text, no database string). */
+function guideIllustratedHtml() {
+  const hero = `<header class="guide-hero"><p class="guide-kicker">TSI × CSR Explorer</p>`
+    + `<p class="guide-lead">The explorer links DG REFORM's technical support projects to the EU country-specific recommendations
+      (CSRs) they help to implement. Ten minutes are enough to find your way: follow the scenario below, each step opens the
+      matching view of the explorer.</p>`
+    + `<nav class="guide-pills" aria-label="Guide parts">${GUIDE_PARTS.map(([id, label]) => `<a href="#guide/${id}">${esc(label)}</a>`).join("")}</nav></header>`;
+  const ess = `<div class="guide-ess-grid">${GUIDE_ESSENTIALS.map((e) => `<div class="guide-ess"><span class="guide-ess-icon" aria-hidden="true">${esc(e.icon)}</span>`
+    + `<h4>${esc(e.title)}</h4><p>${esc(e.text)}</p></div>`).join("")}</div>`;
+  const steps = `<ol class="guide-steps">${GUIDE_STEPS.map((s, i) => `<li class="guide-step"><div class="guide-step-text">`
+    + `<span class="guide-step-num">Step ${i + 1}</span><h4>${esc(s.title)}</h4><p>${s.text}</p>`
+    + `<a class="btn" href="${esc(s.to)}"${s.assistant ? " data-guide-assistant" : ""}>Try it <span aria-hidden="true">→</span></a></div>`
+    + `<button type="button" class="guide-shot" data-zoom="${esc(s.img)}" aria-label="${esc(`Enlarge the screenshot: ${s.alt}`)}">`
+    + `<img src="guide/${esc(s.img)}" alt="${esc(s.alt)}" loading="lazy" width="1440" height="860"></button></li>`).join("")}</ol>`
+    + `<p class="muted small">Screenshots taken on ${GUIDE_SHOT_DATE} with the data of that day. Click a screenshot to enlarge it; Escape or a click closes it.</p>`;
+  const cases = `<div class="guide-cases">${GUIDE_CASES.map((c) => `<a class="guide-case" href="${esc(c.to)}"><h4>${esc(c.title)}</h4>`
+    + `<p>${esc(c.text)}</p><span class="guide-case-cta">${esc(c.cta)} <span aria-hidden="true">→</span></span></a>`).join("")}</div>`;
+  const ask = `<ul class="guide-ask">${GUIDE_ASK.map((q) => `<li>&ldquo;${esc(q)}&rdquo;</li>`).join("")}</ul>`
+    + `<p class="small">Open the assistant with the round button at the bottom right. <a href="#guide/assistant">How the assistant works</a></p>`;
+  const tips = `<ul class="guide-tips">${GUIDE_TIPS.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>`;
+  return hero
+    + guidePart("essentials", "The essentials in one minute", ess)
+    + guidePart("scenario", "Scenario: from a CSR document to a project and its impact", steps,
+      "Follow one thread through the data: Lithuania's 2023 recommendations, the projects that support them and the impact of one of them, a TSI project on the second pension pillar.")
+    + guidePart("cases", "Other cases to explore", cases)
+    + guidePart("ask", "Ideas of questions for the assistant", ask)
+    + guidePart("tips", "Good to know", tips);
+}
 
 /** Guide markup (pure: also used by the render test). */
 function guideHtml(section, { mobile = false } = {}) {
@@ -1855,14 +1981,36 @@ function guideHtml(section, { mobile = false } = {}) {
   const toc = GUIDE.map((s) => `<li><a href="#guide/${s.id}"${s.id === key ? ' aria-current="location"' : ""}>${esc(s.title)}</a></li>`).join("");
   const body = GUIDE.map((s) => `<section class="guide-section" id="guide-${s.id}" aria-labelledby="guide-h-${s.id}">`
     + `<h3 id="guide-h-${s.id}" tabindex="-1">${esc(s.title)}</h3>${s.html()}</section>`).join("");
-  return `${heading("User guide")}<div class="guide-layout"><nav class="guide-toc" aria-label="Guide contents">`
+  return `${heading("User guide")}<div class="guide-page">${guideIllustratedHtml()}`
+    + `<section class="guide-part guide-reference" id="guide-reference" aria-labelledby="guide-h-reference">`
+    + `<h3 id="guide-h-reference" tabindex="-1">Reference</h3>`
+    + `<p class="guide-intro">Each part of the explorer in detail. The ⓘ buttons of the explorer link to these sections.</p>`
+    + `<div class="guide-layout"><nav class="guide-toc" aria-label="Guide contents">`
     + `<details id="guide-toc"${mobile ? "" : " open"}><summary>Contents</summary><ol>${toc}</ol></details></nav>`
-    + `<article class="guide">${body}</article></div>`;
+    + `<article class="guide">${body}</article></div></section></div>`;
 }
 
 function renderGuide(section) {
   view(guideHtml(section, { mobile: assistantIsMobile() }));
-  guideTarget = GUIDE_IDS.includes(section) ? section : null;
+  bindGuide();
+  guideTarget = GUIDE_IDS.includes(section) || GUIDE_PART_IDS.includes(section) ? section : null;
+}
+
+/** Screenshot zoom (a modal dialog: Escape and a click close it) and the "Try it" link that opens the assistant. */
+function bindGuide() {
+  const root = $("view");
+  root.querySelectorAll("button[data-zoom]").forEach((button) => button.addEventListener("click", () => {
+    const img = button.querySelector("img");
+    const dialog = document.createElement("dialog");
+    dialog.className = "guide-zoom";
+    dialog.setAttribute("aria-label", img.alt);
+    dialog.innerHTML = `<img src="${esc(img.getAttribute("src"))}" alt="${esc(img.alt)}" width="1440" height="860">`;
+    dialog.addEventListener("click", () => dialog.close());
+    dialog.addEventListener("close", () => { dialog.remove(); if (button.isConnected) button.focus(); });
+    document.body.append(dialog);
+    dialog.showModal();
+  }));
+  root.querySelectorAll("a[data-guide-assistant]").forEach((a) => a.addEventListener("click", () => openAssistant({ focus: false })));
 }
 
 /** After the render (and the heading focus): bring the requested section into view and give it the focus. */
