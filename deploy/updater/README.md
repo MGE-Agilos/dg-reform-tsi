@@ -138,6 +138,40 @@ one, the English meaning is given in parentheses.
     Default tag `data-YYYY-MM-DD` (option `--tag` if a release of the day already exists; nothing is
     overwritten).
 
+## Optional AI batches (Claude subscription)
+
+Two optional commands enrich the web explorer. They are **not** part of `update.ps1` and do **not** use the
+configured LLM provider (EC GPT / OpenAI): they always go through the **Claude Code CLI** with a Claude
+subscription (`claude` command installed and logged in). They are slow, so run them in small batches; on the
+subscription limit they stop cleanly (exit code 1) and the next run resumes where they stopped (work already done
+is skipped).
+
+- **`impact-batch`**: impact analyses (the same analysis as the *Impact analysis* tab of the local chatbot, with
+  web searches; several minutes per project). It needs the local vector index (`index`, extra `.[local]`) and the
+  local chat server must be stopped. Reports go to `output\impact\<project_id>.md`; projects that already have a
+  report are skipped unless `--redo`. Default `--limit 10`. Order: projects linked to a CSR with achieved results
+  first, most recent first (or the order of `--ids`).
+  ```powershell
+  .venv\Scripts\python.exe -m tsi_agent impact-batch --country LT --linked-only --limit 3
+  .venv\Scripts\python.exe -m tsi_agent impact-batch --ids <project_id> <project_id> --redo
+  ```
+  Filters: `--country` (ISO code or name), `--policy-area`, `--programme`, `--results achieved|expected`,
+  `--year-from`, `--year-to`, `--linked-only`, `--ids`. `--time-budget-min N`: no new analysis after N minutes
+  (exit code 124). A progress line per project, then a JSON summary (done, skipped, failed, remaining).
+- **`csr-related`**: for each Commission recommendation of 2026 (`--year` for another year), the past projects on
+  the same subject, in the same country (up to 12 candidates) and in other countries (up to 8), judged by one Claude
+  call per recommendation (`csr_related_model`, Sonnet by default). Candidates come from the local vector index; if
+  it is missing or locked (chat server running), from word overlap with the project titles and summaries
+  (`--keyword-only` forces this). Results are cached in `output\csr_related\<csr_id>.json`; `--redo` redoes them.
+  ```powershell
+  .venv\Scripts\python.exe -m tsi_agent csr-related --country LT --limit 2
+  ```
+
+Then `supabase-sync` publishes the reports (`impact_reports`) and the related projects (`csr_related_projects`,
+after the migration `supabase/migrations/006_reviews_related.sql`; without it, the table is skipped with a warning).
+The testers' reviews of the project -> CSR links (`link_reviews`) are written from the web page and are never
+touched by `supabase-sync`.
+
 ## Scheduled update on this PC
 
 The monthly update runs on this PC, as a Windows scheduled task: the Commission site answers HTTP 429 (too many

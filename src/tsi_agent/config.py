@@ -68,6 +68,8 @@ class Settings(BaseModel):
     impact_llm_timeout_s: int = 600  # le rapport final est long
     web_search_model: str = "haiku"
     web_search_timeout_s: int = 180
+    # Projets passes lies aux recommandations de la Commission (`csr-related`, CLI Claude) : modele plus rapide.
+    csr_related_model: str = "sonnet"
 
 
 def sitemap_options(settings: Settings) -> dict[str, Any]:

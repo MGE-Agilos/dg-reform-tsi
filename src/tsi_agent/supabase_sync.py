@@ -6,6 +6,10 @@ suivi par git. La table `testers` n'est jamais touchee.
 
 Les analyses d'impact (`impact_reports`) sont gerees a part : seules les lignes `source = 'local'` (rapports
 output/impact/*.md) sont remplacees ; les analyses lancees depuis la page (`source = 'web'`) ne sont jamais supprimees.
+
+`csr_related_projects` (migration 006, output/csr_related/*.json de `csr-related`) est remplacee en entier, apres les
+autres tables ; si la table n'existe pas encore (migration non appliquee), elle est sautee avec un avertissement.
+`link_reviews` (avis des testeurs, ecrits depuis la page) n'est JAMAIS lue, videe ni ecrite par la synchronisation.
 """
 
 import json
@@ -22,6 +26,7 @@ from tsi_agent.anomalies import detect, load_csr_links, load_projects, load_publ
 from tsi_agent.chunking import INTRO, SUMMARY, split_sections
 from tsi_agent.csr import build_documents
 from tsi_agent.csr_commission import load_all_csrs
+from tsi_agent.csr_related import load_related_rows
 from tsi_agent.llm import read_dotenv
 from tsi_agent.render import parse_front_matter
 
@@ -36,6 +41,9 @@ DELETE_FILTER = {"projects": "project_id=not.is.null", "csr_documents": "doc_id=
                  "csr_parts": "part_id=not.is.null", "project_csr_links": "project_id=not.is.null",
                  "anomalies": "id=not.is.null"}
 IMPACT_TABLE = "impact_reports"
+RELATED_TABLE = "csr_related_projects"
+# Tables que la synchronisation ne doit jamais toucher (ecrites ailleurs) : garde-fou verifie dans push.
+PROTECTED_TABLES = ("testers", "link_reviews")
 IMPACT_LEVELS = ("strong", "moderate", "weak")
 IMPACT_CONFIDENCE = ("high", "medium", "low")
 BATCH = 500
@@ -170,8 +178,10 @@ def build_rows(output_dir: Path, current_year: int | None = None) -> dict[str, l
     anomalies = [{**asdict(a), "project_id": a.project_id or None}
                  for a in detect(load_projects(output_dir), load_publications(output_dir),
                                  current_year or date.today().year, csr_links=load_csr_links(output_dir))]
+    csr_ids = {c["csr_id"] for c in csr_rows}
+    related = [r for r in load_related_rows(output_dir) if r["csr_id"] in csr_ids and r["project_id"] in project_ids]
     return {"projects": projects, "csr_documents": doc_rows, "csrs": csr_rows, "csr_parts": part_rows, "project_csr_links": links,
-            "anomalies": anomalies, IMPACT_TABLE: impact_rows(output_dir)}
+            "anomalies": anomalies, IMPACT_TABLE: impact_rows(output_dir), RELATED_TABLE: related}
 
 
 class SyncError(RuntimeError):
@@ -194,6 +204,12 @@ def _check(resp: httpx.Response, table: str, action: str) -> None:
         raise SyncError(f"{action} {table}: HTTP {resp.status_code} {resp.text[:500]}")
 
 
+def _table_missing(resp: httpx.Response) -> bool:
+    """PostgREST : table absente du schema (PGRST205, ou 42P01 cote Postgres), en general HTTP 404."""
+    text = resp.text or ""
+    return resp.status_code == 404 or "PGRST205" in text or "42P01" in text
+
+
 def push(rows: dict[str, list[dict[str, Any]]], url: str, key: str, *, client: httpx.Client | None = None,
          backup: Path | None = None) -> dict[str, int]:
     """Remplace le contenu des tables (sauf testers) ; sauvegarde JSON des lignes avant toute suppression.
@@ -201,8 +217,16 @@ def push(rows: dict[str, list[dict[str, Any]]], url: str, key: str, *, client: h
     Si `rows` contient `impact_reports` : apres les autres tables, suppression des seules lignes source=local puis
     insertion des rapports locaux ; les analyses 'web' ne sont jamais supprimees.
 
+    Si `rows` contient `csr_related_projects` : remplacement complet en dernier ; table absente (migration 006 non
+    appliquee) -> sautee, avertissement dans `warnings` du resume. Les tables PROTECTED_TABLES (testers,
+    link_reviews) ne sont jamais touchees.
+
     Non transactionnel : en cas d'echec, les tables peuvent rester vides ou partielles -> relancer supabase-sync.
     """
+    touched = {*DELETE_ORDER, *INSERT_ORDER, *(t for t in (IMPACT_TABLE, RELATED_TABLE) if t in rows)}
+    if touched & set(PROTECTED_TABLES):  # garde-fou : jamais de suppression ni d'ecriture sur ces tables
+        raise SyncError(f"tables protegees dans la synchronisation : {sorted(touched & set(PROTECTED_TABLES))}")
+    warnings: list[str] = []
     if backup is not None:
         backup.parent.mkdir(parents=True, exist_ok=True)
         backup.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
@@ -227,10 +251,26 @@ def push(rows: dict[str, list[dict[str, Any]]], url: str, key: str, *, client: h
                 _check(client.post(f"{url}/rest/v1/{IMPACT_TABLE}", headers=headers,
                                    content=json.dumps(data[start:start + BATCH], ensure_ascii=False)), IMPACT_TABLE,
                        "insert")
+        if RELATED_TABLE in rows:
+            resp = client.delete(f"{url}/rest/v1/{RELATED_TABLE}?csr_id=not.is.null", headers=headers)
+            if resp.status_code >= 300 and _table_missing(resp):
+                warnings.append(f"table {RELATED_TABLE} absente (appliquer supabase/migrations/006_reviews_related.sql)"
+                                " : non synchronisee")
+            else:
+                _check(resp, RELATED_TABLE, "delete")
+                data = rows.get(RELATED_TABLE) or []
+                for start in range(0, len(data), BATCH):
+                    _check(client.post(f"{url}/rest/v1/{RELATED_TABLE}", headers=headers,
+                                       content=json.dumps(data[start:start + BATCH], ensure_ascii=False)),
+                           RELATED_TABLE, "insert")
     finally:
         if own:
             client.close()
     summary = {table: len(rows.get(table) or []) for table in INSERT_ORDER}
     if IMPACT_TABLE in rows:
         summary[IMPACT_TABLE] = len(rows.get(IMPACT_TABLE) or [])
+    if RELATED_TABLE in rows:
+        summary[RELATED_TABLE] = 0 if warnings else len(rows.get(RELATED_TABLE) or [])
+    if warnings:
+        summary["warnings"] = warnings
     return summary
