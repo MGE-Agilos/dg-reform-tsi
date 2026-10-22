@@ -78,7 +78,8 @@ def make_output(tmp_path):
 def test_build_rows_tables_and_projects(tmp_path):
     rows = build_rows(make_output(tmp_path), current_year=2026)
     assert list(TABLES) == ["projects", "csr_documents", "csrs", "csr_parts", "project_csr_links", "anomalies"]
-    assert list(rows) == [*TABLES, "impact_reports"] and rows["impact_reports"] == []
+    assert list(rows) == [*TABLES, "impact_reports", "csr_related_projects"] and rows["impact_reports"] == []
+    assert rows["csr_related_projects"] == []
     p1, p2 = sorted(rows["projects"], key=lambda r: r["project_id"])
     assert p1 == {"project_id": "p1", "title": "Public administration reform", "programme": "TSI", "year": 2024,
                   "countries": ["HR"], "policy_area": "public-administration-and-governance", "results": "achieved",
@@ -293,3 +294,65 @@ def test_build_rows_include_commission_recommendations_and_their_documents(tmp_p
     assert all(c["assessment"] is None and c["doc_id"] == "csrdoc-HR-2026" for c in new)
     assert [p["part_id"] for p in rows["csr_parts"] if p["year"] == 2026] == ["csr-HR-2026-1", "csr-HR-2026-2"]
     assert all(set(r) == set(rows["csrs"][0]) for r in rows["csrs"])  # memes cles (insertion groupee)
+
+
+def test_build_rows_csr_related_only_known_csrs_and_projects(tmp_path):
+    out = make_output(tmp_path)
+    d = out / "csr_related"
+    d.mkdir()
+    related = [{"project_id": "p1", "relevance": "high", "scope": "same_country", "rationale": "Same reform."},
+               {"project_id": "ghost", "relevance": "medium", "scope": "other_country", "rationale": "x"}]
+    (d / "csr-HR-2022-1.json").write_text(json.dumps({"csr_id": "csr-HR-2022-1", "status": "ok",
+                                                      "related": related}), encoding="utf-8")
+    (d / "csr-XX-2026-1.json").write_text(json.dumps({"csr_id": "csr-XX-2026-1", "status": "ok",
+                                                      "related": related[:1]}), encoding="utf-8")
+    rows = build_rows(out, current_year=2026)
+    assert rows["csr_related_projects"] == [{"csr_id": "csr-HR-2022-1", "project_id": "p1", "relevance": "high",
+                                             "scope": "same_country", "rationale": "Same reform."}]
+
+
+def test_push_replaces_csr_related_last_and_never_touches_reviews(tmp_path):
+    rows = {t: [] for t in TABLES}
+    rows["impact_reports"] = []
+    rows["csr_related_projects"] = [{"csr_id": "c", "project_id": "p", "relevance": "high",
+                                     "scope": "same_country", "rationale": "r"}]
+    rows["link_reviews"] = [{"project_id": "p", "part_id": "x", "status": "confirmed"}]  # ignore : jamais envoye
+    calls, client = recorder()
+    summary = push(rows, "https://abc.supabase.co", "k", client=client, backup=tmp_path / "r.json")
+    methods = [(m, p.removeprefix("/rest/v1/"), q) for m, p, q, *_ in calls]
+    assert methods[-2:] == [("DELETE", "csr_related_projects", "csr_id=not.is.null"),
+                            ("POST", "csr_related_projects", "")]
+    assert not any(p in ("link_reviews", "testers", "link_review_latest") for _, p, _ in methods)
+    assert summary["csr_related_projects"] == 1 and "warnings" not in summary
+
+
+def test_push_skips_missing_csr_related_table_with_a_warning(tmp_path):
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.path))
+        if request.url.path.endswith("csr_related_projects"):
+            return httpx.Response(404, json={"code": "PGRST205", "message": "Could not find the table"})
+        return httpx.Response(204 if request.method == "DELETE" else 201)
+    rows = {t: [] for t in TABLES}
+    rows["projects"] = [{"project_id": "p"}]
+    rows["csr_related_projects"] = [{"csr_id": "c", "project_id": "p"}]
+    summary = push(rows, "https://abc.supabase.co", "k", client=httpx.Client(transport=httpx.MockTransport(handler)),
+                   backup=tmp_path / "r.json")
+    assert ("POST", "/rest/v1/projects") in calls
+    assert [c for c in calls if c[1].endswith("csr_related_projects")] == [("DELETE", "/rest/v1/csr_related_projects")]
+    assert summary["csr_related_projects"] == 0 and "006_reviews_related.sql" in summary["warnings"][0]
+
+
+def test_push_other_csr_related_errors_still_fail(tmp_path):
+    calls, client = recorder(fail_on=("POST", "/rest/v1/csr_related_projects"))
+    rows = {t: [] for t in TABLES}
+    rows["csr_related_projects"] = [{"csr_id": "c", "project_id": "p"}]
+    with pytest.raises(SyncError, match="csr_related_projects.*400"):
+        push(rows, "https://abc.supabase.co", "k", client=client, backup=tmp_path / "r.json")
+
+
+def test_protected_tables_are_not_in_the_sync_lists():
+    from tsi_agent.supabase_sync import DELETE_ORDER, INSERT_ORDER, PROTECTED_TABLES
+    assert set(PROTECTED_TABLES) == {"testers", "link_reviews"}
+    assert not set(PROTECTED_TABLES) & {*DELETE_ORDER, *INSERT_ORDER, "impact_reports", "csr_related_projects"}

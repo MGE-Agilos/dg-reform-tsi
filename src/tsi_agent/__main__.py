@@ -93,6 +93,30 @@ def main(argv: list[str] | None = None) -> int:
     rescore = sub.add_parser("impact-rescore",
                              help="recalculer le score d'impact (0-10) des rapports existants, sans nouvelle analyse")
     rescore.add_argument("project_ids", nargs="*", help="identifiants des projets (défaut : tous les rapports)")
+    batch = sub.add_parser("impact-batch",
+                           help="analyses d'impact en lot (CLI Claude, souscription ; reprise sur quota)")
+    batch.add_argument("--country", help="code ISO ou nom du pays, ex. LT ou Lithuania")
+    batch.add_argument("--policy-area", help="domaine (slug), ex. green-transition")
+    batch.add_argument("--programme", help="TSI, SRSP ou SRSS")
+    batch.add_argument("--results", choices=["achieved", "expected"], help="résultats publiés du projet")
+    batch.add_argument("--year-from", type=int)
+    batch.add_argument("--year-to", type=int)
+    batch.add_argument("--linked-only", action="store_true", help="projets liés à au moins une CSR (csr-link)")
+    batch.add_argument("--ids", nargs="+", help="identifiants des projets (dans cet ordre)")
+    batch.add_argument("--limit", type=int, default=10, help="analyses lancées au plus (défaut : 10)")
+    batch.add_argument("--redo", action="store_true", help="refaire les projets qui ont déjà un rapport")
+    batch.add_argument("--time-budget-min", type=float,
+                       help="pas de nouvelle analyse après N minutes (code de sortie 124)")
+    batch.add_argument("--verbose", action="store_true", help="afficher les étapes de chaque analyse")
+    related = sub.add_parser("csr-related", help="projets passés sur le même sujet que chaque recommandation de la "
+                                                 "Commission (CLI Claude, souscription ; cache, reprise sur quota)")
+    related.add_argument("--year", type=int, help="année des recommandations (défaut : 2026)")
+    related.add_argument("--country", help="codes ISO ou noms, séparés par des virgules, ex. LT,LV")
+    related.add_argument("--limit", type=int, help="recommandations envoyées au LLM au plus")
+    related.add_argument("--redo", action="store_true", help="refaire les recommandations déjà traitées")
+    related.add_argument("--keyword-only", action="store_true",
+                         help="candidats par mots seulement, sans la couche vectorisée")
+    related.add_argument("--model", help="modèle du CLI Claude (défaut : réglage csr_related_model)")
     ev = sub.add_parser("eval-retrieval",
                         help="banc de recherche : la recherche retrouve-t-elle le bon passage ? (chatbot arrêté)")
     ev.add_argument("--questions-file", help="jeu de questions (défaut : <out-dir>/questions.jsonl, réutilisé)")
@@ -317,7 +341,9 @@ def main(argv: list[str] | None = None) -> int:
         except (SyncError, httpx.HTTPError, OSError) as exc:
             print(f"ERREUR : {exc} — relancer supabase-sync (les tables peuvent etre partielles)", file=sys.stderr)
             return 1
-        print(json.dumps(summary, indent=2))
+        for warning in summary.get("warnings") or []:
+            print(f"ATTENTION : {warning}", file=sys.stderr)
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
         return 0
     if args.command == "impact-rescore":
         from tsi_agent.impact import scoring
@@ -336,6 +362,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{r['project_id']} {r['impact_score']}/10 {r['impact_level']}")
         print(f"Coût total : {out['cost_usd']:.4f} $ — run {out['run_id']}")
         return 2 if errors else 0
+    if args.command == "impact-batch":
+        return _impact_batch(settings, args)
+    if args.command == "csr-related":
+        return _csr_related(settings, args)
     if args.command == "eval-retrieval":
         from tsi_agent.eval import runner as eval_runner
         try:
@@ -432,6 +462,115 @@ def main(argv: list[str] | None = None) -> int:
         print(format_discovery(report, discovery["file"]))
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     return run_exit_code(summary)
+
+
+def _err(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
+def _claude_cli_missing() -> bool:
+    """Lots IA de la souscription : le CLI `claude` doit etre installe (quel que soit llm_provider)."""
+    import shutil
+    if shutil.which("claude") is None:
+        _err("ERREUR : commande `claude` introuvable : ce lot passe par le CLI Claude (souscription), pas par "
+             "le fournisseur openai / EC GPT")
+        return True
+    return False
+
+
+def _impact_batch(settings: Settings, args: argparse.Namespace) -> int:
+    from tsi_agent.impact import batch
+    from tsi_agent.impact.catalog import load_project_records
+    country = None
+    if args.country:
+        country = batch.country_iso(args.country)
+        if country is None:
+            _err(f"ERREUR : pays inconnu : {args.country}")
+            return 2
+    selected, unknown = batch.select_projects(
+        load_project_records(settings.output_dir), country=country, policy_area=args.policy_area,
+        programme=args.programme, results=args.results, year_from=args.year_from, year_to=args.year_to,
+        linked_only=args.linked_only, ids=args.ids)
+    for pid in unknown:
+        _err(f"ATTENTION : projet inconnu : {pid}")
+    pending = [p for p in selected if args.redo or not batch.has_report(settings.impact_dir, p["project_id"])]
+    runner = None
+    if pending and (args.limit is None or args.limit > 0):
+        if _claude_cli_missing():
+            return 2
+        try:
+            from tsi_agent.impact.pipeline import build_impact_pipeline
+            from tsi_agent.impact.scoring import default_scorer
+            from tsi_agent.impact.service import analyse, default_report_formatter
+            pipeline = build_impact_pipeline(settings)
+            pipeline.warm_up()
+            formatter, scorer = default_report_formatter(settings), default_scorer(settings)
+        except Exception as exc:  # index absent ou verrouille (chatbot lance ?), extra [local] manquant
+            _err(f"ERREUR : pipeline d'impact indisponible : {exc}")
+            return 2
+
+        def runner(project_id: str, meta: dict) -> dict:
+            on_step = (lambda text: _err(f"      {text}")) if args.verbose else None
+            return analyse(pipeline, project_id, settings=settings, project_meta=meta, on_step=on_step,
+                           formatter=formatter, scorer=scorer)
+    summary = batch.run_batch(selected, runner or (lambda pid, meta: {}), impact_dir=settings.impact_dir,
+                              limit=args.limit, redo=args.redo,
+                              time_budget_s=args.time_budget_min * 60 if args.time_budget_min else None, log=_err)
+    if unknown:
+        summary["unknown"] = unknown
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return batch.exit_code(summary)
+
+
+def _csr_related(settings: Settings, args: argparse.Namespace) -> int:
+    from tsi_agent import csr_related, runlog
+    from tsi_agent.chat.generator import LoggedChatGenerator
+    from tsi_agent.components.claude_cli import ClaudeCliChatGenerator
+    from tsi_agent.csr_commission import YEAR
+    from tsi_agent.impact.batch import country_iso
+    from tsi_agent.impact.catalog import load_project_records
+    countries = None
+    if args.country:
+        countries = [country_iso(c) for c in args.country.split(",") if c.strip()]
+        if None in countries:
+            _err(f"ERREUR : pays inconnu dans {args.country}")
+            return 2
+    year = args.year or YEAR
+    recs = csr_related.load_recommendations(settings.output_dir, year, countries)
+    if not recs:
+        _err(f"ERREUR : aucune recommandation {year} dans {Path(settings.output_dir) / 'csr'} "
+             "(lancer d'abord `python -m tsi_agent csr-build`)")
+        return 2
+    projects = load_project_records(settings.output_dir)
+
+    def finder_factory():
+        if not args.keyword_only:
+            try:
+                from tsi_agent.chat.pipeline import default_text_embedder, open_vector_store
+                from tsi_agent.qdrant_local import LocalQdrantEmbeddingRetriever
+                store = open_vector_store(settings)
+                embedder = default_text_embedder(settings)
+                embedder.warm_up()
+                return csr_related.VectorCandidates(embedder, LocalQdrantEmbeddingRetriever(document_store=store),
+                                                    projects)
+            except Exception as exc:  # index absent ou verrouille (chatbot lance ?), extra [local] manquant
+                _err(f"ATTENTION : couche vectorisee indisponible ({exc}) : candidats par mots seulement")
+        return csr_related.KeywordCandidates(projects)
+
+    if _claude_cli_missing():
+        return 2
+    generator = LoggedChatGenerator(chat_generator=ClaudeCliChatGenerator(
+        model=args.model or settings.csr_related_model, timeout_s=settings.llm_timeout_s,
+        json_schema=csr_related.RELATED_SCHEMA), pricing=settings.pricing)
+    with runlog.open_run(settings.logs_dir) as run:
+        summary = csr_related.run_related(settings.output_dir, recs, projects, generator, finder_factory,
+                                          limit=args.limit, redo=args.redo, log=_err)
+        run.extra.update({"mode": "csr_related", "done": len(summary["done"]), "failed": len(summary["failed"]),
+                          "quota_exceeded": summary["quota_exceeded"]})
+    print(json.dumps({**summary, "run": run.final_summary.get("run_id"),
+                      "cost_usd": run.final_summary.get("cost_usd"),
+                      "duration_s": run.final_summary.get("duration_s")}, indent=2, ensure_ascii=False))
+    return 1 if summary["quota_exceeded"] else 0
 
 
 def _commission(settings: Settings, fetch_missing: bool):

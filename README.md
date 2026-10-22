@@ -420,6 +420,33 @@ jauge. Pour recalculer le score des rapports existants sans relancer l'analyse :
 .venv\Scripts\python -m tsi_agent impact-rescore <project_id> ...
 ```
 
+En lot, sans la page (CLI Claude de la souscription ; chatbot arrêté, couche vectorisée requise) : les projets qui
+ont déjà un rapport sont sautés (sauf `--redo`), le lot s'arrête proprement sur quota (code 1) et la relance reprend.
+Ordre : projets liés à une CSR avec résultats atteints, puis les plus récents (ou l'ordre de `--ids`).
+
+```powershell
+.venv\Scripts\python -m tsi_agent impact-batch --country LT --linked-only --limit 3
+.venv\Scripts\python -m tsi_agent impact-batch --policy-area green-transition --results achieved --time-budget-min 120
+.venv\Scripts\python -m tsi_agent impact-batch --ids <project_id> ... --redo
+```
+
+Filtres : `--country` (code ISO ou nom), `--policy-area`, `--programme`, `--results achieved|expected`,
+`--year-from`/`--year-to`, `--linked-only` (au moins un lien CSR), `--ids` ; `--limit` (10 par défaut) ;
+`--time-budget-min` (pas de nouvelle analyse après N minutes, code 124). Résumé JSON final : done, skipped, failed,
+remaining.
+
+**Projets passés liés aux recommandations 2026 (`csr-related`)** : pour chaque recommandation de la Commission
+(`output/csr/csr-<ISO>-2026-<n>.md`, `--year` pour une autre année), jusqu'à 12 projets candidats du même pays et 8
+d'autres pays (couche vectorisée locale ; à défaut, ou avec `--keyword-only`, recouvrement de mots avec titre et
+résumé), puis un appel du CLI Claude par recommandation (`csr_related_model`, Sonnet) qui garde les projets
+pertinents (`high` / `medium`, portée `same_country` / `other_country`, justification en deux phrases au plus).
+Cache dans `output/csr_related/<csr_id>.json` (relance : recommandations déjà traitées sautées, `--redo` pour les
+refaire) ; reprise sur quota (code 1) ; options `--country`, `--limit`, `--model`.
+
+```powershell
+.venv\Scripts\python -m tsi_agent csr-related --country LT --limit 2
+```
+
 Réglages (`config/settings.yaml`) : `impact_model`, `impact_score_model`, `impact_max_steps` (appels LLM par analyse),
 `impact_max_searches` (recherches web par analyse), `impact_page_words` (texte d'une page transmis à l'agent),
 `impact_page_max_mb` (taille maximale d'une page téléchargée), `impact_project_chars`, `impact_llm_timeout_s`,
@@ -525,7 +552,9 @@ Mise à jour des données, après chaque mise à jour du corpus (`run`, `deliver
 .venv\Scripts\python -m tsi_agent supabase-sync
 ```
 
-La commande remplace le contenu des tables (sauf `testers`) et sauvegarde d'abord les lignes envoyées dans
+La commande remplace le contenu des tables (sauf `testers` et `link_reviews`, les avis des testeurs écrits depuis
+la page, jamais touchés ; `impact_reports` : seulement les rapports locaux ; `csr_related_projects` : sautée avec un
+avertissement tant que la migration `006_reviews_related.sql` n'est pas appliquée) et sauvegarde d'abord les lignes envoyées dans
 `output/state/supabase_rows.json`. Elle lit `SUPABASE_URL` et `SUPABASE_SERVICE_KEY` (clé `service_role`) dans
 l'environnement ou dans `.env`. **Cette clé ne doit jamais être commitée** (`.env` est dans `.gitignore`) ni copiée
 dans `web/`.

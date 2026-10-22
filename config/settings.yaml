@@ -63,3 +63,6 @@ impact_project_chars: 20000
 impact_llm_timeout_s: 600
 web_search_model: haiku     # la recherche web elle-meme (CLI claude, outil WebSearch)
 web_search_timeout_s: 180
+
+# Lots IA optionnels (CLI Claude, souscription) : impact-batch utilise impact_model ; csr-related ce modele
+csr_related_model: sonnet   # projets passes sur le meme sujet qu'une recommandation 2026 (un appel par recommandation)
