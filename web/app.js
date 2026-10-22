@@ -1673,6 +1673,19 @@ const INFO = {
       <p>Assessments are counted per recommendation; a document's <em>main assessment</em> is the most frequent latest
         assessment of its recommendations.</p>`,
   }),
+  linklevel: () => ({
+    title: "Link level",
+    html: `<p>How strongly a project supports a recommendation. The level is <strong>assessed by AI</strong> from the published
+      project text, one CSR sub-part at a time: it is not an official classification, so verify before use.</p><ul>
+      <li><strong>Direct</strong>: the project's objective is to design or implement what the CSR recommends
+        (e.g. the CSR asks for a pension reform and the project supports that very reform).</li>
+      <li><strong>Partial</strong>: the project contributes to one aspect of the recommendation, or to a precondition for it
+        (e.g. the CSR asks for a more efficient public administration and the project digitalises one service).</li></ul>
+      <p>In the Sankey, Network and Sunburst views a recommendation–project pair counts as <em>direct</em> when at least one of its
+      sub-part links is direct, and <em>partial</em> otherwise. <strong>All</strong> shows both.</p>
+      <p>This is not the CSR claimed by the country in its request (self-declared in JIRA): that one will appear in the
+      <em>Initial request</em> stage once the JIRA export is available.</p>`,
+  }),
   links: () => ({
     title: "Project–CSR links",
     html: `<p>Links assessed by AI from the project text: verify before use.</p><ul>
@@ -1726,7 +1739,7 @@ const INFO = {
   }),
 };
 
-const INFO_GUIDE = { results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", request: "lineage", overview: "lineage" };
+const INFO_GUIDE = { results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", linklevel: "lineage", request: "lineage", overview: "lineage" };
 
 function infoButton(key, label = "About this chart") {
   return `<button type="button" class="info-btn" data-info="${key}" aria-label="${esc(label)}" aria-haspopup="dialog">ⓘ</button>`;
@@ -3695,7 +3708,7 @@ function ovFiltersHtml(years) {
   return `<div class="card filters ov-filters" role="group" aria-label="Filters of the Sankey, Network and Sunburst views">`
     + `<label class="field field-half"><span>CSR years from</span><select id="ov-from">${opts(ovState.from)}</select></label>`
     + `<label class="field field-half"><span>to</span><select id="ov-to">${opts(ovState.to)}</select></label>`
-    + `<div class="field"><span id="ov-level-l">Link level</span><div class="seg-group ov-level" role="group" aria-labelledby="ov-level-l">${lv}</div></div></div>`;
+    + `<div class="field"><span><span id="ov-level-l">Link level</span> ${infoButton("linklevel", "About link levels")}</span><div class="seg-group ov-level" role="group" aria-labelledby="ov-level-l">${lv}</div></div></div>`;
 }
 
 /** Keeps the address in step with the view (no new history entry, no re-render) and the sub-tab links up to date. */
