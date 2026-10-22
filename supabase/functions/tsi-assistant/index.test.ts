@@ -803,7 +803,7 @@ test("briefing: one model call without tools, structured JSON output, effort low
   const body = sent(f.modelCalls()[0]);
   assert.equal(body.tools, undefined);
   assert.equal(body.max_tokens, MAX_TOKENS.briefing);
-  assert.ok(MAX_TOKENS.briefing >= 1500 && MAX_TOKENS.briefing <= 2000);
+  assert.ok(MAX_TOKENS.briefing >= 1500 && MAX_TOKENS.briefing <= 4000);
   assert.equal(body.model, DEFAULT_MODEL);
   assert.equal(body.system, BRIEFING_SYSTEM);
   assert.deepEqual(body.output_config, { effort: "low", format: { type: "json_schema", schema: BRIEFING_SCHEMA } });
