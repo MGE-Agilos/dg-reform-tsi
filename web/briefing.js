@@ -124,7 +124,8 @@ export function latestImpacts(rows) {
  * The briefing model.
  * raw: { projects (country, years in period), linked (projects linked to the country's CSRs, any year), docs
  * (csr_documents of the country), csrs (with csr_parts(part_id, policy_areas, project_csr_links(project_id, level, basis))),
- * impacts (impact_reports rows, newest first), anomalies (rows of the country) }
+ * impacts (impact_reports rows, newest first), anomalies (rows of the country), related (optional: csr_related_projects rows of the
+ * country's recommendations with projects(title, programme, year, countries), sorted same country and high relevance first) }
  * opts: { country, countryName, from, to, topic (slug or ""), topicLabel, areaLabel(slug), date }
  */
 export function briefingModel(raw, opts) {
@@ -230,6 +231,21 @@ export function briefingModel(raw, opts) {
   const sevRank = { high: 0, medium: 1, low: 2, info: 3 };
   anomalies.sort((a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9) || num(b.year) - num(a.year) || String(a.title).localeCompare(String(b.title)));
 
+  // Latest (2026) recommendations: past projects suggested by AI (csr_related_projects), top 3 each.
+  const relBy = new Map();
+  for (const x of arr(raw.related)) {
+    if (!x?.csr_id || !x.project_id) continue;
+    if (!relBy.has(x.csr_id)) relBy.set(x.csr_id, []);
+    relBy.get(x.csr_id).push(x);
+  }
+  const related = latest && (latest.commission || latest.year >= 2026) ? latest.recs.map((r) => {
+    const list = relBy.get(r.id) || [];
+    return { rec: r, total: list.length, sameCountry: list.filter((x) => x.scope === "same_country").length,
+      projects: list.slice(0, 3).map((x) => ({ id: x.project_id, title: x.projects?.title || x.project_id, year: x.projects?.year ?? "",
+        programme: x.projects?.programme || "", scope: x.scope === "same_country" ? "same_country" : "other_country",
+        relevance: x.relevance === "high" ? "high" : "medium", rationale: clip(x.rationale, 240) })) };
+  }).filter((x) => x.projects.length) : [];
+
   const gaps = assessedRecs.filter((r) => !r.supporters.length)
     .sort((a, b) => Number(weakAssessment(b.assessment)) - Number(weakAssessment(a.assessment)) || b.year - a.year || numOrder(a, b));
 
@@ -260,7 +276,7 @@ export function briefingModel(raw, opts) {
     impacts: impactList, impactMean: scored.length ? scored.reduce((s, p) => s + p.impact.score, 0) / scored.length : null,
     anomalies, anomalyCounts: count(anomalies, (a) => a.severity || "none").map(([k, n]) => ({ key: k, n }))
       .sort((a, b) => (sevRank[a.key] ?? 9) - (sevRank[b.key] ?? 9)),
-    gaps, sources: [...sources.entries()].map(([url, label]) => ({ url, label })),
+    gaps, related, sources: [...sources.entries()].map(([url, label]) => ({ url, label })),
     topicMatch: topic ? { areas: shownRecs.filter((r) => r.match === "areas").length, projects: shownRecs.filter((r) => r.match === "projects").length,
       text: shownRecs.filter((r) => r.match === "text").length, excluded: recs.length - shownRecs.length, labels: [...labels] } : null,
   };
@@ -300,13 +316,19 @@ export function briefingFacts(m) {
         confidence: p.impact.confidence, verdict: clip(p.impact.verdict, lim.verdict) })) },
     gaps: m.gaps.slice(0, lim.gaps).map((r) => ({ id: r.id, summary: clip(r.summary, lim.text), assessment: r.assessment })),
     anomalies: { total: m.anomalies.length, by_severity: Object.fromEntries(m.anomalyCounts.map((a) => [a.key, a.n])) },
+    related_past_projects: m.related?.length && lim.related ? {
+      note: "AI-suggested past projects for the latest (2026) recommendations: leads to build on, not assessed links",
+      items: m.related.slice(0, lim.related).map((x) => ({ csr: x.rec.id, projects: x.projects.map((p) => `${clip(p.title, lim.relTitle)} `
+        + `(${p.year || "n.d."}, ${p.scope === "same_country" ? "same country" : "other country"}, ${p.relevance})`) })),
+    } : undefined,
   });
   const steps = [
-    { text: 200, recs: 40, lineage: 30, projects: 25, impacts: 10, verdict: 260, gaps: 25 },
-    { text: 140, recs: 30, lineage: 20, projects: 20, impacts: 8, verdict: 200, gaps: 20 },
-    { text: 100, recs: 20, lineage: 15, projects: 15, impacts: 6, verdict: 160, gaps: 15 },
-    { text: 70, recs: 12, lineage: 10, projects: 10, impacts: 5, verdict: 120, gaps: 10 },
-    { text: 50, recs: 6, lineage: 6, projects: 6, impacts: 3, verdict: 80, gaps: 6 },
+    { text: 200, recs: 40, lineage: 30, projects: 25, impacts: 10, verdict: 260, gaps: 25, related: 8, relTitle: 90 },
+    { text: 140, recs: 30, lineage: 20, projects: 20, impacts: 8, verdict: 200, gaps: 20, related: 7, relTitle: 80 },
+    { text: 100, recs: 20, lineage: 15, projects: 15, impacts: 6, verdict: 160, gaps: 15, related: 6, relTitle: 70 },
+    { text: 70, recs: 12, lineage: 10, projects: 10, impacts: 5, verdict: 120, gaps: 10, related: 5, relTitle: 60 },
+    { text: 50, recs: 6, lineage: 6, projects: 6, impacts: 3, verdict: 80, gaps: 6, related: 3, relTitle: 50 },
+    { text: 50, recs: 6, lineage: 6, projects: 6, impacts: 3, verdict: 80, gaps: 6, related: 0, relTitle: 0 },
   ];
   let facts;
   for (const lim of steps) {

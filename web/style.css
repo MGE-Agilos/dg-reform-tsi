@@ -730,3 +730,71 @@ div.title-row:has(> h2) { margin-bottom: 12px; }
   .guide-step { padding: 14px; }
   .guide-hero { padding: 16px; }
 }
+
+/* Link review: status chips, the review dialog, the Links to review view and the lineage detail list. */
+.rv-ctl { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: auto; }
+.rv-chip {
+  display: inline-flex; align-items: center; padding: 0 8px; border-radius: 4px; font-size: 0.78rem; font-weight: 700;
+  line-height: 1.7; white-space: nowrap; border: 1px solid currentColor; position: relative; /* contains its .sr-only label */
+}
+.rv-confirmed { color: var(--direct); background: var(--direct-bg); }
+.rv-rejected { color: var(--high); background: var(--high-bg); }
+.rv-to_review { color: var(--partial); background: var(--partial-bg); }
+.rv-none { color: var(--info); background: var(--info-bg); border-style: dashed; }
+.rv-open { font-size: 0.88rem; }
+
+.review-dialog .rv-facts { grid-template-columns: max-content minmax(0, 1fr); margin: 12px 0 6px; }
+.rv-choices { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px 10px; margin: 10px 0; display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.rv-choices legend { font-weight: 600; padding: 0 4px; }
+.rv-choice { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 2px 10px; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+.rv-choice:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.rv-choice input { accent-color: var(--accent); }
+.rv-comment { margin: 6px 0; }
+.rv-comment textarea {
+  width: 100%; box-sizing: border-box; min-height: 72px; resize: vertical; font: inherit; color: var(--fg); background: var(--card);
+  border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px;
+}
+.rv-history-title { font-size: 1rem; margin: 14px 0 6px; }
+.rv-history { list-style: none; padding: 0 !important; margin: 0 !important; display: grid; gap: 8px; }
+.rv-history li { border-left: 3px solid var(--border); padding: 2px 0 2px 10px; margin: 0 !important; }
+.rv-history li:first-child { border-left-color: var(--accent); }
+.rv-history-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.rv-history .prose { margin: 4px 0 0; }
+.rv-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.btn-small { min-height: 32px; padding: 3px 10px; font-size: 0.86rem; }
+.rv-why summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
+.rv-why p { margin: 4px 0 0; overflow-wrap: anywhere; }
+.rv-parts { list-style: none; margin: 4px 0 2px; padding: 0 0 0 12px; display: grid; gap: 4px; }
+.rv-parts li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.rv-parts .rv-ctl { margin-left: 0; }
+.rv-zero { color: var(--high); font-weight: 700; }
+
+/* Related past projects (AI-suggested, 2026 recommendations). */
+.rel-chip { display: inline-block; padding: 0 8px; border-radius: 999px; font-size: 0.76rem; font-weight: 700; line-height: 1.7; white-space: nowrap; }
+.rel-high { color: var(--low); background: var(--low-bg); }
+.rel-medium { color: var(--info); background: var(--info-bg); }
+.related-h { font-size: 0.95rem; margin: 12px 0 8px; }
+.related-mini { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 10px; }
+.related-mini > summary { cursor: pointer; display: list-item; }
+.related-mini[open] > summary { margin-bottom: 4px; }
+.related-none { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 10px; }
+.related-coverage { margin: 0 0 16px; }
+.related-coverage > summary { cursor: pointer; display: list-item; }
+.related-coverage[open] > summary { margin-bottom: 8px; }
+.doc-facts .doc-related { grid-column: 1 / -1; }
+@media (max-width: 600px) {
+  .rv-ctl { margin-left: 0; }
+  .rv-choice { flex: 1 1 100%; }
+}
+@media (max-width: 600px) {
+  .review-dialog .rv-facts { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .review-dialog .rv-facts dd { margin-bottom: 6px; }
+  /* Links to review: one card per link instead of a wide table. */
+  .rv-table table, .rv-table tbody, .rv-table tr, .rv-table td { display: block; }
+  .rv-table thead { display: none; }
+  .rv-table tr { padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .rv-table tbody tr:last-child { border-bottom: 0; }
+  .rv-table td { border: 0; padding: 3px 12px; }
+  .rv-table td.title-cell { min-width: 0; }
+  .rv-table td.nowrap { white-space: normal; }
+}

@@ -725,6 +725,22 @@ export function buildBriefingDocument(D, { model: m, ai = null, aiError = "", ai
   } else children.push(noteLine(D, "Every assessed recommendation of the period has at least one supporting project."));
   const gapComment = ai?.comments?.gaps;
   if (typeof gapComment === "string" && gapComment.trim()) children.push(aiPara(D, gapComment.trim(), "AI-generated suggestions, to verify"));
+  if (m.related?.length) {
+    children.push(headingPara(D, 2, [new D.TextRun(`Latest recommendations (${m.latest?.year ?? ""}): related past projects (AI-suggested)`)]));
+    children.push(noteLine(D, "Not yet supported by a project (too recent): past projects that worked on the same issues, suggested by AI, "
+      + "same country first, at most 3 per recommendation. Leads to build on, not links assessed from the project text: verify before use."));
+    const rows = [["Recommendation", "Related past project", "Scope", "Relevance", "Why (AI-suggested)"].map((h) => headOf(D, h))];
+    for (const x of m.related) {
+      x.projects.forEach((p, i) => rows.push([
+        i ? cellOf(D, "") : runsCell(x.rec.id, [new D.TextRun({ text: x.rec.id, bold: true, ...small }),
+          new D.TextRun({ text: ` — ${clipText(x.rec.summary, 70)}${x.total > x.projects.length ? ` (${x.total} suggested)` : ""}`, ...small })]),
+        cellOf(D, `${p.title}${p.year ? ` (${p.programme ? `${p.programme} ` : ""}${p.year})` : ""}`, small),
+        cellOf(D, p.scope === "same_country" ? "same country" : "other country", { ...small, bold: p.scope === "same_country" }),
+        cellOf(D, p.relevance, small), cellOf(D, p.rationale || "—", small),
+      ]));
+    }
+    children.push(makeTable(D, rows, { widths: cols(2.3, 3.2, 1.1, 0.9, 3.6) }), spacer(D));
+  }
 
   // 7. Data quality
   children.push(headingPara(D, 1, [new D.TextRun("7. Data quality")]));
@@ -753,6 +769,7 @@ export function buildBriefingDocument(D, { model: m, ai = null, aiError = "", ai
     "CSRs: country-specific recommendations of the European Semester; assessments and sub-parts from the ECFIN CSR database. 2026: Commission recommendations, not yet adopted by the Council nor assessed.",
     "Project–CSR links: assessed by an AI model from the project text, one CSR sub-part at a time (direct or partial); projects without a detail page are not linked yet.",
     "Impact analyses: AI-generated (Claude, Anthropic, with web search); latest analysis per project.",
+    ...(m.related?.length ? ["Related past projects (latest recommendations): suggested by an AI model for each 2026 Commission recommendation (same country or other countries, high or medium relevance, with a rationale); leads, not assessed links."] : []),
     "AI summary: key messages and comments written by Claude (Anthropic) only from the figures and lists of this document, without web search. Verify before use.",
     ...(m.topicMatch ? [`Policy area filter: project policy area "${m.topicLabel}"; recommendations matched through the corresponding ECFIN labels (${m.topicMatch.labels.join("; ") || "none"}), through a supporting project of that area, or, when not yet classified, through key words of their text.`] : []),
   ]) children.push(bullet([new D.TextRun({ text: t, size: 19 })]));

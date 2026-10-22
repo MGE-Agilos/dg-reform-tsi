@@ -3,6 +3,7 @@
 // Chat and Impact answers (Markdown) are inserted only after marked + DOMPurify; without them, as escaped text.
 import { SUPABASE_URL, SUPABASE_ANON_KEY, PROXY_URL } from "./config.js";
 import * as B from "./briefing.js";
+import * as R from "./reporting.js";
 
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
 const MARKED_JS = "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
@@ -351,7 +352,7 @@ function stale(seq) {
 }
 
 function setActiveTab(route) {
-  const tab = { project: "projects", csr: "csrs", csrdoc: "csrs" }[route] || route;
+  const tab = { project: "projects", csr: "csrs", csrdoc: "csrs", reviews: "projects" }[route] || route;
   document.querySelectorAll("#tabs a").forEach((a) => {
     if (a.dataset.tab === tab) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });
@@ -359,8 +360,10 @@ function setActiveTab(route) {
 
 // ---------- projects ----------
 
-function projectsQuery(f, opts) {
-  let q = sb.from("projects").select("project_id,title,programme,year,countries,policy_area,detail_page,csrs", opts)
+const PROJECT_LIST_COLS = "project_id,title,programme,year,countries,policy_area,detail_page,csrs";
+
+function projectsQuery(f, opts, cols = PROJECT_LIST_COLS) {
+  let q = sb.from("projects").select(cols, opts)
     .order("year", { ascending: false }).order("title").order("project_id");
   if (f.q) q = q.ilike("title", likePattern(f.q));
   if (f.country) q = q.contains("countries", [f.country]);
@@ -380,7 +383,7 @@ async function renderProjects(p, seq) {
     from: yearOf(p, "from"), to: yearOf(p, "to"), area: pick(p.get("area"), POLICY_AREAS),
     linked: p.get("linked") === "1", detail: p.get("detail") === "1",
   };
-  const res = await fetchPage((opts) => projectsQuery(f, opts), page);
+  const [res, reviews] = await Promise.all([fetchPage((opts) => projectsQuery(f, opts), page), reviewsAvailable()]);
   if (stale(seq)) return;
   if (res.redirectPage) return redirectToPage("projects", p, res.redirectPage);
   const { data, error, count } = res;
@@ -399,19 +402,36 @@ async function renderProjects(p, seq) {
     td(esc(r.programme)), td(esc(r.year), "nowrap"), td(esc(countriesText(r.countries))),
     td(esc(areaLabel(r.policy_area))), td(esc((r.csrs || []).length), "num"),
   ]);
-  view(`${heading("Projects")}${form}${pager("projects", p, page, count)}`
+  const tools = `<div class="toolbar"><span class="muted small">${fmtN(count ?? 0)} project${count === 1 ? "" : "s"} match these filters.</span>`
+    + `<span class="toolbar-actions"><span id="xlsx-note" class="muted small" role="status" aria-live="polite"></span>`
+    + (reviews ? `<a class="btn btn-secondary" href="#reviews">Links to review</a>` : "")
+    + `<button type="button" class="btn btn-secondary" id="xlsx"${count ? "" : " disabled"}>Export to Excel</button></span></div>`;
+  view(`${heading("Projects")}${form}${tools}${pager("projects", p, page, count)}`
     + table(["Title", "Programme", "Year", "Countries", "Policy area", "CSRs"], rows, "No project matches these filters.")
     + (data.length ? pager("projects", p, page, count) : ""));
   bindFilters();
+  $("xlsx").addEventListener("click", () => exportExcel($("xlsx"), $("xlsx-note"), {
+    filters: projectFilterLabels(f),
+    projects: () => pagedRows(() => projectsQuery(f, undefined, REPORT_PROJECT_COLS)),
+  }));
 }
 
-function linkItem(link) {
+/** The Projects filters in words (Notes sheet of the Excel export). */
+function projectFilterLabels(f) {
+  return [
+    f.q ? ["Title contains", f.q] : null, f.country ? ["Country", countryName(f.country)] : null, f.programme ? ["Programme", f.programme] : null,
+    f.from ? ["From year", String(f.from)] : null, f.to ? ["To year", String(f.to)] : null, f.area ? ["Policy area", areaLabel(f.area)] : null,
+    f.linked ? ["Linked to a CSR", "yes"] : null, f.detail ? ["Has a detail page", "yes"] : null,
+  ].filter(Boolean);
+}
+
+function linkItem(link, project) {
   const part = link.csr_parts || {};
   const csr = part.csrs || {};
   const partLabel = part.csr_id ? hashLink("csr", part.csr_id, link.part_id) : esc(link.part_id);
   const basis = link.basis === "title_only" ? `<span class="basis-note">based on the project title only</span>` : "";
   return `<li class="link-item"><div class="link-head">${badge(link.level)}<span class="part-id">${partLabel}</span>`
-    + `<span>${esc(csr.title)}${csr.year ? ` (${esc(csr.year)})` : ""}</span>${basis}</div>`
+    + `<span>${esc(csr.title)}${csr.year ? ` (${esc(csr.year)})` : ""}</span>${basis}${reviewControls(project.project_id, link.part_id, project.title)}</div>`
     + (part.text ? `<p class="prose">${esc(part.text)}</p>` : "")
     + (part.assessment ? `<p><span class="label">Assessment:</span> ${esc(part.assessment)}</p>` : "")
     + `<p><span class="label">Rationale:</span> ${esc(link.rationale)}</p></li>`;
@@ -423,6 +443,7 @@ async function renderProject(id, seq) {
     sb.from("project_csr_links").select("level,rationale,basis,part_id,csr_parts(text,assessment,csr_id,csrs(title,year,country))").eq("project_id", id),
     impactHistoryQuery(id, 1),
   ]);
+  if (!links.error && links.data?.length) await loadReviews(links.data.map((l) => ({ project_id: id, part_id: l.part_id })));
   if (stale(seq)) return;
   if (proj.error) return showError(proj.error, proj.error.code === "PGRST116" ? "Project not found" : "Could not load the project");
   if (links.error) return showError(links.error, "Could not load the CSR links");
@@ -451,11 +472,13 @@ async function renderProject(id, seq) {
   const summary = r.summary
     ? `<div class="card"><h3 class="section-label">Summary <span class="ai-note">AI-generated summary</span></h3><p class="prose">${esc(r.summary)}</p></div>`
     : "";
-  const linksHtml = sorted.length ? `<ul class="link-list">${sorted.map(linkItem).join("")}</ul>` : `<p class="empty">No CSR link assessed.</p>`;
+  const linksHtml = sorted.length ? `<ul class="link-list">${sorted.map((l) => linkItem(l, r)).join("")}</ul>` : `<p class="empty">No CSR link assessed.</p>`;
+  const reviewNote = feature.reviews === true && sorted.length
+    ? `<p class="muted small">Confirm or reject each link with <em>Review</em>: your review is shared with the other users. ${infoButton("linkreview", "About link review")}</p>` : "";
   view(`<a class="back" href="#projects">← Projects</a><div class="card"><h2 class="detail-title" tabindex="-1">${esc(r.title)}</h2>`
     + `<dl class="facts">${facts}</dl>${page}`
     + `${latest.error ? "" : `<div id="impact-latest">${latestImpactHtml(latest.data)}</div>`}</div>${summary}`
-    + `<div class="card"><h3 class="section-label">Supported CSRs (AI-assessed) <span class="muted small">${sorted.length}</span></h3>${linksHtml}</div>`);
+    + `<div class="card"><h3 class="section-label">Supported CSRs (AI-assessed) <span class="muted small">${sorted.length}</span></h3>${reviewNote}${linksHtml}</div>`);
   bindReportToggles($("impact-latest"));
 }
 
@@ -622,9 +645,10 @@ function csrsModeLinks(recsMode, f) {
   return `<p class="seg-group" role="group" aria-label="Show">${a(docs, "By document", !recsMode)}${a(recs, "All recommendations", recsMode)}</p>`;
 }
 
-function docCard(d) {
+function docCard(d, related = null) {
   const s = docStats(d);
   const commission = isCommission(d.stage);
+  const nRelated = related ? relatedProjectCount(related, arr(d.csrs).map((c) => c.csr_id)) : null;
   const assess = commission || !s.dominant ? `<span class="viz-key viz-key-${commission ? "faint" : "muted"}" aria-hidden="true"></span>${commission ? "Not yet assessed" : "—"}`
     : `<span class="viz-key viz-key-${esc(s.dominant.key)}" aria-hidden="true"></span>${esc(s.dominant.label)}`
       + ` <span class="muted">(${s.dominant.n} of ${s.recs})</span>`;
@@ -633,7 +657,10 @@ function docCard(d) {
     + ` <span class="muted small">${esc(d.country)}</span></h4></div>`
     + `<dl class="doc-facts"><div><dt>Recommendations</dt><dd>${fmtN(s.recs)}</dd></div>`
     + `<div><dt>Linked projects</dt><dd>${commission && !s.projects ? `<span class="muted">none yet</span>` : fmtN(s.projects)}</dd></div>`
-    + `<div class="doc-assess"><dt>Main assessment</dt><dd>${assess}</dd></div></dl>`
+    + `<div class="doc-assess"><dt>Main assessment</dt><dd>${assess}</dd></div>`
+    + (nRelated !== null ? `<div class="doc-related"><dt>Related past projects <span class="ai-note">AI</span></dt><dd>${nRelated
+      ? `<a href="${href}" aria-label="${esc(`${nRelated} related past projects: open the document of ${countryName(d.country)}`)}">${fmtN(nRelated)} related past project${nRelated === 1 ? "" : "s"}</a>`
+      : `<span class="muted">none suggested</span>`}</dd></div>` : "") + `</dl>`
     + `<p class="small doc-links"><a href="${href}" aria-label="${esc(`Open the document: ${d.title}`)}">Open the document</a>${d.document_url ? ` · ${docSourceLink(d.document_url, d.stage, { short: true })}` : ""}</p></li>`;
 }
 
@@ -659,6 +686,8 @@ async function renderCsrs(p, seq) {
   if (res.error) return showError(res.error, "Could not load the CSR documents");
   const docs = [...res.docs].sort((a, b) => countryName(a.country).localeCompare(countryName(b.country)));
   const commission = docs.some((d) => isCommission(d.stage));
+  const related = year >= RELATED_YEAR && docs.length ? await loadRelated() : null;
+  if (stale(seq)) return;
   const nRecs = docs.reduce((s, d) => s + docStats(d).recs, 0);
   const others = country ? years.filter((y) => y !== year)
     .map((y) => `<a href="${esc(hrefFor("csrs", { year: y, country }))}">${y}</a>`).join(" · ") : "";
@@ -667,8 +696,9 @@ async function renderCsrs(p, seq) {
   view(`${title}${csrsIntro()}${form}${csrsModeLinks(false, { year: year === years[0] ? "" : year, country })}`
     + (res.derived ? `<p class="muted small" role="note">Documents rebuilt from the recommendations (document table not available yet).</p>` : "")
     + head + (commission ? `<p class="notice-few" role="note">${esc(`${year}: ${COMMISSION_NOTE}`)}</p>` : "")
-    + (docs.length ? `<ul class="doc-grid">${docs.map(docCard).join("")}</ul>`
+    + (docs.length ? `<ul class="doc-grid">${docs.map((d) => docCard(d, related)).join("")}</ul>`
       : `<p class="empty">No CSR document for ${country ? esc(countryName(country)) + " in " : ""}${year}.</p>`)
+    + (related ? relatedCoverageHtml(related, docs, year) : "")
     + (others ? `<p class="small">${esc(countryName(country))} in other years: ${others}</p>` : "")
     + (country ? `<p class="toolbar-actions">${briefingButton(country)}</p>` : ""));
   bindFilters();
@@ -712,7 +742,7 @@ function partBlock(part, { tag = "h3", label = part.part_id, showText = true, sh
     const meta = [pr.programme, pr.year].filter(Boolean).map(esc).join(" · ");
     return `<li class="link-item"><div class="link-head">${badge(l.level)}`
       + `${pr.project_id ? hashLink("project", pr.project_id, pr.title || pr.project_id) : esc(pr.title)}`
-      + `${meta ? `<span class="muted small">${meta}</span>` : ""}</div>`
+      + `${meta ? `<span class="muted small">${meta}</span>` : ""}${reviewControls(pr.project_id, part.part_id, pr.title)}</div>`
       + `<p><span class="label">Rationale:</span> ${esc(l.rationale)}</p></li>`;
   }).join("");
   const areas = arr(part.policy_areas).map(areaLabel).join(", ");
@@ -751,6 +781,12 @@ async function fetchDocument(id) {
   return { doc: deriveDocuments(res.data)[0] || null };
 }
 
+/** Project–sub-part pairs of nested csr_parts(project_csr_links(projects(project_id))) rows (review chips). */
+function partLinkKeys(parts) {
+  return arr(parts).flatMap((pt) => arr(pt?.project_csr_links).map((l) => ({ project_id: l?.projects?.project_id, part_id: pt.part_id })))
+    .filter((k) => k.project_id && k.part_id);
+}
+
 async function renderCsrDoc(id, seq) {
   const res = await fetchDocument(id);
   if (stale(seq)) return;
@@ -759,6 +795,9 @@ async function renderCsrDoc(id, seq) {
   if (!d) return showError({ message: `No document ${id}.` }, "CSR document not found");
   const year = num(d.year);
   const commission = isCommission(d.stage);
+  const keys = partLinkKeys(arr(d.csrs).flatMap((c) => arr(c.csr_parts)));
+  const [, related] = await Promise.all([keys.length ? loadReviews(keys) : null, year >= RELATED_YEAR ? loadRelated() : null]);
+  if (stale(seq)) return;
   const recs = [...arr(d.csrs)].sort(csrNumber);
   const s = docStats(d);
   assistantContext = { kind: "csrdoc", label: `${countryName(d.country)} ${year} · CSR document`,
@@ -784,15 +823,21 @@ async function renderCsrDoc(id, seq) {
     return `<section class="card rec" aria-labelledby="rec-${esc(c.csr_id)}"><div class="rec-head">`
       + `<h3 id="rec-${esc(c.csr_id)}">${hashLink("csr", c.csr_id, `Recommendation ${c.number}`)}</h3>`
       + `<span class="muted small">${whole ? "no sub-part" : `${parts.length} sub-part${parts.length === 1 ? "" : "s"}`}</span></div>`
-      + (c.title ? `<p class="rec-title">${esc(c.title)}</p>` : "") + `<p class="small">${assess}</p>${body}</section>`;
+      + (c.title ? `<p class="rec-title">${esc(c.title)}</p>` : "") + `<p class="small">${assess}</p>${body}`
+      + (related ? relatedBlock(related, c.csr_id, { compact: true }) : "") + `</section>`;
   }).join("");
+  const relatedIntro = related && recs.some((c) => related.byCsr.has(c.csr_id))
+    ? `<div class="card"><div class="title-row"><h3 class="section-label">Related past projects <span class="ai-note">AI-suggested</span></h3>`
+      + `${infoButton("related", "About related past projects")}</div><p class="small">${esc(relatedDocSummary(related, recs))}</p>`
+      + `<p class="muted small">Listed under each recommendation below: past projects that worked on the same issues, same country first. `
+      + `Suggested by AI, not links assessed from the project text: verify before use.</p></div>` : "";
   view(`<nav class="crumbs" aria-label="Breadcrumb"><a href="${esc(hrefFor("csrs", { year }))}">← CSRs ${year}</a></nav>`
     + `<div class="card"><p class="muted small">${esc(countryName(d.country))} · ${year} · CSR document</p>`
     + `<div class="title-row"><h2 class="detail-title" tabindex="-1">${esc(d.title)}</h2>${infoButton("csrlevels", "About the three levels")}</div>`
     + `<dl class="facts">${facts}</dl>`
     + (commission ? `<p class="notice-few" role="note">${esc(COMMISSION_NOTE)}</p>` : "")
     + (d.derived ? `<p class="muted small" role="note">Document rebuilt from its recommendations (document table not available yet).</p>` : "")
-    + `${lineage}</div>`
+    + `${lineage}</div>` + relatedIntro
     + (recBlocks || `<div class="card"><p class="empty">No recommendation in this document.</p></div>`));
 }
 
@@ -815,6 +860,9 @@ async function renderCsr(id, seq) {
   }
   const stage = doc?.stage || derivedStage(num(r.year), [r]);
   const commission = isCommission(stage);
+  const keys = partLinkKeys(parts.data);
+  const [, related] = await Promise.all([keys.length ? loadReviews(keys) : null, num(r.year) >= RELATED_YEAR ? loadRelated() : null]);
+  if (stale(seq)) return;
   const list = [...parts.data].sort((a, b) => String(a.part_id).localeCompare(String(b.part_id), "en", { numeric: true }));
   const whole = wholeRecommendation(r, list);
 
@@ -841,8 +889,590 @@ async function renderCsr(id, seq) {
     + supported + `<p class="prose">${esc(r.text)}</p>`
     + (areas ? `<p class="small"><span class="label">Policy areas:</span> ${esc(areas)}</p>` : "")
     + `${assessment}${source ? `<p class="small">${source}</p>` : ""}${lineage}</div>`
+    + (related ? relatedBlock(related, r.csr_id, { card: true }) : "")
     + (whole ? (commission ? "" : `<div class="card"><h3>Linked projects</h3>${partBlock(list[0], { label: "", showText: false })}</div>`)
       : `<div class="card"><h3>Sub-parts</h3>${list.length ? list.map((pt) => partBlock(pt)).join("") : `<p class="empty">No sub-part.</p>`}</div>`));
+}
+
+// ---------- link reviews and related past projects (migration 006: hidden until its tables exist) ----------
+
+const REVIEW_STATUS = { confirmed: "Confirmed", rejected: "Rejected", to_review: "To review" };
+const REVIEW_COLS = "project_id,part_id,status,comment,reviewer_email,created_at";
+const REVIEW_COMMENT_MAX = 2000;
+const RELATED_YEAR = 2026; // csr_related_projects covers the 2026 Commission recommendations
+const MISSING_CODES = new Set(["42P01", "PGRST205"]); // table or view not created yet (or not in the schema cache)
+const feature = { reviews: null, related: null }; // null: not known yet; then true or false for the session
+const featureProbe = {}; // name -> Promise while probing
+const reviewLatest = new Map(); // reviewKey -> latest review row, or null (checked: none)
+let relatedCache = null; // { uid, byCsr: Map csr_id -> rows (sorted), rows }
+let relatedLoading = null;
+let reviewLinksCache = null; // { uid, rows } for the Links to review view
+let reviewStats = null; // { uid, stats } for the dashboard card
+let reviewOpener = null;
+let reviewTarget = null; // { project_id, part_id, title } of the open review dialog
+
+const reviewKey = R.reviewKey;
+
+/** True when a PostgREST answer says the table does not exist (yet). */
+function relationMissing(res) {
+  const e = res?.error;
+  return Boolean(e) && (res.status === 404 || MISSING_CODES.has(e.code) || /schema cache|does not exist/i.test(e.message || ""));
+}
+
+/** One cheap request per session tells whether a migration-006 object exists; a transient error is retried later. */
+function probeFeature(name, table, column) {
+  if (feature[name] !== null) return Promise.resolve(feature[name]);
+  if (!featureProbe[name]) {
+    featureProbe[name] = Promise.resolve(sb.from(table).select(column).limit(1)).then((res) => {
+      if (relationMissing(res)) feature[name] = false;
+      else if (!res.error) feature[name] = true;
+      featureProbe[name] = null;
+      return feature[name] === true;
+    }, () => { featureProbe[name] = null; return false; });
+  }
+  return featureProbe[name];
+}
+
+const reviewsAvailable = () => probeFeature("reviews", "link_review_latest", "project_id");
+const relatedAvailable = () => probeFeature("related", "csr_related_projects", "csr_id");
+
+/** Every row of a filtered, ordered query, 1,000 per request (PostgREST cap). */
+async function pagedRows(build) {
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await build().range(from, from + 999);
+    if (error) throw error;
+    rows.push(...arr(data));
+    if (arr(data).length < 1000) return rows;
+  }
+}
+
+/** Latest reviews of these project–sub-part links (fresh from the server). False when reviews are not available. */
+async function loadReviews(keys) {
+  const list = arr(keys).filter((k) => k?.project_id && k?.part_id);
+  if (!list.length || !(await reviewsAvailable())) return false;
+  const projects = [...new Set(list.map((k) => k.project_id))];
+  const parts = [...new Set(list.map((k) => k.part_id))];
+  const [column, values] = projects.length <= parts.length ? ["project_id", projects] : ["part_id", parts];
+  const found = new Map();
+  try {
+    for (let i = 0; i < values.length; i += 100) {
+      const chunk = values.slice(i, i + 100);
+      for (const r of await pagedRows(() => sb.from("link_review_latest").select(REVIEW_COLS).in(column, chunk).order("project_id").order("part_id"))) {
+        found.set(reviewKey(r.project_id, r.part_id), r);
+      }
+    }
+  } catch (e) {
+    if (relationMissing({ error: e })) feature.reviews = false;
+    return false;
+  }
+  for (const k of list) {
+    const key = reviewKey(k.project_id, k.part_id);
+    reviewLatest.set(key, found.get(key) || null);
+  }
+  return true;
+}
+
+function reviewStatusOf(row) {
+  return row && Object.hasOwn(REVIEW_STATUS, row.status) ? row.status : "none";
+}
+
+function reviewWho(row) {
+  if (!row) return "";
+  return [row.reviewer_email || "unknown reviewer", fmtDate(row.created_at)].filter(Boolean).join(", ");
+}
+
+function reviewChip(key) {
+  const row = reviewLatest.get(key) || null;
+  const s = reviewStatusOf(row);
+  const title = row ? `${REVIEW_STATUS[s] || "Reviewed"} by ${reviewWho(row)}${row.comment ? ` — ${B.clip(row.comment, 160)}` : ""}` : "No review yet";
+  return `<span class="rv-chip rv-${s}" data-review-chip="${esc(key)}" title="${esc(title)}"><span class="sr-only">Review: </span>`
+    + `${esc(s === "none" ? "Not reviewed" : REVIEW_STATUS[s])}</span>`;
+}
+
+/** Status chip and "Review" button of one project–sub-part link (nothing while reviews are not available). */
+function reviewControls(projectId, partId, projectTitle) {
+  if (feature.reviews !== true || !projectId || !partId) return "";
+  return `<span class="rv-ctl">${reviewChip(reviewKey(projectId, partId))}`
+    + `<button type="button" class="btn-link rv-open" data-review-project="${esc(projectId)}" data-review-part="${esc(partId)}"`
+    + ` data-review-title="${esc(projectTitle || projectId)}" aria-haspopup="dialog"`
+    + ` aria-label="${esc(`Review the link between ${partId} and ${projectTitle || projectId}`)}">Review</button></span>`;
+}
+
+function paintReviewChips(key) {
+  for (const el of document.querySelectorAll(`[data-review-chip="${CSS.escape(key)}"]`)) el.outerHTML = reviewChip(key);
+}
+
+function reviewHistoryHtml(rows) {
+  if (!rows.length) return `<p class="muted small">No review yet: yours will be the first.</p>`;
+  return `<ol class="rv-history">${rows.map((r, i) => `<li><div class="rv-history-head">${`<span class="rv-chip rv-${reviewStatusOf(r)}">${esc(REVIEW_STATUS[r.status] || r.status || "—")}</span>`}`
+    + `<span class="small">${esc(reviewWho(r))}</span>${i === 0 ? ` <span class="muted small">(current)</span>` : ""}</div>`
+    + (r.comment ? `<p class="prose small">${esc(r.comment)}</p>` : "") + `</li>`).join("")}</ol>`;
+}
+
+function reviewFormHtml(t) {
+  const current = reviewLatest.get(reviewKey(t.project_id, t.part_id)) || null;
+  const s = reviewStatusOf(current);
+  const choices = Object.entries(REVIEW_STATUS).map(([k, label]) => `<label class="rv-choice rv-choice-${k}">`
+    + `<input type="radio" name="status" value="${k}"${k === s ? " checked" : ""} required> <span>${esc(label)}</span></label>`).join("");
+  return `<form id="review-form" class="info-inner" novalidate>`
+    + `<div class="info-head"><div class="title-row"><h2 id="review-title">Review the link</h2>${infoButton("linkreview", "About link review")}</div></div>`
+    + `<div class="info-body rv-body">`
+    + `<dl class="facts rv-facts"><dt>Project</dt><dd>${hashLink("project", t.project_id, t.title || t.project_id)}</dd>`
+    + `<dt>CSR sub-part</dt><dd><code>${esc(t.part_id)}</code></dd><dt>Current</dt><dd>${reviewChip(reviewKey(t.project_id, t.part_id))}`
+    + `${current ? ` <span class="muted small">${esc(reviewWho(current))}</span>` : ""}</dd></dl>`
+    + `<p class="muted small" id="review-intro">The link was assessed by AI. Is it right? Your review is shared with the other users and replaces the current status (the history is kept).</p>`
+    + `<fieldset class="rv-choices"><legend>Your review</legend>${choices}</fieldset>`
+    + `<label class="field rv-comment"><span>Comment (optional)</span><textarea name="comment" rows="3" maxlength="${REVIEW_COMMENT_MAX}"`
+    + ` placeholder="Why: what the project does or does not cover"></textarea></label>`
+    + `<p id="review-status" class="briefing-status" role="status" aria-live="polite"></p>`
+    + `<h3 class="rv-history-title">History</h3><div id="review-history"><p class="muted small">Loading…</p></div></div>`
+    + `<div class="briefing-actions"><button type="button" class="btn btn-secondary" id="review-cancel">Cancel</button>`
+    + `<button type="submit" class="btn" id="review-save">Save review</button></div></form>`;
+}
+
+async function loadReviewHistory(t) {
+  const box = $("review-history");
+  const res = await sb.from("link_reviews").select("id,status,comment,reviewer_email,created_at")
+    .eq("project_id", t.project_id).eq("part_id", t.part_id).order("created_at", { ascending: false }).order("id", { ascending: false }).limit(50);
+  if (reviewTarget !== t || !box?.isConnected) return;
+  box.innerHTML = res.error ? `<p class="muted small">${esc(relationMissing(res) ? "History not available yet." : `Could not load the history: ${res.error.message || ""}`)}</p>`
+    : reviewHistoryHtml(arr(res.data));
+}
+
+function openReview(t, opener) {
+  const dialog = $("review-dialog");
+  if (!dialog || feature.reviews !== true) return;
+  reviewTarget = t;
+  reviewOpener = opener || null;
+  dialog.innerHTML = reviewFormHtml(t);
+  dialog.setAttribute("aria-describedby", "review-intro");
+  $("review-form").addEventListener("submit", (e) => { e.preventDefault(); submitReview(); });
+  $("review-cancel").addEventListener("click", () => dialog.close());
+  if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.setAttribute("open", "");
+  (dialog.querySelector("input[name=status]:checked") || dialog.querySelector("input[name=status]")).focus();
+  loadReviewHistory(t);
+}
+
+/** Inserts one review (append-only: the server fills the reviewer and the date). Returns { row } or { error }. */
+async function saveReview(t, status, comment) {
+  if (!Object.hasOwn(REVIEW_STATUS, status)) return { error: { message: "Choose Confirmed, Rejected or To review." } };
+  const text = String(comment || "").trim().slice(0, REVIEW_COMMENT_MAX);
+  const res = await sb.from("link_reviews").insert({ project_id: t.project_id, part_id: t.part_id, status, comment: text || null }).select(REVIEW_COLS);
+  if (res.error) {
+    if (relationMissing(res)) feature.reviews = false;
+    return { error: res.error };
+  }
+  const row = arr(res.data)[0] || { project_id: t.project_id, part_id: t.part_id, status, comment: text || null, reviewer_email: currentEmail, created_at: new Date().toISOString() };
+  const key = reviewKey(t.project_id, t.part_id);
+  reviewLatest.set(key, row);
+  paintReviewChips(key);
+  const link = reviewLinksCache?.rows.find((l) => l.key === key);
+  if (link) link.review = row;
+  reviewStats = null; // the dashboard card recounts
+  $("live-status").textContent = `Review saved: ${REVIEW_STATUS[status]}.`;
+  return { row };
+}
+
+function reviewErrorText(error) {
+  if (relationMissing({ error })) return "Link review is not available yet in this database.";
+  if (error?.code === "42501") return "You are not allowed to save reviews (tester access required).";
+  return `Could not save the review: ${error?.message || error}`;
+}
+
+async function submitReview() {
+  const form = $("review-form");
+  const t = reviewTarget;
+  if (!form || !t) return;
+  const status = form.elements.status.value;
+  if (!status) {
+    briefingStatusIn("review-status", "Choose Confirmed, Rejected or To review.", true);
+    form.querySelector("input[name=status]")?.focus();
+    return;
+  }
+  $("review-save").disabled = true;
+  briefingStatusIn("review-status", "Saving…");
+  const res = await saveReview(t, status, form.elements.comment.value);
+  if (reviewTarget !== t || !form.isConnected) return;
+  $("review-save").disabled = false;
+  if (res.error) return briefingStatusIn("review-status", reviewErrorText(res.error), true);
+  $("review-dialog").close();
+}
+
+function briefingStatusIn(id, text, error = false) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle("note-error", error);
+}
+
+function bindReviewDialog() {
+  const dialog = $("review-dialog");
+  if (!dialog) return;
+  document.addEventListener("click", async (e) => {
+    const el = e.target instanceof Element ? e.target : null;
+    const open = el?.closest(".rv-open");
+    if (open) {
+      openReview({ project_id: open.dataset.reviewProject, part_id: open.dataset.reviewPart, title: open.dataset.reviewTitle }, open);
+      return;
+    }
+    const quick = el?.closest("[data-review-quick]");
+    if (quick && !quick.disabled) {
+      const t = { project_id: quick.dataset.reviewProject, part_id: quick.dataset.reviewPart };
+      const row = quick.closest("tr");
+      row?.querySelectorAll("[data-review-quick]").forEach((b) => { b.disabled = true; });
+      const res = await saveReview(t, quick.dataset.reviewQuick, "");
+      row?.querySelectorAll("[data-review-quick]").forEach((b) => { b.disabled = false; });
+      const note = $("rv-note");
+      if (note) {
+        note.textContent = res.error ? reviewErrorText(res.error) : `Saved: ${REVIEW_STATUS[quick.dataset.reviewQuick]} (${t.part_id}).`;
+        note.classList.toggle("note-error", Boolean(res.error));
+      }
+      if (!res.error && row) {
+        const who = row.querySelector("[data-review-who]");
+        if (who) who.textContent = reviewWho(res.row);
+      }
+    }
+  });
+  dialog.addEventListener("click", (e) => { // backdrop, or a link (project page) that leaves the view
+    if (e.target === dialog || (e.target instanceof Element && e.target.closest("a[href^='#']"))) dialog.close();
+  });
+  dialog.addEventListener("close", () => {
+    reviewTarget = null;
+    if (reviewOpener?.isConnected) reviewOpener.focus();
+    reviewOpener = null;
+  });
+  window.addEventListener("hashchange", () => { if (dialog.open) dialog.close(); });
+}
+
+// Links to review (#reviews): every project–CSR sub-part link with its latest review, filtered and paged in the browser.
+const REVIEW_FILTERS = { "": "Not reviewed, to review or rejected", none: "Not reviewed", to_review: "To review", rejected: "Rejected", confirmed: "Confirmed", all: "All links" };
+const REVIEW_LINK_COLS = "project_id,part_id,level,rationale,basis,projects(title,programme,year),csr_parts(csr_id,csrs(country,year,number))";
+
+async function fetchReviewLinks() {
+  if (reviewLinksCache?.uid === currentUid) return reviewLinksCache.rows;
+  const [links, reviews] = await Promise.all([
+    fetchAllRows("project_csr_links", REVIEW_LINK_COLS, ["project_id", "part_id"]),
+    fetchAllRows("link_review_latest", REVIEW_COLS, ["project_id", "part_id"]),
+  ]);
+  const latest = new Map(reviews.map((r) => [reviewKey(r.project_id, r.part_id), r]));
+  const rows = links.map((l) => {
+    const key = reviewKey(l.project_id, l.part_id);
+    const csr = l.csr_parts?.csrs || {};
+    return { ...l, key, csrId: l.csr_parts?.csr_id || "", country: csr.country || "", csrYear: num(csr.year), review: latest.get(key) || null };
+  }).sort((a, b) => a.country.localeCompare(b.country) || b.csrYear - a.csrYear
+    || a.part_id.localeCompare(b.part_id, "en", { numeric: true }) || String(a.projects?.title).localeCompare(String(b.projects?.title)));
+  for (const r of rows) reviewLatest.set(r.key, r.review);
+  reviewLinksCache = { uid: currentUid, rows };
+  return rows;
+}
+
+function reviewLinkFilter(f) {
+  const q = f.q.trim().toLowerCase();
+  return (r) => {
+    const s = reviewStatusOf(r.review);
+    if (f.status === "" ? s === "confirmed" : f.status !== "all" && s !== f.status) return false;
+    if (f.country && r.country !== f.country) return false;
+    if (f.level && r.level !== f.level) return false;
+    if (q && !String(r.projects?.title || "").toLowerCase().includes(q) && !r.part_id.toLowerCase().includes(q)) return false;
+    return true;
+  };
+}
+
+async function renderReviews(p, seq) {
+  const head = `<a class="back" href="#projects">← Projects</a><div class="title-row">${heading("Links to review")}${infoButton("linkreview", "About link review")}</div>`;
+  if (!(await reviewsAvailable())) {
+    if (stale(seq)) return;
+    view(`${head}<div class="card"><p><strong>Link review is not available yet.</strong> The database update that stores the reviews has not been applied; `
+      + `the project–CSR links stay AI-assessed only. Try again later.</p><p><a href="#projects">Back to the projects</a></p></div>`);
+    return;
+  }
+  let rows;
+  try {
+    rows = await fetchReviewLinks();
+  } catch (e) {
+    if (stale(seq)) return;
+    if (relationMissing({ error: e })) feature.reviews = false;
+    return showError(e, "Could not load the links");
+  }
+  if (stale(seq)) return;
+  const f = { status: pick(p.get("status") || "", REVIEW_FILTERS), country: pick(p.get("country"), COUNTRIES), level: pick(p.get("level"), LINK_LABELS), q: p.get("q") || "" };
+  const list = rows.filter(reviewLinkFilter(f));
+  const page = pageOf(p);
+  const last = Math.max(1, Math.ceil(list.length / PAGE_SIZE));
+  if (page > last) return redirectToPage("reviews", p, last);
+  const counts = { confirmed: 0, rejected: 0, to_review: 0, none: 0 };
+  for (const r of rows) counts[reviewStatusOf(r.review)]++;
+  const reviewed = rows.length - counts.none;
+  const form = filterForm("reviews",
+    selectField("status", "Review status", REVIEW_FILTERS, f.status, null)
+    + countriesSelect(f.country)
+    + selectField("level", "Link level", LINK_LABELS, f.level, "All levels")
+    + textField("q", "Search project or sub-part", f.q, "e.g. pension, csr-LT-2023"));
+  const quick = (r, status, label) => `<button type="button" class="btn btn-secondary btn-small" data-review-quick="${status}" data-review-project="${esc(r.project_id)}"`
+    + ` data-review-part="${esc(r.part_id)}" aria-label="${esc(`${label}: ${r.part_id}, ${r.projects?.title || r.project_id}`)}">${label}</button>`;
+  const body = list.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((r) => [
+    td(`${hashLink("project", r.project_id, r.projects?.title || r.project_id)}`
+      + `<div class="muted small">${esc([r.projects?.programme, r.projects?.year].filter(Boolean).join(" · "))}</div>`
+      + (r.rationale ? `<details class="rv-why"><summary>Rationale (AI)</summary><p class="small">${esc(r.rationale)}</p></details>` : ""), "title-cell"),
+    td(`${r.csrId ? hashLink("csr", r.csrId, r.part_id) : esc(r.part_id)}<div class="muted small">${esc(countryName(r.country))}${r.csrYear ? ` ${r.csrYear}` : ""}</div>`, "nowrap"),
+    td(badge(r.level)),
+    td(`${reviewChip(r.key)}<div class="muted small" data-review-who>${esc(reviewWho(r.review))}</div>`),
+    td(`<div class="rv-actions">${quick(r, "confirmed", "Confirm")}${quick(r, "rejected", "Reject")}`
+      + `<button type="button" class="btn-link rv-open" data-review-project="${esc(r.project_id)}" data-review-part="${esc(r.part_id)}"`
+      + ` data-review-title="${esc(r.projects?.title || r.project_id)}" aria-haspopup="dialog" aria-label="${esc(`Review with a comment: ${r.part_id}, ${r.projects?.title || r.project_id}`)}">With comment…</button></div>`),
+  ]);
+  const summary = `<p class="muted small">${fmtN(reviewed)} of ${fmtN(rows.length)} project–CSR sub-part links reviewed (${share(reviewed, rows.length) || "0%"}): `
+    + `${fmtN(counts.confirmed)} confirmed, ${fmtN(counts.rejected)} rejected, ${fmtN(counts.to_review)} to review, ${fmtN(counts.none)} not reviewed.</p>`;
+  const tools = `<div class="toolbar"><span id="rv-note" class="muted small" role="status" aria-live="polite"></span>`
+    + `<span class="toolbar-actions"><span id="xlsx-note" class="muted small" role="status" aria-live="polite"></span>`
+    + `<button type="button" class="btn btn-secondary" id="xlsx"${list.length ? "" : " disabled"}>Export to Excel</button></span></div>`;
+  view(`${head}<p class="muted">Links between projects and CSR sub-parts are assessed by AI. Confirm or reject them here; the latest review of each link is shown everywhere in the explorer.</p>`
+    + summary + form + tools + pager("reviews", p, page, list.length)
+    + `<div class="rv-table">${table(["Project", "CSR sub-part", "Level", "Review", "Quick review"], body, "No link matches these filters.")}</div>`
+    + (list.length ? pager("reviews", p, page, list.length) : ""));
+  bindFilters();
+  $("xlsx").addEventListener("click", () => {
+    const keys = new Set(list.map((r) => r.key));
+    const ids = new Set(list.map((r) => r.project_id));
+    exportExcel($("xlsx"), $("xlsx-note"), {
+      filters: [["View", "Links to review"], ["Review status", REVIEW_FILTERS[f.status]], f.country ? ["Country (of the CSR)", countryName(f.country)] : null,
+        f.level ? ["Link level", LINK_LABELS[f.level]] : null, f.q ? ["Search", f.q] : null].filter(Boolean),
+      projects: async () => (await fetchAllRows("projects", REPORT_PROJECT_COLS, ["project_id"])).filter((x) => ids.has(x.project_id)),
+      keepLink: (l) => keys.has(reviewKey(l.project_id, l.part_id)),
+    });
+  });
+}
+
+/** Dashboard card: reviewed share and statuses by link level (tsi_dashboard figures when present, else counted here). */
+async function fetchReviewStats(model) {
+  if (reviewStats?.uid === currentUid) return reviewStats.stats;
+  let stats = null;
+  if (model.reviews) stats = model.reviews;
+  else if (await reviewsAvailable()) {
+    const [links, reviews] = await Promise.all([
+      fetchAllRows("project_csr_links", "project_id,part_id,level", ["project_id", "part_id"]),
+      fetchAllRows("link_review_latest", "project_id,part_id,status", ["project_id", "part_id"]),
+    ]);
+    const status = new Map(reviews.map((r) => [reviewKey(r.project_id, r.part_id), r.status]));
+    const by = new Map();
+    for (const l of links) {
+      const k = l.level === "direct" ? "direct" : "partial";
+      if (!by.has(k)) by.set(k, { level: k, confirmed: 0, rejected: 0, to_review: 0, total: 0 });
+      const b = by.get(k);
+      b.total++;
+      const s = status.get(reviewKey(l.project_id, l.part_id));
+      if (Object.hasOwn(REVIEW_STATUS, s)) b[s]++;
+    }
+    stats = { links: links.length, byLevel: [...by.values()] };
+  }
+  if (stats) {
+    for (const b of stats.byLevel) b.none = Math.max(0, num(b.total) - num(b.confirmed) - num(b.rejected) - num(b.to_review));
+    stats.reviewed = stats.byLevel.reduce((s, b) => s + num(b.confirmed) + num(b.rejected) + num(b.to_review), 0);
+  }
+  reviewStats = { uid: currentUid, stats };
+  return stats;
+}
+
+const REVIEW_KEYS = [["confirmed", "Confirmed", "s3"], ["rejected", "Rejected", "sev-high"], ["to_review", "To review", "sev-medium"], ["none", "Not reviewed", "faint"]];
+
+function reviewRows(stats) {
+  return inOrder(stats.byLevel.map((b) => ({ ...b, key: b.level })), ["direct", "partial"]).map((b) => {
+    const total = num(b.total);
+    return { label: LINK_LABELS[b.level] || b.level, display: `${share(total - b.none, total) || "0%"} reviewed`,
+      segs: REVIEW_KEYS.map(([k, label, color]) => ({ v: num(b[k]), key: color, href: hrefFor("reviews", { status: k === "none" ? "none" : k, level: b.level }),
+        tip: { series: label, label: `${LINK_LABELS[b.level] || b.level} links`, value: `${fmtN(b[k])} links`, share: total ? `${share(b[k], total)} of ${fmtN(total)}` : "", key: color } })) };
+  });
+}
+
+function reviewCardHtml(stats) {
+  const total = stats.byLevel.reduce((s, b) => s + num(b.total), 0) || num(stats.links);
+  return `<h3 id="dash-reviews-h">Link reviews ${infoButton("linkreview", "About link review")}</h3>`
+    + `<div class="dash-grid"><figure class="viz viz-wide"><figcaption><div class="title-row"><h4 class="viz-title">Reviews of the AI-assessed links, by level</h4></div>`
+    + `<p class="viz-sub">${esc(`${fmtN(stats.reviewed)} of ${fmtN(total)} links reviewed (${share(stats.reviewed, total) || "0%"}) by the explorer's users. Click a segment to list those links.`)}</p></figcaption>`
+    + legend(REVIEW_KEYS.map(([k, label, color]) => ({ key: color, label, n: stats.byLevel.reduce((s, b) => s + num(b[k]), 0), href: hrefFor("reviews", { status: k }) })))
+    + `<div class="viz-slot" data-chart="reviews"></div>`
+    + dataTable(["Level", "Confirmed", "Rejected", "To review", "Not reviewed", "Total"],
+      inOrder(stats.byLevel.map((b) => ({ ...b, key: b.level })), ["direct", "partial"]).map((b) => [LINK_LABELS[b.level] || b.level, fmtN(b.confirmed), fmtN(b.rejected), fmtN(b.to_review), fmtN(b.none), fmtN(b.total)]))
+    + `<p class="small"><a href="#reviews">Open the links to review</a></p></figure></div>`;
+}
+
+async function paintReviewCard() {
+  const box = $("dash-reviews");
+  if (!box || !dashCache) return;
+  const model = dashCache.model;
+  let stats = null;
+  try { stats = await fetchReviewStats(model); } catch { stats = null; }
+  if (!stats || !box.isConnected) return;
+  model.reviewStats = stats;
+  box.innerHTML = reviewCardHtml(stats);
+  box.hidden = false;
+  const slot = box.querySelector(".viz-slot");
+  if (slot) slot.innerHTML = DASH_CHARTS.reviews(model, slot.clientWidth);
+}
+
+// Related past projects (csr_related_projects): AI-suggested past projects for the 2026 recommendations.
+
+/** All rows (with their project) once per session; null when the table is missing or empty. */
+async function loadRelated() {
+  if (relatedCache?.uid === currentUid) return relatedCache.rows.length ? relatedCache : null;
+  if (!(await relatedAvailable())) return null;
+  if (!relatedLoading) {
+    const uid = currentUid;
+    relatedLoading = (async () => {
+      let rows;
+      try {
+        rows = await fetchAllRows("csr_related_projects", "csr_id,project_id,relevance,scope,rationale,projects(title,programme,year,countries)", ["csr_id", "project_id"]);
+      } catch (e) {
+        if (relationMissing({ error: e })) { feature.related = false; return null; }
+        if (e?.code !== "PGRST200") throw e; // no foreign key to projects: titles fetched separately
+        rows = await fetchAllRows("csr_related_projects", "csr_id,project_id,relevance,scope,rationale", ["csr_id", "project_id"]);
+        const ids = [...new Set(rows.map((r) => r.project_id).filter(Boolean))];
+        const projects = new Map();
+        for (let i = 0; i < ids.length; i += 100) {
+          const res = await sb.from("projects").select("project_id,title,programme,year,countries").in("project_id", ids.slice(i, i + 100));
+          if (res.error) throw res.error;
+          for (const p of arr(res.data)) projects.set(p.project_id, p);
+        }
+        rows = rows.map((r) => ({ ...r, projects: projects.get(r.project_id) || null }));
+      }
+      const rank = (r) => (r.scope === "same_country" ? 0 : 2) + (r.relevance === "high" ? 0 : 1);
+      const byCsr = new Map();
+      for (const r of rows) {
+        if (!r?.csr_id || !r.project_id) continue;
+        if (!byCsr.has(r.csr_id)) byCsr.set(r.csr_id, []);
+        byCsr.get(r.csr_id).push(r);
+      }
+      for (const list of byCsr.values()) list.sort((a, b) => rank(a) - rank(b) || num(b.projects?.year) - num(a.projects?.year) || String(a.projects?.title).localeCompare(String(b.projects?.title)));
+      const cache = { uid, byCsr, rows };
+      if (currentUid === uid) relatedCache = cache;
+      return rows.length ? cache : null;
+    })().catch(() => null).finally(() => { relatedLoading = null; });
+  }
+  return relatedLoading;
+}
+
+function relatedProjectCount(related, csrIds) {
+  const ids = new Set();
+  for (const c of csrIds) for (const r of related.byCsr.get(c) || []) ids.add(r.project_id);
+  return ids.size;
+}
+
+function relatedDocSummary(related, recs) {
+  const withAny = recs.filter((c) => related.byCsr.has(c.csr_id)).length;
+  const n = relatedProjectCount(related, recs.map((c) => c.csr_id));
+  return `${n} distinct past project${n === 1 ? "" : "s"} suggested for ${withAny} of ${recs.length} recommendation${recs.length === 1 ? "" : "s"}.`;
+}
+
+function relevanceChip(value) {
+  const k = value === "high" ? "high" : "medium";
+  return `<span class="rel-chip rel-${k}">${k} relevance</span>`;
+}
+
+function relatedItem(r) {
+  const pr = r.projects || {};
+  const meta = [pr.programme, pr.year, countriesText(pr.countries)].filter(Boolean).map(esc).join(" · ");
+  return `<li class="link-item"><div class="link-head">${relevanceChip(r.relevance)}${hashLink("project", r.project_id, pr.title || r.project_id)}`
+    + `${meta ? `<span class="muted small">${meta}</span>` : ""}</div>`
+    + (r.rationale ? `<p class="small"><span class="label">Why (AI):</span> ${esc(r.rationale)}</p>` : "") + `</li>`;
+}
+
+/** Related past projects of one recommendation: same country first, then the other countries. */
+function relatedBlock(related, csrId, { compact = false, card = false } = {}) {
+  const list = related.byCsr.get(csrId) || [];
+  if (!list.length) {
+    return compact ? `<p class="small related-none"><span class="label">Related past projects:</span> <span class="muted">none suggested</span></p>` : "";
+  }
+  const same = list.filter((r) => r.scope === "same_country");
+  const other = list.filter((r) => r.scope !== "same_country");
+  const group = (title, rows) => (rows.length ? `<h4 class="related-h">${esc(title)} <span class="muted small">${rows.length}</span></h4><ul class="link-list">${rows.map(relatedItem).join("")}</ul>` : "");
+  const inner = group("Same country", same) + group("Other countries", other);
+  if (compact) {
+    return `<details class="related-mini"><summary><span class="label">Related past projects</span> <span class="ai-note">AI-suggested</span> `
+      + `${esc(`${list.length} (${same.length} same country, ${other.length} other ${other.length === 1 ? "country" : "countries"})`)}</summary>${inner}</details>`;
+  }
+  const head = `<div class="title-row"><h3 class="section-label">Related past projects <span class="ai-note">AI-suggested</span></h3>${infoButton("related", "About related past projects")}</div>`
+    + `<p class="muted small">Past projects that worked on the same issues as this recommendation, suggested by AI: a lead to explore, not a link assessed from the project text. Same country first.</p>`;
+  return card ? `<div class="card related">${head}${inner}</div>` : head + inner;
+}
+
+/** CSRs tab, 2026: related past projects per recommendation, recommendations without any first. */
+function relatedCoverageHtml(related, docs, year) {
+  const recs = docs.flatMap((d) => arr(d.csrs).map((c) => ({ ...c, country: d.country }))).filter((c) => c.csr_id);
+  if (!recs.length) return "";
+  const rows = recs.map((c) => {
+    const list = related.byCsr.get(c.csr_id) || [];
+    return { c, same: list.filter((r) => r.scope === "same_country").length, other: list.filter((r) => r.scope !== "same_country").length,
+      high: list.filter((r) => r.relevance === "high").length };
+  }).sort((a, b) => (a.same + a.other) - (b.same + b.other) || a.same - b.same || countryName(a.c.country).localeCompare(countryName(b.c.country)) || csrNumber(a.c, b.c));
+  const none = rows.filter((r) => !r.same && !r.other).length;
+  const noSame = rows.filter((r) => !r.same).length;
+  const body = rows.map((r) => [
+    td(`${hashLink("csr", r.c.csr_id, `${r.c.country} ${year} · CSR ${r.c.number ?? ""}`)}<div class="muted small">${esc(countryName(r.c.country))}</div>`, "nowrap"),
+    td(r.same ? fmtN(r.same) : `<span class="rv-zero">0</span>`, "num"), td(fmtN(r.other), "num"), td(fmtN(r.high), "num"),
+  ]);
+  return `<details class="card related-coverage"><summary><strong>${year} coverage: related past projects per recommendation</strong> `
+    + `<span class="ai-note">AI-suggested</span> <span class="muted small">${esc(`${none} of ${rows.length} recommendations without any related past project, ${noSame} without one in the same country`)}</span></summary>`
+    + `<p class="muted small">Recommendations with the fewest suggestions first: where no earlier technical support addressed the issue. ${infoButton("related", "About related past projects")}</p>`
+    + table(["Recommendation", "Same country", "Other countries", "High relevance"], body) + `</details>`;
+}
+
+// Excel reporting export (SheetJS CE, loaded on first use from cdnjs with its integrity hash).
+const REPORT_PROJECT_COLS = "project_id,title,programme,year,countries,policy_area,results,deliverables,detail_page,url";
+let xlsxLoading = null;
+
+function loadSheetJs() {
+  if (window.XLSX?.utils && window.XLSX?.CFB) return Promise.resolve(window.XLSX);
+  if (!xlsxLoading) {
+    xlsxLoading = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = R.SHEETJS_URL;
+      s.integrity = R.SHEETJS_SRI;
+      s.crossOrigin = "anonymous";
+      s.async = true;
+      s.onload = () => (window.XLSX?.utils ? resolve(window.XLSX) : reject(new Error("the Excel library did not start")));
+      s.onerror = () => { s.remove(); reject(new Error("the Excel library could not be loaded (network or content blocker)")); };
+      document.head.append(s);
+    }).catch((e) => { xlsxLoading = null; throw e; });
+  }
+  return xlsxLoading;
+}
+
+/** Builds and downloads the reporting workbook. src: { filters, projects: () => Promise<rows>, keepLink?(link) }. */
+async function exportExcel(button, note, src) {
+  if (!button || button.dataset.busy) return;
+  button.dataset.busy = "1";
+  button.disabled = true;
+  const label = button.textContent;
+  const say = (text, error = false) => { if (note?.isConnected) { note.textContent = text; note.classList.toggle("note-error", error); } };
+  try {
+    button.textContent = "Preparing…";
+    say("Loading the Excel library…");
+    const X = await loadSheetJs();
+    say("Collecting the data…");
+    const withReviews = await reviewsAvailable();
+    const [projects, links, impacts, anomalies, reviews] = await Promise.all([
+      src.projects(),
+      fetchAllRows("project_csr_links", "project_id,part_id,level,rationale,basis,csr_parts(csr_id,csrs(country,year,number))", ["project_id", "part_id"]),
+      fetchAllRows("impact_reports", "id,project_id,score,level,confidence,created_at", ["created_at", "id"]).catch(() => []),
+      fetchAllRows("anomalies", "id,project_id,type", ["id"]).catch(() => []),
+      withReviews ? fetchAllRows("link_review_latest", REVIEW_COLS, ["project_id", "part_id"]).catch(() => null) : Promise.resolve(null),
+    ]);
+    say(`Building the workbook (${fmtN(projects.length)} projects)…`);
+    const base = location.href.split("#")[0];
+    const model = R.reportingModel({ projects, links: src.keepLink ? links.filter(src.keepLink) : links, impacts, anomalies, reviews }, {
+      date: new Date(), filters: src.filters, email: currentEmail, country: countryName, area: areaLabel, anomaly: (t) => ANOMALY_TYPES[t] || t,
+      detailUrl: (id) => `${base}#project/${encodeURIComponent(id)}`,
+    });
+    const data = R.buildWorkbook(X, model);
+    saveBlob(model.fileName, new Blob([data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+    say(`Downloaded ${model.fileName}: ${fmtN(model.sheets[0].rows.length)} projects, ${fmtN(model.sheets[1].rows.length)} links.`);
+  } catch (e) {
+    say(`Could not export to Excel: ${e?.message || e}`, true);
+  } finally {
+    delete button.dataset.busy;
+    if (button.isConnected) { button.disabled = false; button.textContent = label; }
+  }
 }
 
 // ---------- anomalies ----------
@@ -981,6 +1611,13 @@ function clearAiState() {
   ovState.countryHash = "";
   csrYearsCache = null;
   csrDocsMissing = false;
+  feature.reviews = null;
+  feature.related = null;
+  reviewLatest.clear();
+  reviewLinksCache = null;
+  reviewStats = null;
+  relatedCache = null;
+  if ($("review-dialog")?.open) $("review-dialog").close();
   briefingRun?.controller.abort();
   if ($("briefing-dialog")?.open) $("briefing-dialog").close();
   try {
@@ -1743,7 +2380,8 @@ const INFO = {
       <li><strong>Lineage</strong>: each recommendation with its supporting projects (level, results, deliverables, impact score).</li>
       <li><strong>Results and impact</strong>: projects with results, latest impact analyses with their verdict.</li>
       <li><strong>Gaps and opportunities</strong>: assessed recommendations without a supporting project (Limited or No progress first),
-        with AI suggestions to verify.</li>
+        with AI suggestions to verify, and, for the latest (2026) recommendations, the related past projects suggested by AI
+        (top 3 each), when available.</li>
       <li><strong>Data quality</strong> (anomalies) and an <strong>annex</strong> with the sources and the method.</li></ol>
       <h3>Limits</h3><ul>
       <li>The AI summary is one call to Claude (Anthropic), written only from the figures of the document (no web search): its parts
@@ -1754,6 +2392,31 @@ const INFO = {
         classifications differ), through a supporting project of that area, or, for the 2026 recommendations not yet classified,
         through key words of their text.</li>
       <li>Coverage leaves out the Commission-stage recommendations (2026), not yet adopted nor assessed.</li></ul>`,
+  }),
+  linkreview: () => ({
+    title: "Link review",
+    html: `<p>The project–CSR links are <strong>assessed by AI</strong> from the project text. Business users check them: wherever a
+      link is shown (project page, recommendation and document pages, lineage By country), its chip gives the latest review and
+      <em>Review</em> opens a short form.</p><ul>
+      <li><strong>Confirmed</strong>: the project does support this CSR sub-part at the level shown.</li>
+      <li><strong>Rejected</strong>: the link is wrong (the project does not address this request).</li>
+      <li><strong>To review</strong>: unsure; needs a closer look, for instance by the country desk.</li>
+      <li><strong>Not reviewed</strong>: nobody has reviewed the link yet.</li></ul>
+      <p>A review is shared with all users and kept: a new review replaces the current status, the history (who, when, comment)
+      stays visible in the form. Reviews do not change the AI assessment itself; the Excel export gives both.</p>
+      <p><em>Links to review</em> (from the Projects tab or the dashboard) lists the links not reviewed, to review or rejected, with
+      quick <em>Confirm</em> and <em>Reject</em> buttons.</p>`,
+  }),
+  related: () => ({
+    title: "Related past projects (AI-suggested)",
+    html: `<p>The 2026 Commission recommendations are too recent to be supported by a project: a recommendation of a given year can
+      only be supported by projects of the following years. To help prepare the support, an AI model suggests, for each 2026
+      recommendation, <strong>past projects that worked on the same issues</strong>:</p><ul>
+      <li><strong>Same country</strong>: earlier support to the same Member State, to build on.</li>
+      <li><strong>Other countries</strong>: comparable projects elsewhere, to learn from.</li>
+      <li><strong>Relevance</strong>: high or medium, with a short rationale.</li></ul>
+      <p>These are leads, not links assessed from the project text, and not a statement that the recommendation is covered: verify
+      before use. The CSRs tab (2026) counts them per country and lists the recommendations without any related past project.</p>`,
   }),
   request: () => ({
     title: "Initial request (pending)",
@@ -1768,7 +2431,7 @@ const INFO = {
   }),
 };
 
-const INFO_GUIDE = { briefing: "briefing", results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", linklevel: "lineage", request: "lineage", overview: "lineage" };
+const INFO_GUIDE = { linkreview: "reviews", related: "csrs", briefing: "briefing", results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", linklevel: "lineage", request: "lineage", overview: "lineage" };
 
 // Icone « i » des boutons d'information (SVG, couleur du texte).
 const INFO_ICON = `<svg class="info-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="4.1" r="1.35"/><path d="M6.4 6.7h2.4v5.6h1.1v1.4H6.2v-1.4h1.1V8.1h-.9z"/></svg>`;
@@ -1836,6 +2499,10 @@ const GUIDE = [
       the address of the page keeps the filters, so you can bookmark or share it.</li>
     <li><strong>Project page</strong>: programme, year, countries, policy area, results, deliverables, an AI-generated summary,
       the CSRs it supports (AI-assessed), the latest impact analysis and a link to the lineage network.</li>
+    <li><strong>Export to Excel</strong>: downloads the projects matching the current filters as a workbook
+      (<code>tsi-reporting-YYYY-MM-DD.xlsx</code>) with three sheets: <em>Projects</em> (one row per project, with its links,
+      latest impact score, anomalies and review summary), <em>Links</em> (one row per project–CSR sub-part link, with the AI rationale
+      and the latest review) and <em>Notes</em> (date, filters and definitions).</li>
     <li><strong>Detail page or listed only</strong>: a project with a <em>detail page</em> has its own page on
       reforms-investments.ec.europa.eu (description, results, deliverables). Many projects are only <em>listed</em>: known by
       their title in a TSI country factsheet or in the SRSP list of approved requests (PDF). Their page shows that listing as the
@@ -1853,8 +2520,21 @@ const GUIDE = [
     <li><strong>All recommendations</strong>: one row per recommendation, with the text search, country and year filters
       (a text search always opens this list). Each row links to its recommendation page and to its document.</li>
     <li><strong>Recommendation page</strong>: the full text, the sub-parts, their assessment, the linked projects, the document it
-      belongs to (breadcrumb at the top) and a link to the lineage network.</li></ul>
-    <h4>Assessments</h4>${infoHtml("assessments")}` },
+      belongs to (breadcrumb at the top) and a link to the lineage network.</li>
+    <li><strong>2026: related past projects</strong>: each 2026 country card counts the past projects suggested by AI for its
+      recommendations; the document and recommendation pages list them (same country first), and <em>2026 coverage</em>, below the
+      cards, lists the recommendations with the fewest suggestions first.</li></ul>
+    <h4>Assessments</h4>${infoHtml("assessments")}
+    <h4>Related past projects</h4>${infoHtml("related")}` },
+  { id: "reviews", title: "Link review", html: () => `
+    <p>Business users confirm or reject the project–CSR links assessed by AI. The chips next to each link give its latest review.</p>
+    <ul><li><strong>Review a link</strong>: <em>Review</em> next to a link (project page, recommendation and document pages, lineage
+      By country details) opens a form: choose Confirmed, Rejected or To review, add a comment if useful, then <em>Save review</em>.
+      The chip updates at once. The form also shows the history of the link: who reviewed it, when, with which comment.</li>
+    <li><strong>Links to review</strong> (button on the Projects tab, or the dashboard card): all links not reviewed, to review or
+      rejected, with filters (status, country, level, search), quick <em>Confirm</em> and <em>Reject</em> buttons, and the Excel export.</li>
+    <li><strong>Dashboard</strong>: the <em>Link reviews</em> card gives the share of links reviewed and the statuses by level.</li></ul>
+    ${infoHtml("linkreview")}` },
   { id: "lineage", title: "Lineage", html: () => `
     <p>The Lineage tab has four sub-tabs, in this order: <strong>Sankey</strong> (opened by default), <strong>Network</strong>,
       <strong>Sunburst</strong> and <strong>By country</strong>. The first three give an overview of the recommendation–project pairs
@@ -1911,6 +2591,8 @@ const GUIDE = [
       when fewer than 2 projects), latest analyses.</li>
     <li><strong>CSRs and lineage</strong>: CSR documents by year (hover a bar for its recommendations), latest assessment of the
       recommendations (2026: not yet assessed), share of each country's recommendations supported by a project, links by level.</li>
+    <li><strong>Link reviews</strong> (once available): share of the project–CSR links reviewed by the users, and the confirmed,
+      rejected and to-review links by level; a segment opens the matching <a href="#guide/reviews">links to review</a>.</li>
     <li><strong>Data quality</strong>: anomalies by type and severity.</li></ul>
     <p><strong>Click-through</strong>: a bar opens the matching filtered list (a country's projects, a year's CSRs, the lineage
       network of a country, the anomalies of a type and severity). Hover or focus a bar for its value and share; every chart
@@ -1994,7 +2676,7 @@ const GUIDE_ESSENTIALS = [
   { icon: "⇄", title: "Click through", text: "Bars, cards and names open the matching view: a country's projects, a CSR document, a project page, a lineage network." },
   { icon: "info", title: "Definitions", text: "The round i buttons explain how a figure or a link level is defined, with a link to the reference below." },
   { icon: "✦", title: "Assistant", text: "The round button at the bottom right opens the assistant beside any page. On a project or CSR page it offers to ask about it." },
-  { icon: "⎙", title: "Export", text: "Lists download as CSV; impact reports and assistant conversations export to Word." },
+  { icon: "⎙", title: "Export", text: "Lists download as CSV, the projects and their links to Excel; impact reports, assistant conversations and country briefings export to Word." },
 ];
 const GUIDE_STEPS = [
   { img: "01-dashboard.jpg", to: "#dashboard", title: "Start from the big picture",
@@ -2392,7 +3074,23 @@ function dashModel(raw) {
     meanCountry: arr(d.impact_mean_by_country).map((x) => ({ key: String(x.key ?? ""), mean: num(x.mean), n: num(x.n) })),
     recent: arr(d.impact_recent).filter((x) => x && typeof x === "object"),
     anomalies: arr(d.anomalies_by_type_severity).map((x) => ({ type: String(x.type ?? ""), severity: String(x.severity ?? ""), n: num(x.n) })),
+    reviews: reviewFigures(t, d),
   };
+}
+
+/** Link reviews from tsi_dashboard() once migration 006 adds them (totals.link_reviews, review_by_level); else null. */
+function reviewFigures(t, d) {
+  if (t.link_reviews === undefined || t.link_reviews === null || !Array.isArray(d.review_by_level)) return null;
+  const totals = new Map(arr(d.links_by_level).map((x) => [String(x?.key ?? ""), num(x?.n)]));
+  const byLevel = d.review_by_level.filter((x) => x && typeof x === "object").map((x) => {
+    const level = x.level === "direct" ? "direct" : "partial";
+    const counted = num(x.confirmed) + num(x.rejected) + num(x.to_review);
+    return { level, confirmed: num(x.confirmed), rejected: num(x.rejected), to_review: num(x.to_review), total: Math.max(totals.get(level) || 0, num(x.total), counted) };
+  });
+  for (const level of ["direct", "partial"]) {
+    if (!byLevel.some((b) => b.level === level) && totals.get(level)) byLevel.push({ level, confirmed: 0, rejected: 0, to_review: 0, total: totals.get(level) });
+  }
+  return { links: num(t.links), byLevel };
 }
 
 function programmeKey(p) {
@@ -2547,6 +3245,7 @@ const DASH_CHARTS = {
     label: (x) => LINK_LABELS[x.key] || x.key, total: m.totals.links, unit: " links",
   }), w, { title: "Project–CSR links by level" }),
   anomalies: (m, w) => hbarChart(anomalyRows(m), w, { title: "Anomalies by type and severity" }),
+  reviews: (m, w) => (m.reviewStats ? hbarChart(reviewRows(m.reviewStats), w, { title: "Reviews of the AI-assessed links, by level" }) : ""),
 };
 
 function legend(items) {
@@ -2658,7 +3357,8 @@ function dashboardHtml(m, at) {
   return `<div id="dash" class="dash"><div class="toolbar"><span class="muted small">Figures across all projects and CSRs${when ? ` · loaded at ${esc(when)}` : ""}.</span>`
     + `<span class="toolbar-actions"><span id="dash-status" class="muted small" role="status"></span>`
     + `<button type="button" class="btn btn-secondary" id="dash-refresh">Refresh</button></span></div>`
-    + tiles + projects + impact + csrs + quality
+    + tiles + projects + impact + csrs
+    + `<section class="dash-section" id="dash-reviews" aria-labelledby="dash-reviews-h" hidden></section>` + quality
     + `<div id="dash-tip" class="viz-tip" role="tooltip" hidden></div></div>`;
 }
 
@@ -2737,6 +3437,7 @@ function paintDashboard() {
   bindDashTips(root);
   $("dash-refresh").addEventListener("click", refreshDashboard);
   paintDashCharts();
+  paintReviewCard();
 }
 
 /** Refresh keeps the current render (dimmed) until the new figures arrive. */
@@ -2763,6 +3464,9 @@ async function refreshDashboard() {
   dashCache = { uid: currentUid, model: res.model, at: new Date() };
   ovCache = null; // the lineage views reload their links on next use
   lineageCache.clear();
+  reviewStats = null;
+  reviewLinksCache = null;
+  relatedCache = null;
   paintDashboard();
   $("dash-status").textContent = "Figures updated.";
   $("dash-refresh").focus();
@@ -3173,7 +3877,8 @@ function lineageDetail(model, key) {
     if (!c) return "";
     const items = model.edges.filter((e) => e.csr === c.id).map((e) => {
       const p = projects.get(e.project) || {};
-      return `<li>${badge(e.level)} ${hashLink("project", e.project, p.title || e.project)} <span class="muted small">${esc([p.programme, p.year].filter(Boolean).join(" "))}</span></li>`;
+      return `<li>${badge(e.level)} ${hashLink("project", e.project, p.title || e.project)} <span class="muted small">${esc([p.programme, p.year].filter(Boolean).join(" "))}</span>`
+        + `${lineageReviewParts(e, p.title)}</li>`;
     }).join("");
     return `<h3>${esc(`${model.country} ${c.year} · CSR ${c.number}`)}</h3><p>${esc(c.title)}</p>`
       + `<p class="small"><span class="label">Assessment:</span> ${esc(c.info.label)}${c.assessmentYear ? ` (${esc(c.assessmentYear)})` : ""}</p>`
@@ -3186,7 +3891,8 @@ function lineageDetail(model, key) {
   if (!p) return "";
   const items = model.edges.filter((e) => e.project === p.id).map((e) => {
     const c = csrs.get(e.csr) || {};
-    return `<li>${badge(e.level)} ${hashLink("csr", e.csr, `${model.country} ${c.year} · CSR ${c.number}`)} <span class="muted small">${esc(c.title)}</span></li>`;
+    return `<li>${badge(e.level)} ${hashLink("csr", e.csr, `${model.country} ${c.year} · CSR ${c.number}`)} <span class="muted small">${esc(c.title)}</span>`
+      + `${lineageReviewParts(e, p.title)}</li>`;
   }).join("");
   const page = p.url && sourceInfo(p.url) ? ` · ${sourceLink(sourceInfo(p.url))}` : "";
   const pid = encodeURIComponent(p.id);
@@ -3199,6 +3905,13 @@ function lineageDetail(model, key) {
     + `<dt>Latest impact</dt><dd>${impact}</dd></dl>`;
   return `<h3>${esc(p.title)}</h3><p class="small muted">${esc([p.programme, p.year].filter(Boolean).join(" · "))}</p>`
     + `<ul class="ln-list">${items}</ul>${outcome}<p>${hashLink("project", p.id, "Open the project")}${page}</p>`;
+}
+
+/** Sub-part links of a recommendation–project pair with their review chip and button (detail panel). */
+function lineageReviewParts(edge, title) {
+  if (feature.reviews !== true || !edge.parts.length) return "";
+  return `<ul class="rv-parts">${edge.parts.map((x) => `<li><code>${esc(x.part)}</code> <span class="muted small">${esc(x.level)}</span>`
+    + `${reviewControls(edge.project, x.part, title)}</li>`).join("")}</ul>`;
 }
 
 /** Tooltip lines for a node or an edge (plain strings, inserted with textContent). */
@@ -3515,6 +4228,14 @@ async function renderLineage(p, seq) {
   $("ln-csv").addEventListener("click", () => saveCsv(`lineage-${country}-${from}-${to}.csv`, LN_CSV_COLS, lineageRows(model)));
   paintLineageGraph();
   $("ln-detail").innerHTML = lineageDetail(model, null);
+  // Review chips of the detail panel: loaded once the graph is drawn, then the pinned panel is refreshed.
+  const reviewKeys = model.edges.flatMap((e) => e.parts.map((x) => ({ project_id: e.project, part_id: x.part })));
+  loadReviews(reviewKeys).then((ok) => {
+    const panel = $("ln-detail");
+    if (ok && lineageState?.model === model && lineageState.pinned && panel && !panel.contains(document.activeElement)) {
+      panel.innerHTML = lineageDetail(model, lineageState.pinned);
+    }
+  });
   // Selection passed by the document, CSR or project page (#lineage?...&sel=doc:ID, csr:ID, project:ID or outcome:ID).
   const m = /^(doc|csr|project|outcome):(.+)$/.exec(sel);
   if (m) {
@@ -3884,7 +4605,12 @@ async function fetchBriefingData(country, from, to, signal) {
   const impacts = await briefingIn("impact_reports", "id,project_id,score,level,confidence,created_at,verdict", "project_id", ids, signal, "created_at")
     .catch(() => []); // impact analyses are extra context: the briefing stands without them
   impacts.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) || num(b.id) - num(a.id));
-  return { projects, linked, docs, csrs, impacts, anomalies };
+  // Past projects suggested by AI for the country's 2026 recommendations (left out when the table is missing or empty).
+  const recent = csrs.filter((c) => num(c.year) >= RELATED_YEAR);
+  const relatedRows = recent.length ? await loadRelated().catch(() => null) : null;
+  if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+  const related = relatedRows ? recent.flatMap((c) => relatedRows.byCsr.get(c.csr_id) || []) : [];
+  return { projects, linked, docs, csrs, impacts, anomalies, related };
 }
 
 /** POST {service: "briefing", ...} to tsi-assistant; returns { key_messages, comments } or throws a readable Error. */
@@ -4123,7 +4849,7 @@ async function route(seq) {
   }
   assistantContext = null;
   const viewKey = ["project", "csr", "csrdoc", "impact"].includes(r) && id ? `${r}/${id}`
-    : (["dashboard", "lineage", "csrs", "anomalies", "impact", "guide"].includes(r) ? r : "projects");
+    : (["dashboard", "lineage", "csrs", "anomalies", "impact", "guide", "reviews"].includes(r) ? r : "projects");
   setActiveTab(r);
   loading();
   try {
@@ -4134,6 +4860,7 @@ async function route(seq) {
     else if (r === "lineage") await renderLineage(p, seq);
     else if (r === "csrs") await renderCsrs(p, seq);
     else if (r === "anomalies") await renderAnomalies(p, seq);
+    else if (r === "reviews") await renderReviews(p, seq);
     else if (r === "guide") renderGuide(id);
     else if (r === "impact") await renderImpact(id, p, seq);
     else { setActiveTab("projects"); await renderProjects(p, seq); }
@@ -4322,7 +5049,7 @@ async function init() {
   });
   // One Escape handler for the whole page: hides the chart tooltips and releases a pinned lineage node.
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || $("info-dialog")?.open || $("briefing-dialog")?.open) return;
+    if (e.key !== "Escape" || $("info-dialog")?.open || $("briefing-dialog")?.open || $("review-dialog")?.open) return;
     const tip = $("dash-tip");
     if (tip) tip.hidden = true;
     hideLineageTip();
@@ -4335,6 +5062,7 @@ async function init() {
     if (a) lnTabFocus = a.getAttribute("href") === location.hash ? null : a.dataset.lnview;
   });
   bindInfoDialog();
+  bindReviewDialog();
   bindBriefing();
   bindAssistant();
   let resizeTimer = 0;
