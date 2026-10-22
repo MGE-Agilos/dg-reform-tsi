@@ -974,6 +974,9 @@ function clearAiState() {
   dashCache = null;
   lineageCache.clear();
   lineageState = null;
+  ovCache = null;
+  ovLoading = null;
+  ovState.countryHash = "";
   csrYearsCache = null;
   csrDocsMissing = false;
   try {
@@ -1676,13 +1679,39 @@ const INFO = {
       <li><strong>Direct</strong>: the project's objective is to design or implement what the CSR sub-part recommends.</li>
       <li><strong>Partial</strong>: the project contributes to one aspect of the recommendation, or to a precondition.</li></ul>
       <p>So far only projects with a detail page are linked; projects known only by their title are not yet linked.</p>
-      <h3>The chain, stage by stage</h3><ol>
+      <p>The Lineage tab shows these links in four views: <em>Sankey</em>, <em>Network</em> and <em>Sunburst</em> for all countries
+      at once, and <em>By country</em>, the chain below for one country.</p>
+      <h3>The chain, stage by stage (By country)</h3><ol>
       <li><strong>CSR document</strong>: the European Semester proposes the recommendations addressed to the country (one document per year).</li>
       <li><strong>Recommendation</strong>: each numbered recommendation, with its latest assessment.</li>
       <li><strong>Initial request</strong> (pending): the country's request for support, with the CSRs it claims to address.
         Not public: it will come from the JIRA export.</li>
       <li><strong>Project</strong>: the selected project, linked to the recommendations by the AI assessment above.</li>
       <li><strong>Outcome</strong>: the project's results status, its deliverables and its latest impact analysis.</li></ol>`,
+  }),
+  overview: () => ({
+    title: "Lineage views",
+    html: `<p>The Lineage tab has four views. The first three show <strong>all countries at once</strong>; the last one follows a
+      single country stage by stage.</p>
+      <p>A <strong>pair</strong> is one recommendation linked to one project: the project's links to the sub-parts of a recommendation
+      are grouped, and the pair is <em>direct</em> if at least one of them is direct. The country is that of the recommendation, so a
+      project supporting recommendations of three countries counts in each of them. Only recommendations with at least one linked
+      project appear (none of the 2026 Commission recommendations yet).</p>
+      <h3>Filters</h3><p><strong>CSR years</strong> (year of the recommendation) and <strong>link level</strong> (all, direct, partial)
+      apply to the Sankey, the Network and the Sunburst and are kept when you switch between them. The summary line gives the pairs,
+      recommendations, projects and countries selected and the share of direct pairs.</p>
+      <h3>The four views</h3><dl class="info-dl">
+      <dt>Sankey: where support concentrates</dt><dd>Country → policy area of the project → programme → stated outcome; ribbon width is the
+        number of pairs. Click a country to split it by CSR year (the other countries merge into one block).</dd>
+      <dt>Network: projects that bridge countries</dt><dd>Countries as dark discs (size = pairs), projects as dots (fill = programme,
+        ring = outcome). Opens with all projects; untick <em>Show all projects</em> to keep the multi-country ones. Click a country to
+        highlight its projects, a project for its link; drag, zoom and search.</dd>
+      <dt>Sunburst: each country's policy mix</dt><dd>Rings: country → policy area → project (coloured by outcome); angle = pairs.
+        Click a segment to zoom in, the centre to zoom out.</dd>
+      <dt>By country: the full chain</dt><dd>One country's CSR documents, recommendations, initial request (pending JIRA), projects and
+        outcomes, with every recommendation and project as a node.</dd></dl>
+      <p>Below each chart, the selected country or project links to its By country view, its projects or its project page.
+      Counts are pairs, not projects: a project linked to three recommendations weighs three. Links assessed by AI: verify before use.</p>`,
   }),
   request: () => ({
     title: "Initial request (pending)",
@@ -1697,7 +1726,7 @@ const INFO = {
   }),
 };
 
-const INFO_GUIDE = { results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", request: "lineage" };
+const INFO_GUIDE = { results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", request: "lineage", overview: "lineage" };
 
 function infoButton(key, label = "About this chart") {
   return `<button type="button" class="info-btn" data-info="${key}" aria-label="${esc(label)}" aria-haspopup="dialog">ⓘ</button>`;
@@ -1780,6 +1809,26 @@ const GUIDE = [
       belongs to (breadcrumb at the top) and a link to the lineage network.</li></ul>
     <h4>Assessments</h4>${infoHtml("assessments")}` },
   { id: "lineage", title: "Lineage", html: () => `
+    <p>The Lineage tab has four sub-tabs, in this order: <strong>Sankey</strong> (opened by default), <strong>Network</strong>,
+      <strong>Sunburst</strong> and <strong>By country</strong>. The first three give an overview of the recommendation–project pairs
+      of all 27 countries; By country follows one country stage by stage. Links from a project, CSR or document page, from the
+      dashboard and from this guide open By country directly. The address keeps the sub-tab, the filters and the drilled country
+      (for instance <code>#lineage?view=sunburst&amp;cc=IT</code>), so a view can be bookmarked or shared.</p>
+    <h4>Overviews: Sankey, Network, Sunburst</h4>
+    <ul><li><strong>Filters</strong>: CSR years (from, to) and link level (all, direct, partial), shared by the three views and kept
+      when you switch between them; the summary line gives the pairs, recommendations, projects, countries and the share of direct pairs.</li>
+    <li><strong>Sankey</strong>: country of the recommendation → policy area → programme → outcome, ribbon width = pairs. Click a
+      country (or choose it in <em>Drill into</em>) to split it by CSR year; <em>All countries</em> returns.</li>
+    <li><strong>Network</strong>: countries (dark discs) and projects (dots: fill = programme, ring = outcome), all projects shown.
+      Untick <em>Show all projects</em> to keep the projects shared by several countries. Click a country (or Enter) to highlight
+      its projects, a project for its details; drag, scroll to zoom, search by title or country, <em>Reset</em> and <em>Fit to view</em>.</li>
+    <li><strong>Sunburst</strong>: rings country → policy area → project (coloured by outcome). Click a segment (or choose a country in
+      <em>Zoom to</em>) to zoom in, the centre to zoom out.</li>
+    <li><strong>From an overview to the details</strong>: below each chart, the drilled, highlighted or zoomed country links to its
+      By country view and its projects, and a selected project to its project page.</li>
+    <li>The links of all countries (several thousand rows) are loaded once per session; the dashboard's <em>Refresh</em> reloads them.
+      On a narrow screen the Sankey scrolls sideways inside its card.</li></ul>
+    <h4>By country</h4>
     <p>The lineage network follows, for one country, the whole workflow of a project in five stages: the European Semester
       proposes CSRs, the country submits a request claiming CSR support, the project is selected and carried out, then delivers
       its results.</p>
@@ -2654,6 +2703,8 @@ async function refreshDashboard() {
     return;
   }
   dashCache = { uid: currentUid, model: res.model, at: new Date() };
+  ovCache = null; // the lineage views reload their links on next use
+  lineageCache.clear();
   paintDashboard();
   $("dash-status").textContent = "Figures updated.";
   $("dash-refresh").focus();
@@ -3343,6 +3394,12 @@ async function defaultLineageCountry() {
 }
 
 async function renderLineage(p, seq) {
+  ovMounted?.stop();
+  ovMounted = null;
+  // Sub-tab: ?view=sankey|network|sunburst|country; links with a country or a selection (project, CSR, document pages,
+  // dashboard, guide) open By country, a bare #lineage the Sankey.
+  const kind = pick(p.get("view") || "", OV_VIEWS) || (p.has("country") || p.has("sel") ? "country" : "sankey");
+  if (kind !== "country") return renderOverview(kind, p, seq);
   const raw = p.get("country") || "";
   let country = pick(raw, COUNTRIES);
   let from = yearOf(p, "from") ?? LN_FROM;
@@ -3359,14 +3416,16 @@ async function renderLineage(p, seq) {
       return location.replace(`#lineage?${q.toString()}`);
     }
   }
-  const form = filterForm("lineage", countriesSelect(country)
+  if (country) ovState.countryHash = location.hash;
+  const tabs = lineageTabs("country");
+  const form = filterForm("lineage", `<input type="hidden" name="view" value="country">${countriesSelect(country)}`
     + yearField("from", "From year", from) + yearField("to", "To year", to)
-    + checkField("unlinked", "Show CSRs without a project", unlinked));
+    + checkField("unlinked", "Show CSRs without a project", unlinked)).replace('href="#lineage"', 'href="#lineage?view=country"');
   const intro = `<p class="muted">From the European Semester to the results: CSR documents (one per year), their recommendations, `
     + `the country's initial request (pending the JIRA export), the projects that support them and their outcome. `
     + `Links assessed by AI from the project text: verify before use. ${infoButton("links", "About the links")}</p>`;
   if (!country) {
-    view(`${heading("Lineage")}${intro}${form}`
+    view(`${heading("Lineage")}${tabs}${intro}${form}`
       + (raw ? `<p class="error" role="alert">Unknown country code: choose a country.</p>` : `<p class="empty">Choose a country.</p>`));
     bindFilters();
     return;
@@ -3375,7 +3434,7 @@ async function renderLineage(p, seq) {
   if (stale(seq)) return;
   if (res.error) return showError(res.error, "Could not load the lineage network");
   const model = lineageModel(res.csrs, res.scores, { unlinked, country });
-  const head = `${heading(`Lineage · ${countryName(country)}`)}${intro}${form}`;
+  const head = `${heading(`Lineage · ${countryName(country)}`)}${tabs}${intro}${form}`;
   if (!model.edges.length) {
     view(`${head}<p class="muted small">${esc(lineageSummary(model.summary, { country, from, to }))}</p>`
       + `<div class="card"><p class="empty">No project is linked to a CSR of ${esc(countryName(country))} between ${from} and ${to}.</p>`
@@ -3424,6 +3483,290 @@ async function renderLineage(p, seq) {
 function lineageHref(country, years, sel, unlinked = false) {
   const ys = years.filter((y) => Number.isFinite(y) && y > 1900);
   return hrefFor("lineage", { country, from: Math.min(LN_FROM, ...ys), to: Math.max(LN_TO, ...ys), unlinked: unlinked ? "1" : "", sel });
+}
+
+// ---------- lineage overviews: Sankey, network and sunburst of all countries (d3, loaded on first use) ----------
+
+const OV_VIEWS = ["sankey", "network", "sunburst", "country"];
+const OV_LABELS = { sankey: "Sankey", network: "Network", sunburst: "Sunburst", country: "By country" };
+const OV_LEVELS = ["all", "direct", "partial"];
+const OV_LIB = "./lineage-overview.js"; // imports d3@7.9.0 and d3-sankey@0.12.3 (jsDelivr ESM builds)
+const OV_TABLES = [ // [table, columns, stable order for the pagination]
+  ["project_csr_links", "project_id,part_id,level", ["project_id", "part_id"]],
+  ["csr_parts", "part_id,csr_id", ["part_id"]],
+  ["csrs", "csr_id,country,year,number,assessment", ["csr_id"]],
+  ["projects", "project_id,title,programme,year,countries,policy_area,results,deliverables", ["project_id"]],
+  ["impact_reports", "id,project_id,score,level,confidence,created_at", ["created_at", "id"]],
+];
+let ovCache = null; // { uid, model } for the session; cleared on sign-out and by the dashboard Refresh
+let ovLoading = null; // { uid, promise } while the tables load
+let ovLib = null; // the lineage-overview.js module once loaded
+let ovMounted = null; // { kind, redraw, stop, hideTip, width } of the chart on screen
+let lnTabFocus = null; // sub-tab clicked: it gets the focus back after the render
+const ovState = { from: null, to: null, level: "all", cc: { sankey: "", network: "", sunburst: "" }, network: { all: true, q: "" }, countryHash: "", years: null };
+
+/** Every row of a table, 1,000 per request at most (PostgREST cap): first page with the exact count, then the others. */
+async function fetchAllRows(table, columns, order) {
+  const build = (opts) => order.reduce((q, col) => q.order(col, { ascending: table !== "impact_reports" }), sb.from(table).select(columns, opts));
+  const first = await build({ count: "exact" }).range(0, 999);
+  if (first.error) throw first.error;
+  const rows = [...first.data];
+  const size = first.data.length;
+  const total = first.count ?? size;
+  if (!size || rows.length >= total) return rows;
+  const pages = [];
+  for (let off = size; off < total; off += size) pages.push(build().range(off, off + size - 1));
+  for (const res of await Promise.all(pages)) {
+    if (res.error) throw res.error;
+    rows.push(...res.data);
+  }
+  return rows;
+}
+
+/**
+ * Recommendation–project pairs over all countries: sub-part links grouped by recommendation (direct wins),
+ * with the recommendation (country, year) and the project (programme, policy area, results, latest impact).
+ */
+function overviewModel({ links, parts, csrs, projects, impacts }) {
+  const partCsr = new Map(parts.map((p) => [p.part_id, p.csr_id]));
+  const csrById = new Map();
+  for (const c of csrs) if (Object.hasOwn(COUNTRIES, c.country)) csrById.set(c.csr_id, c);
+  const projById = new Map(projects.map((p) => [p.project_id, p]));
+  const pairLevel = new Map();
+  for (const l of links) {
+    const cid = partCsr.get(l.part_id);
+    if (!csrById.has(cid) || !projById.has(l.project_id)) continue;
+    const k = `${cid}\u0000${l.project_id}`;
+    if (pairLevel.get(k) !== "direct") pairLevel.set(k, l.level === "direct" ? "direct" : "partial");
+  }
+  const latest = new Map(); // latest analysis per project (the latest scored one when there is one)
+  for (const r of impacts) {
+    const had = latest.get(r.project_id);
+    if (!had || (!Number.isFinite(had.score) && Number.isFinite(r.score))) latest.set(r.project_id, r);
+  }
+  const C = new Map();
+  const P = new Map();
+  const pairs = [];
+  for (const [k, level] of pairLevel) {
+    const [cid, pid] = k.split("\u0000");
+    if (!C.has(cid)) {
+      const c = csrById.get(cid);
+      C.set(cid, { i: C.size, id: cid, cc: c.country, year: num(c.year), num: c.number });
+    }
+    if (!P.has(pid)) {
+      const p = projById.get(pid);
+      const res = resultsInfo(p.results).key;
+      const imp = latest.get(pid);
+      P.set(pid, { i: P.size, id: pid, title: p.title || pid, prog: p.programme || "Other", year: p.year ?? "", res: res === "achieved" ? 0 : res === "expected" ? 1 : 2,
+        deliv: num(p.deliverables), pa: p.policy_area || "none", countries: arr(p.countries),
+        imp: imp ? { score: Number.isFinite(imp.score) ? imp.score : null, level: imp.level ?? "", confidence: imp.confidence ?? "" } : null });
+    }
+    pairs.push({ c: C.get(cid), p: P.get(pid), d: level === "direct" });
+  }
+  const ys = [...C.values()].map((c) => c.year).filter((y) => y > 1900);
+  const years = ys.length ? { min: Math.min(...ys), max: Math.max(...ys) } : { min: LN_FROM, max: LN_TO };
+  return { pairs, years, csrCount: C.size, projectCount: P.size };
+}
+
+async function fetchOverview() {
+  const uid = currentUid;
+  if (ovCache?.uid === uid) return ovCache.model;
+  if (ovLoading?.uid !== uid) {
+    const promise = Promise.all(OV_TABLES.map(([t, cols, order]) => fetchAllRows(t, cols, order)))
+      .then(([links, parts, csrs, projects, impacts]) => {
+        const model = overviewModel({ links, parts, csrs, projects, impacts });
+        if (currentUid === uid) ovCache = { uid, model };
+        return model;
+      })
+      .finally(() => { if (ovLoading?.promise === promise) ovLoading = null; });
+    ovLoading = { uid, promise };
+  }
+  return ovLoading.promise;
+}
+
+/** The d3 views module (and d3 itself); null if the CDN cannot be reached (a later call retries). */
+async function loadOverviewLib() {
+  if (ovLib) return ovLib;
+  try {
+    ovLib = await import(OV_LIB);
+  } catch {
+    ovLib = null;
+  }
+  return ovLib;
+}
+
+function ovYearsDefault() {
+  return ovState.years || { min: null, max: null };
+}
+
+/** Address of a lineage sub-tab, with the filters (and the drilled country) it had last. */
+function ovHref(kind) {
+  if (kind === "country") return ovState.countryHash || hrefFor("lineage", { view: "country" });
+  const y = ovYearsDefault();
+  return hrefFor("lineage", { view: kind, from: ovState.from !== y.min ? ovState.from : "", to: ovState.to !== y.max ? ovState.to : "",
+    level: ovState.level !== "all" ? ovState.level : "", cc: ovState.cc[kind] });
+}
+
+/** By country address for a country, with the overview years when they were narrowed. */
+function ovCountryHref(cc) {
+  const y = ovYearsDefault();
+  const narrowed = ovState.from !== null && (ovState.from !== y.min || ovState.to !== y.max);
+  return hrefFor("lineage", { view: "country", country: cc, from: narrowed ? ovState.from : "", to: narrowed ? ovState.to : "" });
+}
+
+function lineageTabs(current) {
+  const a = (kind) => `<a class="btn btn-secondary seg" data-lnview="${kind}" href="${esc(ovHref(kind))}"`
+    + `${kind === current ? ' aria-current="page"' : ""}>${OV_LABELS[kind]}</a>`;
+  return `<nav class="seg-group ln-views" aria-label="Lineage views">${OV_VIEWS.map(a).join("")}</nav>`;
+}
+
+/** After the render: the clicked sub-tab keeps the focus. */
+function focusLineageTab() {
+  if (!lnTabFocus) return;
+  $("view").querySelector(`[data-lnview="${lnTabFocus}"]`)?.focus();
+  lnTabFocus = null;
+}
+
+function ovIntro(kind) {
+  const how = {
+    sankey: `Columns: country of the recommendation → policy area of the project → programme → stated outcome. Ribbon width is the number of `
+      + `recommendation–project pairs. Hover a ribbon or a block for its pairs, distinct projects and share of direct links. Click a country `
+      + `to split it by CSR year (the other countries merge into one block); click again or use <em>All countries</em> to return.`,
+    network: `Dark discs are countries (size = recommendation–project pairs), small dots are projects (fill = programme, ring = outcome). `
+      + `All projects are shown; untick <em>Show all projects</em> to keep only the multi-country projects, which bridge countries. Click a `
+      + `country (or focus it and press Enter) to highlight its projects; click it again to clear. Drag nodes, scroll to zoom, search by title or country.`,
+    sunburst: `Centre EU → ring 1 countries → ring 2 policy areas of the projects → ring 3 projects, coloured by outcome. Angle is proportional `
+      + `to the recommendation–project pairs. Click a segment to make it the centre, click the centre to zoom back out; hover for details.`,
+  }[kind];
+  return `<p class="muted">All countries at once: each <strong>pair</strong> is one recommendation linked to one project (direct if at least one `
+    + `of its sub-part links is direct); the country is that of the recommendation. ${how} Links assessed by AI: verify before use. `
+    + `${infoButton("overview", "About the lineage views")}</p>`;
+}
+
+function ovLegend(kind) {
+  const sw = (color, label, cls = "") => `<li><span class="viz-key${cls}" style="background:${color}" aria-hidden="true"></span>${esc(label)}</li>`;
+  const ring = (color, label) => `<li><span class="viz-key ov-ring" style="border-color:${color}" aria-hidden="true"></span>${esc(label)}</li>`;
+  const present = new Set(ovCache?.model.pairs.map((x) => x.p.prog) || PROGRAMMES);
+  const shown = PROGRAMMES.filter((p) => present.has(p));
+  const progs = shown.map((p) => sw(ovLib.PROG_COLOR[p], p)).join("");
+  const res = ovLib.RES.map((r, i) => sw(ovLib.RES_COLOR[i], r)).join("");
+  if (kind === "sankey") {
+    return `<div class="ln-legend"><ul class="viz-legend"><li class="muted">Ribbons take the colour of the block they flow into.</li></ul>`
+      + `<ul class="viz-legend"><li class="muted">Programme:</li>${progs}</ul>`
+      + `<ul class="viz-legend"><li class="muted">Outcome ${infoButton("results", "About the results status")}</li>${res}</ul></div>`;
+  }
+  if (kind === "sunburst") {
+    const pa = ovLib.PA_KEYS.filter((k) => k !== "migration-management").map((k) => sw(ovLib.paColor(k), ovPaName(k))).join("");
+    return `<div class="ln-legend"><ul class="viz-legend"><li class="muted">Ring 1:</li>${sw("var(--ov-c1)", "Country (alternating shades)")}</ul>`
+      + `<ul class="viz-legend"><li class="muted">Ring 2, policy area:</li>${pa}</ul>`
+      + `<ul class="viz-legend"><li class="muted">Ring 3, project outcome ${infoButton("results", "About the results status")}</li>${res}</ul></div>`;
+  }
+  return `<div class="ln-legend"><ul class="viz-legend"><li class="muted">Nodes:</li>${sw("var(--ov-cnode)", "Country", " ov-dot")}`
+    + shown.map((p) => sw(ovLib.PROG_COLOR[p], `${p} project`, " ov-dot")).join("") + `</ul>`
+    + `<ul class="viz-legend"><li class="muted">Ring = outcome ${infoButton("results", "About the results status")}</li>`
+    + ovLib.RES.map((r, i) => ring(ovLib.RES_COLOR[i], r)).join("") + `</ul></div>`;
+}
+
+function ovPaName(k) {
+  if (k === "none" || !k) return "Policy area not stated";
+  if (k === "recovery-and-resilience-plans") return "Recovery and resilience plans";
+  return POLICY_AREAS[k] || deslug(k);
+}
+
+function ovFiltered(model) {
+  return model.pairs.filter((x) => x.c.year >= ovState.from && x.c.year <= ovState.to && (ovState.level === "all" || (ovState.level === "direct") === x.d));
+}
+
+function ovSummaryHtml(ps) {
+  const proj = new Set(ps.map((x) => x.p.i)).size;
+  const recs = new Set(ps.map((x) => x.c.i)).size;
+  const cs = new Set(ps.map((x) => x.c.cc)).size;
+  const dir = ps.filter((x) => x.d).length;
+  const years = ovState.from === ovState.to ? String(ovState.from) : `${ovState.from}–${ovState.to}`;
+  const n = (v, word) => `<strong>${fmtN(v)}</strong> ${word}${v === 1 ? "" : "s"}`;
+  return `CSRs ${years}: ${n(ps.length, "recommendation–project pair")} · ${n(recs, "recommendation")} · `
+    + `${n(proj, "project")} · ${n(cs, "country").replace(/countrys$/, "countries")} · <strong>${share(dir, ps.length) || "–"}</strong> direct`;
+}
+
+function ovFiltersHtml(years) {
+  const opts = (v) => Array.from({ length: years.max - years.min + 1 }, (_, i) => years.min + i)
+    .map((y) => `<option${y === v ? " selected" : ""}>${y}</option>`).join("");
+  const lv = OV_LEVELS.map((l) => `<button type="button" class="btn btn-secondary seg" data-level="${l}" aria-pressed="${l === ovState.level}">${deslug(l)}</button>`).join("");
+  return `<div class="card filters ov-filters" role="group" aria-label="Filters of the Sankey, Network and Sunburst views">`
+    + `<label class="field field-half"><span>CSR years from</span><select id="ov-from">${opts(ovState.from)}</select></label>`
+    + `<label class="field field-half"><span>to</span><select id="ov-to">${opts(ovState.to)}</select></label>`
+    + `<div class="field"><span id="ov-level-l">Link level</span><div class="seg-group ov-level" role="group" aria-labelledby="ov-level-l">${lv}</div></div></div>`;
+}
+
+/** Keeps the address in step with the view (no new history entry, no re-render) and the sub-tab links up to date. */
+function ovSaveHash(kind) {
+  if (!$("ov-chart")) return;
+  try { history.replaceState(null, "", `${location.pathname}${location.search}${ovHref(kind)}`); } catch { /* ignore */ }
+  document.querySelectorAll("#view [data-lnview]").forEach((a) => a.setAttribute("href", ovHref(a.dataset.lnview)));
+}
+
+function ovRedraw(model) {
+  const ps = ovFiltered(model);
+  $("ov-summary").innerHTML = ovSummaryHtml(ps);
+  ovMounted.redraw(ps);
+  ovMounted.width = $("ov-chart")?.clientWidth || 0;
+}
+
+async function renderOverview(kind, p, seq) {
+  lineageState = null;
+  const head = `${heading("Lineage")}${lineageTabs(kind)}`;
+  view(`${head}<p class="loading" role="status">Loading the links of all countries…</p>`);
+  const [lib, data] = await Promise.all([loadOverviewLib(), fetchOverview().then((model) => ({ model }), (error) => ({ error }))]);
+  if (stale(seq)) return;
+  if (!lib) {
+    view(`${head}<div class="error" role="alert"><strong>Could not load the chart library.</strong> d3 is loaded from cdn.jsdelivr.net: `
+      + `check your network connection (or a blocker) and reload the page. The <a href="${esc(ovHref("country"))}">By country</a> view works without it.</div>`);
+    return;
+  }
+  if (data.error) return showError(data.error, "Could not load the lineage links");
+  const model = data.model;
+  const years = model.years;
+  ovState.years = years;
+  const clamp = (y, d) => (y === null ? d : Math.min(years.max, Math.max(years.min, y)));
+  ovState.from = clamp(yearOf(p, "from"), years.min);
+  ovState.to = clamp(yearOf(p, "to"), years.max);
+  if (ovState.from > ovState.to) [ovState.from, ovState.to] = [ovState.to, ovState.from];
+  ovState.level = pick(p.get("level"), OV_LEVELS) || "all";
+  ovState.cc[kind] = pick(p.get("cc") || "", COUNTRIES);
+  view(`${heading("Lineage")}${lineageTabs(kind)}${ovIntro(kind)}${ovFiltersHtml(years)}`
+    + `<p class="ln-summary" id="ov-summary" aria-live="polite"></p>`
+    + `<div class="card ov-card">${lib.toolbarHtml(kind)}<div id="ov-chart" class="ov-chart ov-${kind}"></div>${ovLegend(kind)}`
+    + `<div id="ov-detail" class="ln-detail" aria-live="polite"></div></div>`
+    + `<div id="ov-tip" class="viz-tip ov-tip" role="tooltip" hidden></div>`);
+  const ctx = {
+    esc, cname: countryName, paName: ovPaName,
+    countries: Object.keys(COUNTRIES).sort((a, b) => countryName(a).localeCompare(countryName(b))),
+    getCc: () => ovState.cc[kind],
+    setCc: (cc) => { ovState.cc[kind] = pick(cc || "", COUNTRIES); ovSaveHash(kind); },
+    network: ovState.network,
+    countryHref: ovCountryHref,
+    projectHref: (id) => `#project/${encodeURIComponent(id)}`,
+    projectsHref: ({ country, area }) => hrefFor("projects", { country, area: area && Object.hasOwn(POLICY_AREAS, area) ? area : "" }),
+  };
+  ovMounted = { kind, ...lib.mount(kind, $("view"), ctx), width: 0 };
+  const changed = () => { ovRedraw(model); ovSaveHash(kind); };
+  $("ov-from").addEventListener("change", (e) => {
+    ovState.from = Number(e.target.value);
+    if (ovState.from > ovState.to) { ovState.to = ovState.from; $("ov-to").value = String(ovState.to); }
+    changed();
+  });
+  $("ov-to").addEventListener("change", (e) => {
+    ovState.to = Number(e.target.value);
+    if (ovState.to < ovState.from) { ovState.from = ovState.to; $("ov-from").value = String(ovState.from); }
+    changed();
+  });
+  $("view").querySelectorAll(".ov-level [data-level]").forEach((b) => b.addEventListener("click", () => {
+    ovState.level = b.dataset.level;
+    $("view").querySelectorAll(".ov-level [data-level]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    changed();
+  }));
+  ovRedraw(model);
+  ovSaveHash(kind);
 }
 
 // ---------- auth and routing ----------
@@ -3489,6 +3832,8 @@ async function route(seq) {
   }
   if (stale(seq)) return;
   restoreFocus(viewKey);
+  if (r === "lineage") focusLineageTab();
+  else lnTabFocus = null;
   focusGuideSection();
   paintAssistantContext();
   if (focusAssistant) $("chat-input")?.focus();
@@ -3671,7 +4016,13 @@ async function init() {
     const tip = $("dash-tip");
     if (tip) tip.hidden = true;
     hideLineageTip();
+    ovMounted?.hideTip();
     if (lineageState?.pinned && $("ln-graph")) lineagePin(lineageState.pinned);
+  });
+  // A lineage sub-tab gets the focus back after its render (the view keeps the same route).
+  document.addEventListener("click", (e) => {
+    const a = e.target instanceof Element ? e.target.closest("#view [data-lnview]") : null;
+    if (a) lnTabFocus = a.getAttribute("href") === location.hash ? null : a.dataset.lnview;
   });
   bindInfoDialog();
   bindAssistant();
@@ -3684,6 +4035,8 @@ async function init() {
       if (root && root.clientWidth !== dashWidth) paintDashCharts();
       const wrap = $("ln-wrap");
       if (wrap && lineageState && wrap.clientWidth !== lineageState.width) paintLineageGraph();
+      const chart = $("ov-chart");
+      if (chart && ovMounted && ovCache && Math.abs(chart.clientWidth - ovMounted.width) >= 24) ovRedraw(ovCache.model);
     }, 150);
   });
   window.addEventListener("hashchange", () => {

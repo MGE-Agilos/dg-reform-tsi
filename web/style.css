@@ -45,6 +45,13 @@
   --viz-axis: #c3cad4;
   --viz-edge: #a3adba;     /* lineage edges at rest (de-emphasis grey) */
   --viz-edge-hi: #1f5fb4;  /* highlighted edges (validated: band, chroma, contrast) */
+  /* Lineage overviews (Sankey, network, sunburst): country shades, country discs, policy areas. */
+  --ov-c1: #0b4ea2;
+  --ov-c2: #4a7fc4;
+  --ov-cnode: #24324a;
+  --ov-on-cnode: #ffffff;
+  --ov-pa0: #4e79a7; --ov-pa1: #59a14f; --ov-pa2: #9c755f; --ov-pa3: #f28e2b; --ov-pa4: #b07aa1; --ov-pa5: #e15759;
+  --ov-pa6: #76b7b2; --ov-pa7: #c9a227; --ov-pa8: #ff9da7; --ov-pa9: #79706e; --ov-pa10: #b3aca8; --ov-pa11: #8cd17d;
   color-scheme: light;
 }
 
@@ -91,6 +98,12 @@
     --viz-axis: #3a4552;
     --viz-edge: #56616f;
     --viz-edge-hi: #4c8fef;
+    --ov-c1: #3d7fd6;
+    --ov-c2: #6aa5f2;
+    --ov-cnode: #d3dbe6;
+    --ov-on-cnode: #0f141a;
+    --ov-pa0: #6e9bd1; --ov-pa1: #72bb67; --ov-pa2: #b8927b; --ov-pa3: #f5a04e; --ov-pa4: #c79bbb; --ov-pa5: #ec7476;
+    --ov-pa6: #8fcac5; --ov-pa7: #dcb94a; --ov-pa8: #ffb3bb; --ov-pa9: #a39c99; --ov-pa10: #cfc8c4; --ov-pa11: #a6dc99;
     color-scheme: dark;
   }
 }
@@ -475,6 +488,62 @@ a.viz-mark { cursor: pointer; }
   .ln-res { stroke: CanvasText; }
   .ln-res-achieved { fill: CanvasText; }
   .ln-edge.on .ln-line { stroke: Highlight; }
+}
+
+/* Lineage sub-tabs and overviews (Sankey, network, sunburst; drawn with d3 by lineage-overview.js). */
+.ln-views { margin: 0 0 12px; }
+.seg-group .seg + .seg { margin-left: -1px; }
+.ov-filters { padding: 12px 16px; }
+.ov-level { margin: 0; flex-wrap: nowrap; }
+.ov-level .seg { min-height: 38px; }
+.ov-level .seg[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); }
+.ov-card { padding: 14px; min-width: 0; }
+.ov-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 10px; }
+.ov-tools input[type="search"] {
+  width: min(280px, 100%); background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 10px; min-height: 38px;
+}
+.ov-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 0.92rem; }
+.ov-chart { position: relative; min-width: 0; max-width: 100%; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 6px; background: var(--card); }
+.ov-chart svg { display: block; font-family: inherit; max-width: none; }
+.ov-sunburst { display: flex; justify-content: center; }
+.ov-network svg { cursor: grab; touch-action: none; }
+.ov-empty { padding: 16px; margin: 0; }
+.ov-card .ln-legend { margin: 10px 0 0; }
+.ov-ring { background: transparent; border: 2.5px solid; border-radius: 50%; }
+.ov-dot { border-radius: 50%; }
+.ov-tip { position: fixed; z-index: 50; max-width: 320px; }
+.ov-tip div { margin-top: 2px; }
+.ov-chart svg text { fill: var(--fg); }
+.ov-chart .halo { paint-order: stroke; stroke: var(--card); stroke-width: 3px; stroke-linejoin: round; }
+.sk path.lk { fill: none; stroke-opacity: 0.38; transition: stroke-opacity 0.15s; }
+.sk.dim path.lk { stroke-opacity: 0.08; }
+.sk.dim path.lk.hl { stroke-opacity: 0.78; }
+.sk g.click rect.nd { cursor: pointer; }
+.sk g.nd-g { outline: none; }
+.sk g.nd-g:focus-visible rect { stroke: var(--focus); stroke-width: 3px; }
+.sk text { font-size: 12px; }
+.sb path { stroke: var(--card); stroke-width: 0.6px; }
+.sb text { font-size: 10.5px; }
+.sb text.sb-sub { fill: var(--muted); }
+.sb .center { cursor: pointer; outline: none; }
+.sb .center:focus-visible circle { stroke: var(--focus); stroke-width: 3px; }
+.nw .nw-bg { fill: var(--card); }
+.nw line { stroke: var(--viz-edge); stroke-opacity: 0.55; }
+.nw .faded { opacity: 0.12; }
+.nw g.cn { cursor: pointer; outline: none; }
+.nw g.cn:focus-visible circle { stroke: var(--focus); stroke-width: 3.5px; }
+.ov-chart .nw g.cn text { font-size: 10.5px; font-weight: 600; fill: var(--ov-on-cnode); pointer-events: none; }
+.nw circle.pn { cursor: pointer; }
+.nw circle.pn.sel { stroke: var(--fg); stroke-width: 3px; }
+.nw .match { stroke: var(--focus) !important; stroke-width: 3.5px !important; }
+@media (max-width: 600px) {
+  .ln-views { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .ln-views .seg { padding: 7px 4px; font-size: 0.86rem; white-space: nowrap; }
+  .ov-filters .field:last-child { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sk path.lk, .ov-chart * { transition: none !important; }
 }
 
 /* "About this chart" buttons and the shared dialog. */
