@@ -417,16 +417,31 @@ a.viz-mark { cursor: pointer; }
   .viz-key, .viz-line { background: CanvasText; }
 }
 
-/* Lineage network (CSR -> projects). Node text stays in text tokens; colour sits on a small marker. */
+/* Lineage network (CSR documents -> recommendations -> initial request -> projects -> outcome). Node text stays in text tokens; colour sits on a small marker. */
 .ln-summary { margin: 4px 0 12px; }
 .ln-card { padding: 14px; }
 .ln-legend { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .ln-key { vertical-align: middle; margin-right: 6px; flex: none; }
 .ln-pill-key { display: inline-block; font-size: 0.72rem; font-weight: 600; border: 1px solid var(--border); background: var(--row-alt); border-radius: 999px; padding: 0 6px; margin-right: 6px; line-height: 1.4; }
 .ln-wrap { position: relative; min-width: 0; }
-.ln-graph { min-width: 0; }
-.ln-svg { display: block; width: 100%; height: auto; overflow: visible; }
+.ln-graph { min-width: 0; overflow-x: auto; }
+.ln-svg { display: block; height: auto; overflow: visible; }
+.ln-svg:not(.ln-scroll) { width: 100%; }
+.ln-svg.ln-scroll { max-width: none; }
 .ln-colh { fill: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: 0.04em; }
+.ln-colcap { fill: var(--muted); font-size: 10px; }
+.ln-reqnote { font-style: italic; }
+.ln-bandbox { fill: var(--row-alt); stroke: var(--border); stroke-width: 1; stroke-dasharray: 4 3; }
+.ln-band-key { display: inline-block; width: 22px; height: 12px; margin-right: 6px; vertical-align: middle; border: 1px dashed var(--muted); border-radius: 3px; background: var(--row-alt); }
+.ln-olink { fill: none; stroke: var(--viz-edge); stroke-width: 1.5; pointer-events: none; transition: opacity 0.15s; }
+.ln-olink.on { stroke: var(--viz-edge-hi); stroke-width: 2; }
+/* Results status: shape and colour (filled disc = achieved, ring = expected, dashed ring = not stated). */
+.ln-res { stroke-width: 2; }
+.ln-res-achieved { fill: var(--direct); stroke: var(--direct); }
+.ln-res-expected { fill: var(--card); stroke: var(--partial); }
+.ln-res-none { fill: var(--card); stroke: var(--viz-muted); stroke-width: 1.5; stroke-dasharray: 2 2; }
+.ln-facts { margin: 8px 0; }
+.ln-facts .ln-key { margin-right: 4px; vertical-align: -2px; }
 .ln-docbox { fill: var(--row-alt); }
 .ln-tree { fill: none; stroke: var(--viz-faint); stroke-width: 1.25; pointer-events: none; transition: opacity 0.15s; }
 .ln-tree.on { stroke: var(--viz-edge-hi); stroke-width: 1.5; }
@@ -448,14 +463,17 @@ a.viz-mark { cursor: pointer; }
 .ln-hit { fill: none; stroke: transparent; stroke-width: 10; pointer-events: stroke; }
 .ln-edge { transition: opacity 0.15s; }
 .ln-edge.on .ln-line, .ln-edge:hover .ln-line { stroke: var(--viz-edge-hi); stroke-width: 2; }
-.ln-graph.has-focus .ln-node:not(.on), .ln-graph.has-focus .ln-edge:not(.on), .ln-graph.has-focus .ln-tree:not(.on) { opacity: 0.15; }
+.ln-graph.has-focus .ln-node:not(.on), .ln-graph.has-focus .ln-edge:not(.on), .ln-graph.has-focus .ln-tree:not(.on),
+.ln-graph.has-focus .ln-olink:not(.on) { opacity: 0.15; }
 .ln-tip { max-width: 320px; }
 .ln-tip div { margin-top: 2px; }
 .ln-detail { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 10px; overflow-wrap: anywhere; }
 .ln-detail h3 { margin-top: 0; }
 .ln-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 @media (forced-colors: active) {
-  .ln-line, .ln-tree { stroke: CanvasText; }
+  .ln-line, .ln-tree, .ln-olink { stroke: CanvasText; }
+  .ln-res { stroke: CanvasText; }
+  .ln-res-achieved { fill: CanvasText; }
   .ln-edge.on .ln-line { stroke: Highlight; }
 }
 

@@ -1675,11 +1675,29 @@ const INFO = {
     html: `<p>Links assessed by AI from the project text: verify before use.</p><ul>
       <li><strong>Direct</strong>: the project's objective is to design or implement what the CSR sub-part recommends.</li>
       <li><strong>Partial</strong>: the project contributes to one aspect of the recommendation, or to a precondition.</li></ul>
-      <p>So far only projects with a detail page are linked; projects known only by their title are not yet linked.</p>`,
+      <p>So far only projects with a detail page are linked; projects known only by their title are not yet linked.</p>
+      <h3>The chain, stage by stage</h3><ol>
+      <li><strong>CSR document</strong>: the European Semester proposes the recommendations addressed to the country (one document per year).</li>
+      <li><strong>Recommendation</strong>: each numbered recommendation, with its latest assessment.</li>
+      <li><strong>Initial request</strong> (pending): the country's request for support, with the CSRs it claims to address.
+        Not public: it will come from the JIRA export.</li>
+      <li><strong>Project</strong>: the selected project, linked to the recommendations by the AI assessment above.</li>
+      <li><strong>Outcome</strong>: the project's results status, its deliverables and its latest impact analysis.</li></ol>`,
+  }),
+  request: () => ({
+    title: "Initial request (pending)",
+    html: `<p>Before a project is selected, the Member State submits a <strong>request for support</strong>. In it the country
+      declares the CSRs the request addresses: claiming CSR support improves its chances of selection. These claimed CSRs are
+      self-declared and recorded in <strong>JIRA</strong>; the request is not public.</p>
+      <p>The column is a placeholder: no request is shown yet and the lines from the recommendations to the projects cross it
+      unchanged. Once the JIRA export is provided, the view will show, for each project, the CSRs <strong>claimed</strong> by
+      the country next to the links <strong>assessed by AI</strong>, and the gaps between them:</p><ul>
+      <li><strong>Claimed but not confirmed</strong>: a CSR declared in the request that the project text does not support.</li>
+      <li><strong>Confirmed but not claimed</strong>: a CSR the project supports although the request did not mention it.</li></ul>`,
   }),
 };
 
-const INFO_GUIDE = { results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage" };
+const INFO_GUIDE = { results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", request: "lineage" };
 
 function infoButton(key, label = "About this chart") {
   return `<button type="button" class="info-btn" data-info="${key}" aria-label="${esc(label)}" aria-haspopup="dialog">ⓘ</button>`;
@@ -1762,22 +1780,31 @@ const GUIDE = [
       belongs to (breadcrumb at the top) and a link to the lineage network.</li></ul>
     <h4>Assessments</h4>${infoHtml("assessments")}` },
   { id: "lineage", title: "Lineage", html: () => `
-    <p>The lineage network shows, for one country, the chain from its CSR documents to their recommendations and to the projects
-      that support them.</p>
-    <ul><li><strong>Documents</strong> (left): the country's CSR document of each year, with its number of recommendations.</li>
-    <li><strong>Recommendations</strong> (middle): the recommendations of each document; the small coloured marker gives the
+    <p>The lineage network follows, for one country, the whole workflow of a project in five stages: the European Semester
+      proposes CSRs, the country submits a request claiming CSR support, the project is selected and carried out, then delivers
+      its results.</p>
+    <p class="ln-stages">CSR document → recommendation → initial request (pending JIRA) → project → outcome</p>
+    <ul><li><strong>Documents</strong> (first column): the country's CSR document of each year, with its number of recommendations.</li>
+    <li><strong>Recommendations</strong>: the recommendations of each document; the small coloured marker gives the
       latest assessment.</li>
-    <li><strong>Projects</strong> (right): ordered to reduce crossings (each sits near the average height of its recommendations); the
-      marker gives the programme and a pill such as &ldquo;6/10&rdquo; the latest impact score.</li>
+    <li><strong>Initial request</strong> (dashed band, placeholder): the country's request and the CSRs it claims, self-declared in
+      JIRA and not public. It shows no data until the JIRA export is provided; the lines cross it unchanged.</li>
+    <li><strong>Projects</strong>: ordered to reduce crossings (each sits near the average height of its recommendations); the
+      marker gives the programme.</li>
+    <li><strong>Outcome</strong> (last column, on the row of its project): the results status (filled disc = results achieved,
+      ring = results expected, dashed ring = not stated), the number of deliverables and a pill such as &ldquo;6/10&rdquo; for
+      the latest impact score.</li>
     <li><strong>Lines</strong>: thin lines join a document to its recommendations; one line per recommendation–project pair,
-      solid = direct, dashed = partial (direct if at least one sub-part link is direct).</li>
-    <li><strong>Reading it</strong>: hover or focus a node to highlight its chain (a document lights up its recommendations and their
-      projects), click (or Enter) to pin the highlight and see the details below the graph; click again or press Escape to release
-      it. Hover a line for the sub-parts and the rationale.</li>
+      solid = direct, dashed = partial (direct if at least one sub-part link is direct); a short line joins a project to its outcome.</li>
+    <li><strong>Reading it</strong>: hover or focus a node to highlight its chain (a document lights up its recommendations, their
+      projects and outcomes), click (or Enter) to pin the highlight and see the details below the graph (for a project or an
+      outcome: results, deliverables with a link to the project page, latest impact with a link to the impact analysis); click
+      again or press Escape to release it. Hover a line for the sub-parts and the rationale.</li>
     <li><strong>Filters</strong>: country, years (default 2019–2025; the 2026 recommendations have no project yet) and
-      &ldquo;Show CSRs without a project&rdquo;.
-      The table of links below the graph can be downloaded as CSV.</li></ul>
-    <h4>Links</h4>${infoHtml("links")}` },
+      &ldquo;Show CSRs without a project&rdquo;. On a narrow screen the network scrolls sideways inside its card.
+      The table of links below the graph (with the results, deliverables and impact score of each project) can be downloaded as CSV.</li></ul>
+    <h4>Links</h4>${infoHtml("links")}
+    <h4>Initial request</h4>${infoHtml("request")}` },
   { id: "dashboard", title: "Dashboard", html: () => `
     <p>Figures across all projects and CSRs, loaded once per session (<em>Refresh</em> reloads them).</p>
     <ul><li><strong>Tiles</strong>: projects (share with a detail page), deliverables, CSR documents (27 per year, with the total
@@ -1843,7 +1870,9 @@ const GUIDE = [
     <dt>European Semester</dt><dd>The EU's yearly cycle of economic and social policy coordination, which produces the CSRs.</dd>
     <dt>Detail page</dt><dd>A project's own page on reforms-investments.ec.europa.eu; projects without one are known only from a listing.</dd>
     <dt>Sub-part</dt><dd>One distinct request inside a recommendation; the level at which project links are assessed.</dd>
-    <dt>Lineage</dt><dd>The chain from a CSR document to its recommendations and to the projects that support them, shown as a network per country.</dd></dl>` },
+    <dt>Lineage</dt><dd>The chain from a CSR document to its recommendations, the country's initial request (pending the JIRA export),
+      the projects that support them and their outcome, shown as a network per country.</dd>
+    <dt>Initial request</dt><dd>The Member State's request for support, in which it declares the CSRs it addresses; recorded in JIRA, not public.</dd></dl>` },
 ];
 
 const GUIDE_IDS = GUIDE.map((s) => s.id);
@@ -1886,7 +1915,8 @@ const GUIDE_STEPS = [
     text: `<em>Show in lineage network</em> draws the chain for the whole country. Lithuania, 2019–2025: 7 CSR documents,
       25 recommendations (10 with at least one project), 23 projects and 35 recommendation–project pairs (11 direct) from 44
       sub-part links. With the pension project pinned, its chain lights up: a solid line (direct link) to LT 2021 · CSR 1 and a
-      dashed line (partial link) to LT 2023 · CSR 1; the pill <em>2/10</em> is its latest impact score.` },
+      dashed line (partial link) to LT 2023 · CSR 1. In the <em>Outcome</em> column, on the project's row: its results status,
+      its deliverables and the pill <em>2/10</em>, its latest impact score.` },
   { img: "05-project.jpg", to: `#project/${GUIDE_PROJECT}`, title: "Read the project page",
     alt: "Project page: Technical Support in transforming the existing fully state-administered funded pension scheme in Lithuania",
     text: `The project page gives the record (TSI, 2024, Lithuania, labour market and social protection, results achieved,
@@ -2639,17 +2669,36 @@ async function renderDashboard(seq) {
   paintDashboard();
 }
 
-// ---------- lineage: CSR documents -> recommendations -> projects, per country (hand-made SVG) ----------
+// ---------- lineage: CSR documents -> recommendations -> (initial request) -> projects -> outcome, per country (hand-made SVG) ----------
 
 const LN_FROM = 2019;
 const LN_TO = 2025;
 const LN_NODE_H = 30; // two text lines
 const LN_STEP = 36; // vertical pitch of a node
-const LN_HEAD_H = 22; // column headings
+const LN_HEAD_H = 22; // column headings (one line); the layout adds the caption lines below (L.headH)
 const LN_GAP = 12; // between the recommendations of two documents
 const LN_MIN_COL = 96; // below this column width the labels are unreadable: list view instead
+const LN_WIDE = 720; // from this drawing width the five stages fit; below, a fixed minimum width scrolls inside the card
+const LN_MIN_W = 560; // drawing width of the compact (scrolling) layout
+const LN_CAP = 5.6; // average glyph width (px) of the 10 px captions
+const LN_REQUEST_NOTE = "Country request and claimed CSRs — JIRA export pending";
 const lineageCache = new Map(); // `${uid}|${country}|${from}|${to}` -> { csrs, scores }
 let lineageState = null; // { model, country, width, pinned }
+
+/** Results status of a project: projects.results ("achieved", "expected" or empty) -> key, labels (RESULT_LABELS). */
+function resultsInfo(value) {
+  const k = String(value ?? "").trim().toLowerCase();
+  const key = Object.hasOwn(RESULT_LABELS, k) && k !== "none" ? k : "none";
+  const short = { achieved: "Achieved", expected: "Expected", none: "Not stated" }[key];
+  return { key, label: key === "none" && k ? String(value) : RESULT_LABELS[key], short };
+}
+
+/** Latest impact analysis of a project, from the value of the scores map: a number (score only) or an impact_reports row. */
+function impactOf(v) {
+  if (Number.isFinite(v)) return { score: v, level: "", confidence: "", created_at: "" };
+  if (!v || typeof v !== "object") return null;
+  return { score: Number.isFinite(v.score) ? v.score : null, level: v.level ?? "", confidence: v.confidence ?? "", created_at: v.created_at ?? "" };
+}
 
 function assessmentInfo(value) {
   const k = String(value ?? "none").trim().toLowerCase() || "none";
@@ -2679,8 +2728,10 @@ function lineageModel(rows, scores, { unlinked = false, country = "" } = {}) {
         if (!p || !p.project_id) continue;
         const pid = String(p.project_id);
         if (!projects.has(pid)) {
+          const impact = impactOf(scores?.get?.(pid));
           projects.set(pid, { id: pid, title: p.title ?? pid, programme: p.programme ?? "", year: p.year ?? "", results: p.results ?? "",
-            url: p.url ?? "", score: Number.isFinite(scores?.get?.(pid)) ? scores.get(pid) : null });
+            outcome: resultsInfo(p.results), deliverables: Number.isFinite(Number(p.deliverables)) && p.deliverables !== null ? num(p.deliverables) : 0,
+            url: p.url ?? "", impact, score: impact && Number.isFinite(impact.score) ? impact.score : null });
         }
         const key = `${c.id}\u0000${pid}`;
         if (!edges.has(key)) edges.set(key, { csr: c.id, project: pid, level: "partial", parts: [] });
@@ -2726,25 +2777,54 @@ function lineageModel(rows, scores, { unlinked = false, country = "" } = {}) {
       csrs: csrList.length, csrsLinked: linkedCsrs.size, projects: projectList.length,
       links: edgeList.length, direct: edgeList.filter((e) => e.level === "direct").length,
       subLinks: edgeList.reduce((n, e) => n + e.parts.length, 0),
+      achieved: projectList.filter((p) => p.outcome.key === "achieved").length,
+      expected: projectList.filter((p) => p.outcome.key === "expected").length,
+      notStated: projectList.filter((p) => p.outcome.key === "none").length,
+      deliverables: projectList.reduce((n, p) => n + p.deliverables, 0),
+      withImpact: projectList.filter((p) => p.impact).length,
     },
   };
 }
 
 /**
- * Positions in three columns: documents (one per year), their recommendations by number, projects in barycentric order
- * (mean centre of their recommendations), pulled towards it. A document sits at the middle of its recommendations.
+ * Positions in five columns: documents (one per year), their recommendations by number, the initial request (placeholder
+ * band, no node yet), projects in barycentric order (mean centre of their recommendations, pulled towards it) and one
+ * outcome per project on the same row. A document sits at the middle of its recommendations.
+ * Below LN_WIDE the drawing keeps a minimum width (LN_MIN_W) and scrolls inside its card; the request band shrinks to its heading.
  */
 function lineageLayout(model, width) {
-  const W = Math.max(280, Math.floor(width) || 0);
-  const narrow = W < 600;
-  const docW = narrow ? 52 : Math.round(Math.min(150, W * 0.15));
-  const leftW = Math.round(narrow ? Math.max(LN_MIN_COL, W * 0.33) : Math.min(270, W * 0.28)); // recommendations
-  const rightW = Math.round(narrow ? Math.max(LN_MIN_COL, W * 0.37) : Math.min(360, W * 0.36));
-  const rightX = W - rightW;
-  const leftX = docW + Math.max(8, Math.round((rightX - docW - leftW) * 0.4));
+  const avail = Math.max(280, Math.floor(width) || 0);
+  const narrow = avail < LN_WIDE;
+  const W = narrow ? Math.max(avail, LN_MIN_W) : avail;
+  let docW, leftW, reqW, rightW, outW, linkGap;
+  if (narrow) {
+    docW = 52;
+    leftW = Math.round(Math.max(110, W * 0.21));
+    reqW = Math.round(Math.max(76, W * 0.1));
+    rightW = Math.round(Math.max(130, W * 0.27));
+    outW = Math.round(Math.max(108, W * 0.18));
+    linkGap = 10;
+  } else {
+    docW = Math.round(Math.min(116, W * 0.1));
+    leftW = Math.round(Math.min(240, W * 0.2));
+    reqW = Math.round(Math.min(130, Math.max(118, W * 0.11)));
+    rightW = Math.round(Math.min(290, W * 0.25));
+    outW = Math.round(Math.min(176, W * 0.15));
+    linkGap = 14;
+  }
+  const rest = W - docW - leftW - rightW - outW - linkGap;
+  const gapB = Math.min(rest - 8, Math.max(reqW + (narrow ? 8 : 48), Math.round(rest * 0.7))); // recommendations -> projects
+  const gap1 = rest - gapB; // documents -> recommendations
+  const leftX = docW + gap1;
+  const rightX = leftX + leftW + gapB;
+  const outX = rightX + rightW + linkGap;
+  const reqX = Math.round(leftX + leftW + (gapB - reqW) / 2);
+  // Headings: one line, then the captions (the request note wraps on up to three lines in the band).
+  const note = narrow ? ["JIRA pending"] : wrapText(LN_REQUEST_NOTE, reqW - 8, LN_CAP).slice(0, 3);
+  const headH = LN_HEAD_H + 12 * note.length + (narrow ? 0 : 4);
   const csrPos = [];
   const docPos = [];
-  let y = LN_HEAD_H;
+  let y = headH;
   arr(model.docs).forEach((d, k) => {
     if (k) y += LN_GAP;
     const start = y;
@@ -2765,7 +2845,7 @@ function lineageLayout(model, width) {
   }).filter((o) => Number.isFinite(o.bary))
     .sort((a, b) => a.bary - b.bary || String(b.p.year).localeCompare(String(a.p.year)) || String(a.p.title).localeCompare(String(b.p.title)));
   // Forward pass: as close to the barycentre as the minimum pitch allows; backward pass: keep within the height.
-  const top = LN_HEAD_H;
+  const top = headH;
   const ys = [];
   order.forEach((o, k) => {
     const target = Math.max(top, o.bary - LN_NODE_H / 2);
@@ -2778,12 +2858,29 @@ function lineageLayout(model, width) {
   }
   const projPos = new Map(order.map((o, k) => [o.p.id, ys[k]]));
   const height = Math.ceil(Math.max(leftH, order.length ? ys[order.length - 1] + LN_STEP : 0)) + 4;
-  return { W, narrow, docW, leftX, leftW, rightW, rightX, csrPos, docPos, projPos, order: order.map((o) => o.p.id), height,
-    readable: leftW >= LN_MIN_COL && rightW >= LN_MIN_COL };
+  return { W, narrow, scroll: W > avail, headH, note, docW, leftX, leftW, reqX, reqW, rightW, rightX, outX, outW, csrPos, docPos, projPos,
+    order: order.map((o) => o.p.id), height, readable: leftW >= LN_MIN_COL && rightW >= LN_MIN_COL && gap1 >= 8 };
+}
+
+/** Words on lines of at most `width` px (estimate); a word longer than a line is cut with fitText. */
+function wrapText(text, width, charW = CH) {
+  const max = Math.max(2, Math.floor(width / charW));
+  const lines = [];
+  for (const w of String(text ?? "").split(/\s+/).filter(Boolean)) {
+    const last = lines[lines.length - 1];
+    if (last !== undefined && `${last} ${w}`.length <= max) lines[lines.length - 1] = `${last} ${w}`;
+    else lines.push(fitText(w, width, charW));
+  }
+  return lines;
 }
 
 function lnAria(parts) {
   return esc(parts.filter(Boolean).join(", "));
+}
+
+/** Results marker of an outcome node: filled disc = achieved, ring = expected, dashed ring = not stated. */
+function outcomeMarker(key, cx, cy, r = 5) {
+  return `<circle class="ln-res ln-res-${key}" cx="${px(cx)}" cy="${px(cy)}" r="${r}"/>`;
 }
 
 /** The network as an SVG string (pure: also used by the Node render test). */
@@ -2793,11 +2890,15 @@ function lineageSvg(model, width) {
   const x0 = L.docW;
   const x1 = L.leftX + L.leftW;
   const x2 = L.rightX;
+  const x3 = L.rightX + L.rightW;
   const curve = (xa, ya, xb, yb) => {
     const dx = (xb - xa) / 2;
     return `M${px(xa)} ${px(ya)}C${px(xa + dx)} ${px(ya)} ${px(xb - dx)} ${px(yb)} ${px(xb)} ${px(yb)}`;
   };
   const csrIdx = model.csrIndex;
+  // Initial request: a placeholder band (no data yet); the recommendation -> project lines cross it unchanged.
+  const band = `<g class="ln-band" data-band="1">`
+    + `<rect class="ln-bandbox" x="${L.reqX + 0.5}" y="0.5" width="${L.reqW - 1}" height="${L.height - 1}" rx="6"/></g>`;
   let edges = "";
   model.csrs.forEach((c, i) => { // document -> recommendation (structure, always drawn)
     const dy = L.docPos[c.doc];
@@ -2811,9 +2912,18 @@ function lineageSvg(model, width) {
     const d = curve(x1, L.csrPos[ci] + LN_NODE_H / 2, x2, py + LN_NODE_H / 2);
     edges += `<g class="ln-edge ln-${e.level}" data-e="${i}"><path class="ln-line" d="${d}"/><path class="ln-hit" d="${d}"/></g>`;
   });
+  L.order.forEach((id, k) => { // project -> outcome (same row)
+    const y = L.projPos.get(id) + LN_NODE_H / 2;
+    edges += `<path class="ln-olink" data-ol="${k}" d="M${px(x3)} ${px(y)}H${px(L.outX)}"/>`;
+  });
   const textW1 = (w) => w - 20 - 6; // marker + padding
-  const colh = (x, w, full, short) => `<text class="ln-colh" x="${x}" y="13">${esc(full.length * 7.2 <= w ? full : short)}</text>`;
-  let nodes = colh(0, L.docW, "DOCUMENTS", "DOCS") + colh(L.leftX, L.leftW, "RECOMMENDATIONS", "RECS") + colh(L.rightX, L.rightW, "PROJECTS", "PROJ.");
+  const colh = (x, w, full, short, cap) => `<text class="ln-colh" x="${x}" y="13">${esc(full.length * 7.2 <= w ? full : short)}</text>`
+    + (cap && !L.narrow && cap.length * LN_CAP <= w - 4 ? `<text class="ln-colcap" x="${x}" y="${LN_HEAD_H + 4}">${esc(cap)}</text>` : "");
+  const reqC = L.reqX + L.reqW / 2;
+  let nodes = colh(0, L.docW, "DOCUMENTS", "DOCS", "one per year") + colh(L.leftX, L.leftW, "RECOMMENDATIONS", "RECS", "marker: latest assessment")
+    + colh(L.rightX, L.rightW, "PROJECTS", "PROJ.", "marker: programme") + colh(L.outX, L.outW, "OUTCOME", "RESULT", "results · deliverables · impact")
+    + `<text class="ln-colh" x="${px(reqC)}" y="13" text-anchor="middle">${esc("INITIAL REQUEST".length * 7.2 <= L.reqW - 4 ? "INITIAL REQUEST" : "REQUEST")}</text>`
+    + L.note.map((t, j) => `<text class="ln-colcap ln-reqnote" x="${px(reqC)}" y="${LN_HEAD_H + 4 + 12 * j}" text-anchor="middle">${esc(t)}</text>`).join("");
   arr(model.docs).forEach((d, k) => {
     const y = L.docPos[k];
     const recs = `${fmtN(d.total)} recommendation${d.total === 1 ? "" : "s"}`;
@@ -2844,23 +2954,36 @@ function lineageSvg(model, width) {
     if (y === undefined) return;
     const k = L.order.indexOf(p.id);
     const x = L.rightX;
-    const hasScore = Number.isFinite(p.score);
-    const pill = hasScore ? 38 : 0;
     const meta = [p.programme, p.year].filter(Boolean).join(" ");
     const n = model.edges.filter((e) => e.project === p.id).length;
     nodes += `<g class="ln-node ln-project" data-node="p${k}" data-id="${esc(p.id)}" tabindex="0" role="button" aria-pressed="false"`
-      + ` aria-label="${lnAria([p.title, meta, hasScore ? `impact score ${p.score}/10` : "", `${n} CSR${n === 1 ? "" : "s"}`])}">`
+      + ` aria-label="${lnAria([p.title, meta, `${n} CSR${n === 1 ? "" : "s"}`])}">`
       + `<rect class="ln-box" x="${x + 0.5}" y="${y}" width="${L.rightW - 1}" height="${LN_NODE_H}" rx="4"/>`
       + `<rect class="viz-fill-${programmeKey(p.programme)}" x="${x + 5}" y="${y + 5}" width="8" height="${LN_NODE_H - 10}" rx="2"/>`
       + `<text class="ln-t1" x="${x + 20}" y="${y + 13}">${esc(fitText(p.title, textW1(L.rightW)))}</text>`
-      + `<text class="ln-t2" x="${x + 20}" y="${y + 25}">${esc(fitText(meta, textW1(L.rightW) - pill, 6.4))}</text>`
-      + (hasScore ? `<rect class="ln-pill" x="${x + L.rightW - 6 - 34}" y="${y + 16}" width="34" height="12" rx="6"/>`
-        + `<text class="ln-pill-t" x="${x + L.rightW - 6 - 17}" y="${y + 25.5}" text-anchor="middle">${esc(`${p.score}/10`)}</text>` : "")
+      + `<text class="ln-t2" x="${x + 20}" y="${y + 25}">${esc(fitText(meta, textW1(L.rightW), 6.4))}</text></g>`;
+    // Outcome: results status (marker shape and colour), deliverables and the latest impact score.
+    const o = p.outcome;
+    const ox = L.outX;
+    const hasScore = Number.isFinite(p.score);
+    const pill = hasScore ? 40 : 0;
+    const res = o.label.length * CH <= textW1(L.outW) ? o.label : fitText(o.short, textW1(L.outW));
+    const dl = `${fmtN(p.deliverables)} deliverable${p.deliverables === 1 ? "" : "s"}`;
+    const dlFit = dl.length * 6.4 <= textW1(L.outW) - pill ? dl : fitText(`${fmtN(p.deliverables)} deliv.`, textW1(L.outW) - pill, 6.4);
+    nodes += `<g class="ln-node ln-outcome" data-node="o${k}" data-id="${esc(p.id)}" tabindex="0" role="button" aria-pressed="false"`
+      + ` aria-label="${lnAria([`Outcome of ${p.title}`, o.label, dl, hasScore ? `latest impact score ${p.score}/10` : "no impact analysis"])}">`
+      + `<rect class="ln-box" x="${ox + 0.5}" y="${y}" width="${L.outW - 1}" height="${LN_NODE_H}" rx="4"/>`
+      + outcomeMarker(o.key, ox + 10, y + LN_NODE_H / 2)
+      + `<text class="ln-t1" x="${ox + 20}" y="${y + 13}">${esc(res)}</text>`
+      + `<text class="ln-t2" x="${ox + 20}" y="${y + 25}">${esc(dlFit)}</text>`
+      + (hasScore ? `<rect class="ln-pill" x="${ox + L.outW - 6 - 34}" y="${y + 16}" width="34" height="12" rx="6"/>`
+        + `<text class="ln-pill-t" x="${ox + L.outW - 6 - 17}" y="${y + 25.5}" text-anchor="middle">${esc(`${p.score}/10`)}</text>` : "")
       + `</g>`;
   });
-  const svg = `<svg class="ln-svg" viewBox="0 0 ${L.W} ${L.height}" width="100%" height="${L.height}" role="group"`
-    + ` aria-label="${esc(`Network of CSR documents, recommendations and supporting projects, ${countryName(cc)}`)}">`
-    + `<g class="ln-edges">${edges}</g><g class="ln-nodes">${nodes}</g></svg>`;
+  const size = L.scroll ? `width="${L.W}"` : `width="100%"`;
+  const svg = `<svg class="ln-svg${L.scroll ? " ln-scroll" : ""}" viewBox="0 0 ${L.W} ${L.height}" ${size} height="${L.height}" role="group"`
+    + ` aria-label="${esc(`Network of CSR documents, recommendations, supporting projects and their outcome, ${countryName(cc)}`)}">`
+    + `<g class="ln-bands">${band}</g><g class="ln-edges">${edges}</g><g class="ln-nodes">${nodes}</g></svg>`;
   return { svg, layout: L };
 }
 
@@ -2872,44 +2995,54 @@ function lineageRows(model) {
     const c = csrs.get(e.csr) || {};
     const p = projects.get(e.project) || {};
     return { doc_id: docIdOf(model.country, c.year), csr_id: e.csr, csr_year: c.year, csr_number: c.number, part_id: pt.part, project_id: e.project, project_title: p.title,
-      programme: p.programme, project_year: p.year, level: pt.level, basis: pt.basis, rationale: pt.rationale };
+      programme: p.programme, project_year: p.year, level: pt.level, basis: pt.basis, rationale: pt.rationale,
+      results: p.outcome?.label ?? "", deliverables: p.deliverables ?? 0, impact_score: Number.isFinite(p.score) ? p.score : "" };
   }));
 }
 
-const LN_CSV_COLS = ["doc_id", "csr_id", "csr_year", "csr_number", "part_id", "project_id", "project_title", "programme", "project_year", "level", "basis", "rationale"];
+const LN_CSV_COLS = ["doc_id", "csr_id", "csr_year", "csr_number", "part_id", "project_id", "project_title", "programme", "project_year", "level", "basis", "rationale",
+  "results", "deliverables", "impact_score"];
 
 function lineageTable(model) {
   const rows = lineageRows(model).map((r) => [
     td(hashLink("csrdoc", r.doc_id, `${model.country} ${r.csr_year}`), "nowrap"),
     td(hashLink("csr", r.csr_id, r.csr_id), "nowrap"), td(esc(r.part_id), "nowrap"),
     td(hashLink("project", r.project_id, r.project_title || r.project_id), "title-cell"), td(badge(r.level)), td(esc(r.rationale)),
+    td(esc(r.results), "nowrap"), td(esc(fmtN(r.deliverables)), "num"),
+    td(r.impact_score === "" ? `<span class="muted">—</span>` : hashLink("impact", r.project_id, `${r.impact_score}/10`), "nowrap"),
   ]);
-  return table(["Document", "Recommendation", "Sub-part", "Project", "Level", "Rationale"], rows, "No link.");
+  return table(["Document", "Recommendation", "Sub-part", "Project", "Level", "Rationale", "Results", "Deliverables", "Impact"], rows, "No link.");
 }
 
 function lineageLegend() {
   const line = (cls) => `<svg class="ln-key" width="26" height="10" aria-hidden="true"><line class="ln-line ${cls}" x1="1" y1="5" x2="25" y2="5"/></svg>`;
   const sw = (key, label) => `<li><span class="viz-key viz-key-${key}" aria-hidden="true"></span>${esc(label)}</li>`;
+  const res = (key) => `<li><svg class="ln-key" width="14" height="14" aria-hidden="true">${outcomeMarker(key, 7, 7)}</svg>${esc(RESULT_LABELS[key])}</li>`;
   return `<div class="ln-legend">`
     + `<ul class="viz-legend"><li>${line("ln-tree-key")}Document → recommendation</li><li>${line("ln-direct-key")}Direct link</li><li>${line("ln-partial-key")}Partial link</li>`
-    + `<li><span class="ln-pill-key" aria-hidden="true">6/10</span>Latest impact score</li>`
-    + `<li>${infoButton("links", "About the links")}</li></ul>`
+    + `<li>${infoButton("links", "About the links")}</li>`
+    + `<li><span class="ln-band-key" aria-hidden="true"></span>Initial request: JIRA export pending ${infoButton("request", "About the initial request")}</li></ul>`
     + `<ul class="viz-legend"><li class="muted">CSR assessment ${infoButton("assessments", "About the CSR assessment")}</li>${ASSESSMENT_SCALE.filter(([k]) => k !== "none").map(([, label, key]) => sw(key, label)).join("")}${sw("faint", "Not yet assessed")}</ul>`
-    + `<ul class="viz-legend"><li class="muted">Programme:</li>${PROGRAMMES.map((p) => sw(programmeKey(p), p)).join("")}</ul></div>`;
+    + `<ul class="viz-legend"><li class="muted">Programme:</li>${PROGRAMMES.map((p) => sw(programmeKey(p), p)).join("")}</ul>`
+    + `<ul class="viz-legend"><li class="muted">Outcome ${infoButton("results", "About the results status")}</li>${["achieved", "expected", "none"].map(res).join("")}`
+    + `<li><span class="ln-pill-key" aria-hidden="true">6/10</span>Latest impact score</li></ul></div>`;
 }
 
 function lineageSummary(s, { country = "", from = null, to = null } = {}) {
   const plural = (n, word) => `${fmtN(n)} ${word}${n === 1 ? "" : "s"}`;
   const where = [country ? countryName(country) : "", from && to ? (from === to ? String(from) : `${from}–${to}`) : ""].filter(Boolean).join(", ");
+  const outcome = s.achieved !== undefined
+    ? ` (${fmtN(s.achieved)} results achieved, ${fmtN(s.expected)} expected, ${fmtN(s.notStated)} not stated) · ${plural(s.deliverables, "deliverable")}`
+      + ` · ${fmtN(s.withImpact)} with an impact analysis` : "";
   return `${where ? `${where}: ` : ""}${s.docs !== undefined ? `${plural(s.docs, "CSR document")} · ` : ""}`
     + `${plural(s.csrs, "recommendation")} (${fmtN(s.csrsLinked)} with at least one project) · `
-    + `${plural(s.projects, "project")} · ${plural(s.links, "recommendation–project pair")} (${fmtN(s.direct)} direct)`
-    + ` from ${plural(s.subLinks ?? s.links, "sub-part link")}`;
+    + `${plural(s.links, "recommendation–project pair")} (${fmtN(s.direct)} direct) from ${plural(s.subLinks ?? s.links, "sub-part link")} · `
+    + `${plural(s.projects, "project")}${outcome}`;
 }
 
 /** Detail panel of the pinned node (links to the CSR or project page). */
 function lineageDetail(model, key) {
-  if (!key) return `<p class="muted small">Click a document, a recommendation or a project to pin its links and see the details here.</p>`;
+  if (!key) return `<p class="muted small">Click a document, a recommendation, a project or an outcome to pin its chain and see the details here.</p>`;
   const projects = new Map(model.projects.map((p) => [p.id, p]));
   const csrs = new Map(model.csrs.map((c) => [c.id, c]));
   if (key[0] === "d") {
@@ -2938,6 +3071,7 @@ function lineageDetail(model, key) {
       + (items ? `<ul class="ln-list">${items}</ul>` : `<p class="empty">No project linked.</p>`)
       + `<p>${hashLink("csr", c.id, "Open the recommendation")} · ${hashLink("csrdoc", docIdOf(model.country, c.year), `${model.country} ${c.year} document`)}</p>`;
   }
+  // Project or outcome (same row k): the CSRs it supports, then its outcome.
   const id = model.projects.length ? lineageState?.layout?.order?.[Number(key.slice(1))] : null;
   const p = projects.get(id);
   if (!p) return "";
@@ -2946,9 +3080,16 @@ function lineageDetail(model, key) {
     return `<li>${badge(e.level)} ${hashLink("csr", e.csr, `${model.country} ${c.year} · CSR ${c.number}`)} <span class="muted small">${esc(c.title)}</span></li>`;
   }).join("");
   const page = p.url && sourceInfo(p.url) ? ` · ${sourceLink(sourceInfo(p.url))}` : "";
-  return `<h3>${esc(p.title)}</h3><p class="small muted">${esc([p.programme, p.year, p.results ? `results ${p.results}` : "",
-    Number.isFinite(p.score) ? `impact score ${p.score}/10` : ""].filter(Boolean).join(" · "))}</p>`
-    + `<ul class="ln-list">${items}</ul><p>${hashLink("project", p.id, "Open the project")}${page}</p>`;
+  const pid = encodeURIComponent(p.id);
+  const impact = p.impact
+    ? `${esc(impactLine(p.impact))} · <a href="#impact/${pid}">Impact analysis</a>`
+    : `<span class="muted">No impact analysis yet</span> · <a href="#impact/${pid}">Run one</a>`;
+  const outcome = `<h4>Outcome</h4><dl class="facts ln-facts">`
+    + `<dt>Results</dt><dd><svg class="ln-key" width="14" height="14" aria-hidden="true">${outcomeMarker(p.outcome.key, 7, 7)}</svg>${esc(p.outcome.label)}</dd>`
+    + `<dt>Deliverables</dt><dd>${esc(fmtN(p.deliverables))}${p.deliverables ? ` · <a href="#project/${pid}">listed on the project page</a>` : ""}</dd>`
+    + `<dt>Latest impact</dt><dd>${impact}</dd></dl>`;
+  return `<h3>${esc(p.title)}</h3><p class="small muted">${esc([p.programme, p.year].filter(Boolean).join(" · "))}</p>`
+    + `<ul class="ln-list">${items}</ul>${outcome}<p>${hashLink("project", p.id, "Open the project")}${page}</p>`;
 }
 
 /** Tooltip lines for a node or an edge (plain strings, inserted with textContent). */
@@ -2971,12 +3112,15 @@ function lineageTipLines(model, target) {
     return [`${model.country} ${c.year} · CSR ${c.number}`, short(c.title || c.text, 180),
       `Assessment: ${c.info.label}${c.assessmentYear ? ` (${c.assessmentYear})` : ""}`, `${n} project${n === 1 ? "" : "s"}`];
   }
-  if (target.node?.[0] === "p") {
+  if (target.band) return ["Initial request", LN_REQUEST_NOTE, "The country's request is not public; the lines pass through unchanged."];
+  if (target.node?.[0] === "p" || target.node?.[0] === "o") {
     const p = model.projects.find((x) => x.id === order[Number(target.node.slice(1))]);
     if (!p) return null;
     const n = model.edges.filter((e) => e.project === p.id).length;
-    return [short(p.title, 140), [p.programme, p.year].filter(Boolean).join(" · "), `Results: ${p.results || "not stated"}`,
-      Number.isFinite(p.score) ? `Impact score: ${p.score}/10` : "No impact analysis", `${n} CSR${n === 1 ? "" : "s"}`];
+    const outcome = [p.outcome.label, `${fmtN(p.deliverables)} deliverable${p.deliverables === 1 ? "" : "s"}`,
+      p.impact ? `Latest impact: ${impactLine(p.impact)}` : "No impact analysis"];
+    return target.node[0] === "o" ? [`Outcome · ${short(p.title, 120)}`, ...outcome]
+      : [short(p.title, 140), [p.programme, p.year].filter(Boolean).join(" · "), ...outcome, `${n} CSR${n === 1 ? "" : "s"}`];
   }
   const e = model.edges[Number(target.edge)];
   if (!e) return null;
@@ -2987,21 +3131,25 @@ function lineageTipLines(model, target) {
   return [`${e.level === "direct" ? "Direct" : "Partial"} link`, `CSR ${c.number} (${c.year}) → ${short(p.title, 80)}`, ...parts];
 }
 
-/** Nodes, links and document lines lit by a node: its whole chain (document -> recommendations -> projects). */
+/** Nodes, links and lines lit by a node: its whole chain (document -> recommendations -> projects -> outcomes). */
 function lineageChain(model, order, key) {
   const nodes = new Set([key]);
   const edges = new Set();
   const trees = new Set();
+  const outs = new Set(); // rows k whose project -> outcome line is lit
   const recs = new Set();
   if (key[0] === "d") for (const i of model.docs[Number(key.slice(1))]?.recs || []) recs.add(i);
   else if (key[0] === "c") recs.add(Number(key.slice(1)));
-  const project = key[0] === "p";
+  const project = key[0] === "p" || key[0] === "o";
+  const pkey = project ? `p${key.slice(1)}` : "";
   model.edges.forEach((e, i) => {
     const ci = model.csrIndex.get(e.csr);
-    const pk = `p${order.indexOf(e.project)}`;
-    if (project ? pk === key : recs.has(ci)) {
+    const k = order.indexOf(e.project);
+    if (project ? `p${k}` === pkey : recs.has(ci)) {
       edges.add(i);
-      nodes.add(pk);
+      nodes.add(`p${k}`);
+      nodes.add(`o${k}`);
+      outs.add(k);
       if (project) recs.add(ci);
     }
   });
@@ -3010,7 +3158,7 @@ function lineageChain(model, order, key) {
     trees.add(i);
     if (model.csrs[i]?.doc !== undefined) nodes.add(`d${model.csrs[i].doc}`);
   }
-  return { nodes, edges, trees };
+  return { nodes, edges, trees, outs };
 }
 
 function lineageHighlight(key) {
@@ -3025,6 +3173,7 @@ function lineageHighlight(key) {
   for (const n of chain.nodes) on(`[data-node="${n}"]`);
   for (const i of chain.edges) on(`[data-e="${i}"]`);
   for (const i of chain.trees) on(`[data-t="${i}"]`);
+  for (const k of chain.outs) on(`[data-ol="${k}"]`);
 }
 
 function lineagePin(key) {
@@ -3077,7 +3226,9 @@ function paintLineageGraph() {
     slot.innerHTML = `<p class="muted small">The screen is too narrow for the network: the list of links is shown instead.</p>${lineageTable(s.model)}`;
     return;
   }
+  const left = slot.scrollLeft; // keep the sideways scroll of the compact layout across redraws
   slot.innerHTML = svg;
+  slot.scrollLeft = left;
   const keep = s.pinned; // re-apply the pinned selection on the new drawing
   s.pinned = null;
   if (keep && slot.querySelector(`[data-node="${keep}"]`)) lineagePin(keep);
@@ -3091,7 +3242,9 @@ function bindLineage() {
     const node = el.closest("[data-node]");
     if (node) return { node: node.dataset.node, el: node };
     const edge = el.closest("[data-e]");
-    return edge ? { edge: edge.dataset.e, el: edge } : null;
+    if (edge) return { edge: edge.dataset.e, el: edge };
+    const band = el.closest("[data-band]");
+    return band ? { band: true, el: band } : null;
   };
   slot.addEventListener("pointermove", (ev) => {
     const s = lineageState;
@@ -3139,7 +3292,7 @@ async function fetchLineage(country, from, to) {
   if (lineageCache.has(key)) return lineageCache.get(key);
   let csrs;
   const nested = await sb.from("csrs")
-    .select("csr_id,year,number,title,text,assessment,assessment_year,csr_parts(part_id,text,project_csr_links(level,rationale,basis,projects(project_id,title,programme,year,results,url)))")
+    .select("csr_id,year,number,title,text,assessment,assessment_year,csr_parts(part_id,text,project_csr_links(level,rationale,basis,projects(project_id,title,programme,year,results,deliverables,url)))")
     .eq("country", country).gte("year", from).lte("year", to);
   if (!nested.error) {
     csrs = nested.data;
@@ -3153,7 +3306,7 @@ async function fetchLineage(country, from, to) {
     const links = partIds.length ? await sb.from("project_csr_links").select("part_id,project_id,level,rationale,basis").in("part_id", partIds) : { data: [] };
     if (links.error) return { error: links.error };
     const pids = [...new Set(links.data.map((l) => l.project_id))];
-    const projs = pids.length ? await sb.from("projects").select("project_id,title,programme,year,results,url").in("project_id", pids) : { data: [] };
+    const projs = pids.length ? await sb.from("projects").select("project_id,title,programme,year,results,deliverables,url").in("project_id", pids) : { data: [] };
     if (projs.error) return { error: projs.error };
     const pmap = new Map(projs.data.map((p) => [p.project_id, p]));
     csrs = base.data.map((c) => ({ ...c, csr_parts: parts.data.filter((p) => p.csr_id === c.csr_id).map((p) => ({
@@ -3161,11 +3314,17 @@ async function fetchLineage(country, from, to) {
     })) }));
   }
   const pids = [...new Set(arr(csrs).flatMap((c) => arr(c.csr_parts).flatMap((p) => arr(p.project_csr_links).map((l) => l.projects?.project_id))).filter(Boolean))];
+  // Latest impact analysis per project (the latest scored one when there is one).
   const scores = new Map();
   if (pids.length) {
-    const res = await sb.from("impact_reports").select("project_id,score,created_at").in("project_id", pids)
+    const res = await sb.from("impact_reports").select("project_id,score,level,confidence,created_at").in("project_id", pids)
       .order("created_at", { ascending: false }).order("id", { ascending: false });
-    if (!res.error) for (const r of res.data) if (!scores.has(r.project_id) && Number.isFinite(r.score)) scores.set(r.project_id, r.score);
+    if (!res.error) {
+      for (const r of res.data) {
+        const had = scores.get(r.project_id);
+        if (!had || (!Number.isFinite(had.score) && Number.isFinite(r.score))) scores.set(r.project_id, r);
+      }
+    }
   }
   const entry = { csrs, scores };
   lineageCache.set(key, entry);
@@ -3203,7 +3362,8 @@ async function renderLineage(p, seq) {
   const form = filterForm("lineage", countriesSelect(country)
     + yearField("from", "From year", from) + yearField("to", "To year", to)
     + checkField("unlinked", "Show CSRs without a project", unlinked));
-  const intro = `<p class="muted">CSR documents (left, one per year), their recommendations (middle) and the projects that support them (right). `
+  const intro = `<p class="muted">From the European Semester to the results: CSR documents (one per year), their recommendations, `
+    + `the country's initial request (pending the JIRA export), the projects that support them and their outcome. `
     + `Links assessed by AI from the project text: verify before use. ${infoButton("links", "About the links")}</p>`;
   if (!country) {
     view(`${heading("Lineage")}${intro}${form}`
@@ -3238,15 +3398,24 @@ async function renderLineage(p, seq) {
   $("ln-csv").addEventListener("click", () => saveCsv(`lineage-${country}-${from}-${to}.csv`, LN_CSV_COLS, lineageRows(model)));
   paintLineageGraph();
   $("ln-detail").innerHTML = lineageDetail(model, null);
-  // Selection passed by the document, CSR or project page (#lineage?...&sel=doc:ID, csr:ID or project:ID).
-  const m = /^(doc|csr|project):(.+)$/.exec(sel);
+  // Selection passed by the document, CSR or project page (#lineage?...&sel=doc:ID, csr:ID, project:ID or outcome:ID).
+  const m = /^(doc|csr|project|outcome):(.+)$/.exec(sel);
   if (m) {
+    const row = lineageState.layout?.order.indexOf(m[2]) ?? -1;
     const key = m[1] === "doc" ? (model.docIndex.has(m[2]) ? `d${model.docIndex.get(m[2])}` : null)
       : m[1] === "csr" ? (model.csrIndex.has(m[2]) ? `c${model.csrIndex.get(m[2])}` : null)
-        : (lineageState.layout?.order.includes(m[2]) ? `p${lineageState.layout.order.indexOf(m[2])}` : null);
+        : (row >= 0 ? `${m[1] === "outcome" ? "o" : "p"}${row}` : null);
     if (key) {
       lineagePin(key);
-      $("ln-graph").querySelector(`[data-node="${key}"]`)?.scrollIntoView({ block: "center" });
+      const graph = $("ln-graph");
+      graph.querySelector(`[data-node="${key}"]`)?.scrollIntoView({ block: "center" });
+      // Compact layout (scrolls sideways): bring a project's row into view up to its outcome.
+      const far = graph.querySelector(`[data-node="${/^[po]/.test(key) ? `o${key.slice(1)}` : key}"]`);
+      if (far && graph.scrollWidth > graph.clientWidth) {
+        const r = far.getBoundingClientRect();
+        const box = graph.getBoundingClientRect();
+        if (r.right > box.right) graph.scrollLeft += r.right - box.right + 4;
+      }
     }
   }
 }
