@@ -1741,8 +1741,13 @@ const INFO = {
 
 const INFO_GUIDE = { results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", linklevel: "lineage", request: "lineage", overview: "lineage" };
 
+// Icone « i » des boutons d'information (SVG, couleur du texte).
+const INFO_ICON = `<svg class="info-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="4.1" r="1.35"/><path d="M6.4 6.7h2.4v5.6h1.1v1.4H6.2v-1.4h1.1V8.1h-.9z"/></svg>`;
+// Meme icone dans un texte (guide) : rappel visuel du bouton.
+const INFO_GLYPH = `<span class="info-glyph" aria-label="information button">${INFO_ICON}</span>`;
+
 function infoButton(key, label = "About this chart") {
-  return `<button type="button" class="info-btn" data-info="${key}" aria-label="${esc(label)}" aria-haspopup="dialog">ⓘ</button>`;
+  return `<button type="button" class="info-btn" data-info="${key}" aria-label="${esc(label)}" aria-haspopup="dialog">${INFO_ICON}</button>`;
 }
 
 let infoOpener = null;
@@ -1880,7 +1885,7 @@ const GUIDE = [
     <li><strong>Data quality</strong>: anomalies by type and severity.</li></ul>
     <p><strong>Click-through</strong>: a bar opens the matching filtered list (a country's projects, a year's CSRs, the lineage
       network of a country, the anomalies of a type and severity). Hover or focus a bar for its value and share; every chart
-      has a <em>Table</em> view. The <strong>ⓘ</strong> buttons explain how a figure is defined.</p>` },
+      has a <em>Table</em> view. The ${INFO_GLYPH} buttons explain how a figure is defined.</p>` },
   { id: "anomalies", title: "Anomalies", html: () => `
     <p>The Anomalies tab lists them with filters (type, severity, programme, years, country) and a CSV export. By default only high
       and medium severities are shown.</p>${infoHtml("anomalies")}` },
@@ -1947,7 +1952,7 @@ const GUIDE_ESSENTIALS = [
   { icon: "▦", title: "Tabs", text: "Dashboard, Projects, CSRs, Lineage, Anomalies, Impact and Guide. The ? button in the header brings you back here." },
   { icon: "⚲", title: "Filters", text: "Each list has its filters (country, programme, years, text search…). The address of the page keeps them: bookmark or share it." },
   { icon: "⇄", title: "Click through", text: "Bars, cards and names open the matching view: a country's projects, a CSR document, a project page, a lineage network." },
-  { icon: "ⓘ", title: "Definitions", text: "The ⓘ buttons explain how a figure or a link level is defined, with a link to the reference below." },
+  { icon: "info", title: "Definitions", text: "The round i buttons explain how a figure or a link level is defined, with a link to the reference below." },
   { icon: "✦", title: "Assistant", text: "The round button at the bottom right opens the assistant beside any page. On a project or CSR page it offers to ask about it." },
   { icon: "⎙", title: "Export", text: "Lists download as CSV; impact reports and assistant conversations export to Word." },
 ];
@@ -2045,7 +2050,7 @@ function guideIllustratedHtml() {
       (CSRs) they help to implement. Ten minutes are enough to find your way: follow the scenario below, each step opens the
       matching view of the explorer.</p>`
     + `<nav class="guide-pills" aria-label="Guide parts">${GUIDE_PARTS.map(([id, label]) => `<a href="#guide/${id}">${esc(label)}</a>`).join("")}</nav></header>`;
-  const ess = `<div class="guide-ess-grid">${GUIDE_ESSENTIALS.map((e) => `<div class="guide-ess"><span class="guide-ess-icon" aria-hidden="true">${esc(e.icon)}</span>`
+  const ess = `<div class="guide-ess-grid">${GUIDE_ESSENTIALS.map((e) => `<div class="guide-ess"><span class="guide-ess-icon" aria-hidden="true">${e.icon === "info" ? INFO_ICON : esc(e.icon)}</span>`
     + `<h4>${esc(e.title)}</h4><p>${esc(e.text)}</p></div>`).join("")}</div>`;
   const steps = `<ol class="guide-steps">${GUIDE_STEPS.map((s, i) => `<li class="guide-step"><div class="guide-step-text">`
     + `<span class="guide-step-num">Step ${i + 1}</span><h4>${esc(s.title)}</h4><p>${s.text}</p>`
@@ -2076,7 +2081,7 @@ function guideHtml(section, { mobile = false } = {}) {
   return `${heading("User guide")}<div class="guide-page">${guideIllustratedHtml()}`
     + `<section class="guide-part guide-reference" id="guide-reference" aria-labelledby="guide-h-reference">`
     + `<h3 id="guide-h-reference" tabindex="-1">Reference</h3>`
-    + `<p class="guide-intro">Each part of the explorer in detail. The ⓘ buttons of the explorer link to these sections.</p>`
+    + `<p class="guide-intro">Each part of the explorer in detail. The ${INFO_GLYPH} buttons of the explorer link to these sections.</p>`
     + `<div class="guide-layout"><nav class="guide-toc" aria-label="Guide contents">`
     + `<details id="guide-toc"${mobile ? "" : " open"}><summary>Contents</summary><ol>${toc}</ol></details></nav>`
     + `<article class="guide">${body}</article></div></section></div>`;
