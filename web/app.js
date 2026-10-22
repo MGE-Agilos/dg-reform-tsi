@@ -2,6 +2,7 @@
 // Every database string goes through esc() before being injected; only https:// URLs become links.
 // Chat and Impact answers (Markdown) are inserted only after marked + DOMPurify; without them, as escaped text.
 import { SUPABASE_URL, SUPABASE_ANON_KEY, PROXY_URL } from "./config.js";
+import * as B from "./briefing.js";
 
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
 const MARKED_JS = "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
@@ -668,7 +669,8 @@ async function renderCsrs(p, seq) {
     + head + (commission ? `<p class="notice-few" role="note">${esc(`${year}: ${COMMISSION_NOTE}`)}</p>` : "")
     + (docs.length ? `<ul class="doc-grid">${docs.map(docCard).join("")}</ul>`
       : `<p class="empty">No CSR document for ${country ? esc(countryName(country)) + " in " : ""}${year}.</p>`)
-    + (others ? `<p class="small">${esc(countryName(country))} in other years: ${others}</p>` : ""));
+    + (others ? `<p class="small">${esc(countryName(country))} in other years: ${others}</p>` : "")
+    + (country ? `<p class="toolbar-actions">${briefingButton(country)}</p>` : ""));
   bindFilters();
 }
 
@@ -979,6 +981,8 @@ function clearAiState() {
   ovState.countryHash = "";
   csrYearsCache = null;
   csrDocsMissing = false;
+  briefingRun?.controller.abort();
+  if ($("briefing-dialog")?.open) $("briefing-dialog").close();
   try {
     sessionStorage.removeItem(CHAT_KEY);
     for (let i = sessionStorage.length - 1; i >= 0; i--) {
@@ -1726,6 +1730,31 @@ const INFO = {
       <p>Below each chart, the selected country or project links to its By country view, its projects or its project page.
       Counts are pairs, not projects: a project linked to three recommendations weighs three. Links assessed by AI: verify before use.</p>`,
   }),
+  briefing: () => ({
+    title: "Country briefing",
+    html: `<p>A Word document (.docx) on one country, for a period of years and optionally one policy area, built in your
+      browser from the explorer's data, with an optional summary written by AI.</p>
+      <h3>Contents</h3><ol>
+      <li><strong>Key messages</strong> (AI-generated, 5 to 7 bullets).</li>
+      <li><strong>Key figures</strong>: projects by programme, year and policy area, results status, deliverables, project–CSR
+        links, share of the recommendations supported by a project, impact analyses and anomalies.</li>
+      <li><strong>Country-specific recommendations</strong>: the latest document of the period, then the earlier ones, each
+        recommendation with its latest assessment and number of supporting projects.</li>
+      <li><strong>Lineage</strong>: each recommendation with its supporting projects (level, results, deliverables, impact score).</li>
+      <li><strong>Results and impact</strong>: projects with results, latest impact analyses with their verdict.</li>
+      <li><strong>Gaps and opportunities</strong>: assessed recommendations without a supporting project (Limited or No progress first),
+        with AI suggestions to verify.</li>
+      <li><strong>Data quality</strong> (anomalies) and an <strong>annex</strong> with the sources and the method.</li></ol>
+      <h3>Limits</h3><ul>
+      <li>The AI summary is one call to Claude (Anthropic), written only from the figures of the document (no web search): its parts
+        are marked <em>AI-generated</em>. If it fails, the document is still created, without them, and says so.</li>
+      <li>Links between projects and CSRs are assessed by AI; projects known only by their title are not linked yet, so a gap is
+        not proof of absence of support.</li>
+      <li>Policy area filter: projects by their policy area; CSRs through the corresponding ECFIN policy areas (the two
+        classifications differ), through a supporting project of that area, or, for the 2026 recommendations not yet classified,
+        through key words of their text.</li>
+      <li>Coverage leaves out the Commission-stage recommendations (2026), not yet adopted nor assessed.</li></ul>`,
+  }),
   request: () => ({
     title: "Initial request (pending)",
     html: `<p>Before a project is selected, the Member State submits a <strong>request for support</strong>. In it the country
@@ -1739,7 +1768,7 @@ const INFO = {
   }),
 };
 
-const INFO_GUIDE = { results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", linklevel: "lineage", request: "lineage", overview: "lineage" };
+const INFO_GUIDE = { briefing: "briefing", results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", linklevel: "lineage", request: "lineage", overview: "lineage" };
 
 // Icone « i » des boutons d'information (SVG, couleur du texte).
 const INFO_ICON = `<svg class="info-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="4.1" r="1.35"/><path d="M6.4 6.7h2.4v5.6h1.1v1.4H6.2v-1.4h1.1V8.1h-.9z"/></svg>`;
@@ -1909,6 +1938,17 @@ const GUIDE = [
       the previous ones, and the dashboard their statistics.</li>
     <li><strong>Export to Word</strong>: a report (new or saved) can be downloaded as a .docx document.</li></ul>
     ${infoHtml("impact")}` },
+  { id: "briefing", title: "Country briefing", html: () => `
+    <p><em>Country briefing</em> (in <a href="#lineage?view=country">Lineage › By country</a>, and on the CSRs tab once a country is
+      chosen) downloads a Word document on one country. In the dialog choose the country, the period (years of the projects and
+      of the CSR documents; by default the last five years and the current one), optionally a policy area, and whether to
+      include the AI summary, then <em>Generate</em>.</p>
+    <ul><li><strong>Steps</strong>: collecting the data (a few seconds), writing the summary (AI, about 10 to 30 seconds), building
+      the document. <em>Cancel</em> or Escape stops it; nothing is saved.</li>
+    <li><strong>File</strong>: <code>briefing-&lt;country&gt;-&lt;from&gt;-&lt;to&gt;[-&lt;policy area&gt;].docx</code>, styled like the
+      other Word exports.</li>
+    <li><strong>Cost</strong>: the AI summary is one model call (a few cents); untick <em>Include AI summary</em> for a data-only document.</li></ul>
+    ${infoHtml("briefing")}` },
   { id: "data", title: "Data and updates", html: () => `
     <ul><li><strong>Sources</strong>: reforms-investments.ec.europa.eu (TSI projects, detail pages, country factsheets, deliverables),
       the SRSP list of approved requests (PDF), and the ECFIN CSR database (2016–2025 recommendations and their assessments) and the Commission's 2026 country-specific
@@ -3452,7 +3492,7 @@ async function renderLineage(p, seq) {
   if (stale(seq)) return;
   if (res.error) return showError(res.error, "Could not load the lineage network");
   const model = lineageModel(res.csrs, res.scores, { unlinked, country });
-  const head = `${heading(`Lineage · ${countryName(country)}`)}${tabs}${intro}${form}`;
+  const head = `<div class="title-row title-row-actions">${heading(`Lineage · ${countryName(country)}`)}<span class="title-actions">${briefingButton(country)}</span></div>${tabs}${intro}${form}`;
   if (!model.edges.length) {
     view(`${head}<p class="muted small">${esc(lineageSummary(model.summary, { country, from, to }))}</p>`
       + `<div class="card"><p class="empty">No project is linked to a CSR of ${esc(countryName(country))} between ${from} and ${to}.</p>`
@@ -3787,6 +3827,258 @@ async function renderOverview(kind, p, seq) {
   ovSaveHash(kind);
 }
 
+// ---------- country briefing (Word document: data of one country and period, optional AI summary) ----------
+
+const BRIEFING_PAGE = 1000; // PostgREST max rows per request
+const BRIEFING_IN = 100; // ids per in.() filter (URL length)
+const BRIEFING_AI_TIMEOUT_MS = 90000; // one model call without tools (the function allows 60 s)
+const BRIEFING_PROJECT_COLS = "project_id,title,programme,year,countries,policy_area,results,deliverables,url,detail_page";
+const BRIEFING_STEPS = [["data", "Collecting data…"], ["ai", "Writing the summary (AI)…"], ["doc", "Building the document…"]];
+let briefingRun = null; // { controller } while a briefing is being generated
+let briefingOpener = null;
+
+/** Every row of a filtered query, BRIEFING_PAGE at a time (build() must have a stable order). */
+async function briefingRows(build, signal) {
+  const rows = [];
+  for (let from = 0; ; from += BRIEFING_PAGE) {
+    const { data, error } = await build().range(from, from + BRIEFING_PAGE - 1).abortSignal(signal);
+    if (error) throw error;
+    rows.push(...arr(data));
+    if (arr(data).length < BRIEFING_PAGE) return rows;
+  }
+}
+
+/** Rows whose `column` is in `ids`, in chunks. */
+async function briefingIn(table, columns, column, ids, signal, order = column) {
+  const out = [];
+  for (let i = 0; i < ids.length; i += BRIEFING_IN) {
+    const chunk = ids.slice(i, i + BRIEFING_IN);
+    out.push(...await briefingRows(() => sb.from(table).select(columns).in(column, chunk).order(order, { ascending: order !== "created_at" }).order("project_id"), signal));
+  }
+  return out;
+}
+
+/** Projects, CSR documents, recommendations (sub-parts, links), linked projects, impact analyses and anomalies of a country. */
+async function fetchBriefingData(country, from, to, signal) {
+  const csrCols = (doc) => `csr_id,country,year,number,title,text,policy_areas,assessment,assessment_year,${doc ? "doc_id," : ""}source_url,`
+    + "csr_parts(part_id,policy_areas,project_csr_links(project_id,level,basis))";
+  const csrQuery = (doc) => () => sb.from("csrs").select(csrCols(doc)).eq("country", country).gte("year", from).lte("year", to).order("csr_id");
+  const [projects, csrs, docs, anomalies] = await Promise.all([
+    briefingRows(() => sb.from("projects").select(BRIEFING_PROJECT_COLS).contains("countries", [country]).gte("year", from).lte("year", to).order("project_id"), signal),
+    briefingRows(csrQuery(!csrDocsMissing), signal).catch((e) => {
+      if (!docsTableMissing(e)) throw e;
+      csrDocsMissing = true;
+      return briefingRows(csrQuery(false), signal);
+    }),
+    csrDocsMissing ? Promise.resolve([]) : briefingRows(() => sb.from("csr_documents").select("doc_id,country,year,title,stage,n_recommendations,document_url")
+      .eq("country", country).gte("year", from).lte("year", to).order("doc_id"), signal).catch((e) => {
+      if (docsTableMissing(e)) return []; // documents rebuilt from the recommendations
+      throw e;
+    }),
+    briefingRows(() => sb.from("anomalies").select("id,project_id,title,programme,year,countries,type,severity").ilike("countries", `%${country}%`).order("id"), signal),
+  ]);
+  const known = new Set(projects.map((p) => p.project_id));
+  const linkedIds = [...new Set(csrs.flatMap((c) => arr(c.csr_parts).flatMap((p) => arr(p?.project_csr_links).map((l) => l?.project_id))).filter(Boolean))];
+  const linked = await briefingIn("projects", BRIEFING_PROJECT_COLS, "project_id", linkedIds.filter((id) => !known.has(id)), signal);
+  const ids = [...new Set([...known, ...linkedIds])];
+  const impacts = await briefingIn("impact_reports", "id,project_id,score,level,confidence,created_at,verdict", "project_id", ids, signal, "created_at")
+    .catch(() => []); // impact analyses are extra context: the briefing stands without them
+  impacts.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) || num(b.id) - num(a.id));
+  return { projects, linked, docs, csrs, impacts, anomalies };
+}
+
+/** POST {service: "briefing", ...} to tsi-assistant; returns { key_messages, comments } or throws a readable Error. */
+async function callBriefing(payload, signal) {
+  const { data } = await sb.auth.getSession();
+  const token = data?.session?.access_token;
+  if (!token) throw new Error("Your session has expired: sign in again.");
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal.addEventListener("abort", abort);
+  const timer = setTimeout(abort, BRIEFING_AI_TIMEOUT_MS);
+  let res;
+  let body;
+  try {
+    res = await fetch(PROXY_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ service: "briefing", ...payload }),
+      signal: controller.signal,
+    });
+    body = await res.json().catch(() => ({}));
+  } catch (e) {
+    if (signal.aborted) throw e;
+    throw new Error(e?.name === "AbortError" ? "The AI summary took too long." : "The AI service could not be reached.");
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", abort);
+  }
+  const b = body?.briefing;
+  if (res.ok && b && Array.isArray(b.key_messages)) {
+    const text = (v) => (typeof v === "string" ? v : "");
+    return { key_messages: b.key_messages.filter((x) => typeof x === "string" && x.trim()).slice(0, 7),
+      comments: Object.fromEntries(["figures", "csrs", "lineage", "results", "gaps"].map((k) => [k, text(b.comments?.[k])])) };
+  }
+  if (res.status === 413) throw new Error("The figures were too large for the AI summary.");
+  throw new Error(proxyMessage(res.status, body).replace("analysis service", "AI service"));
+}
+
+function briefingDefaults() {
+  const y = new Date().getFullYear();
+  return { from: y - 5, to: y };
+}
+
+function briefingFormHtml(country) {
+  const d = briefingDefaults();
+  const countries = Object.fromEntries(Object.entries(COUNTRIES).sort((a, b) => a[1].localeCompare(b[1])).map(([code, name]) => [code, `${name} (${code})`]));
+  const steps = BRIEFING_STEPS.map(([k, label]) => `<li data-step="${k}">${esc(label)}</li>`).join("");
+  return `<form id="briefing-form" class="info-inner" novalidate>`
+    + `<div class="info-head"><div class="title-row"><h2 id="briefing-title">Country briefing</h2>${infoButton("briefing", "About the country briefing")}</div></div>`
+    + `<div class="info-body briefing-body">`
+    + `<p class="muted" id="briefing-intro">A Word document on one country: key figures, country-specific recommendations, lineage, `
+    + `results and impact, gaps and data quality, with an optional AI summary.</p>`
+    + `<div class="briefing-fields">${selectField("country", "Country", countries, country, null)}`
+    + `${yearField("from", "From year", d.from)}${yearField("to", "To year", d.to)}`
+    + `${selectField("topic", "Policy area (optional)", POLICY_AREAS, "", "All policy areas")}</div>`
+    + `${checkField("ai", "Include AI summary", true)}`
+    + `<p class="muted small briefing-ai-note">One call to Claude (Anthropic), written only from the figures of the document: about 10 to 30 seconds, with a small cost. AI-generated parts are marked in the document.</p>`
+    + `<ol class="briefing-steps" id="briefing-steps" hidden>${steps}</ol>`
+    + `<p id="briefing-status" class="briefing-status" role="status" aria-live="polite"></p></div>`
+    + `<div class="briefing-actions"><button type="button" class="btn btn-secondary" id="briefing-cancel">Close</button>`
+    + `<button type="submit" class="btn" id="briefing-generate">Generate</button></div></form>`;
+}
+
+function briefingStatus(text, { error = false } = {}) {
+  const el = $("briefing-status");
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle("note-error", error);
+}
+
+function briefingStep(key) {
+  const list = $("briefing-steps");
+  if (!list) return;
+  list.hidden = key === null;
+  let past = true;
+  for (const li of list.querySelectorAll("li")) {
+    const on = li.dataset.step === key;
+    if (on) past = false;
+    li.classList.toggle("is-done", past && key !== null);
+    li.classList.toggle("is-active", on);
+    if (on) li.setAttribute("aria-current", "step"); else li.removeAttribute("aria-current");
+  }
+}
+
+function briefingBusy(busy) {
+  const form = $("briefing-form");
+  if (!form) return;
+  for (const el of form.querySelectorAll("select, input")) el.disabled = busy;
+  $("briefing-generate").disabled = busy;
+  $("briefing-cancel").textContent = busy ? "Cancel" : "Close";
+}
+
+function openBriefing(country, opener) {
+  const dialog = $("briefing-dialog");
+  if (!dialog || briefingRun) {
+    if (dialog && !dialog.open) dialog.showModal();
+    return;
+  }
+  dialog.innerHTML = briefingFormHtml(pick(country, COUNTRIES) || "");
+  briefingOpener = opener || null;
+  $("briefing-form").addEventListener("submit", (e) => { e.preventDefault(); generateBriefing(); });
+  $("briefing-cancel").addEventListener("click", () => (briefingRun ? cancelBriefing() : dialog.close()));
+  if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.setAttribute("open", "");
+  $("briefing-form").elements.country.focus();
+}
+
+function cancelBriefing() {
+  briefingRun?.controller.abort();
+}
+
+function bindBriefing() {
+  const dialog = $("briefing-dialog");
+  if (!dialog) return;
+  document.addEventListener("click", (e) => {
+    const button = e.target instanceof Element ? e.target.closest("[data-briefing]") : null;
+    if (button) openBriefing(button.dataset.briefing, button);
+  });
+  dialog.addEventListener("cancel", (e) => { // Escape: cancels a running generation first
+    if (briefingRun) { e.preventDefault(); cancelBriefing(); }
+  });
+  dialog.addEventListener("close", () => {
+    if (briefingOpener?.isConnected) briefingOpener.focus();
+    briefingOpener = null;
+  });
+  window.addEventListener("hashchange", () => { if (!briefingRun && dialog.open) dialog.close(); });
+}
+
+async function generateBriefing() {
+  if (briefingRun) return;
+  const form = $("briefing-form");
+  const country = pick(form.elements.country.value, COUNTRIES);
+  let from = parseInt(form.elements.from.value, 10);
+  let to = parseInt(form.elements.to.value, 10);
+  const topic = pick(form.elements.topic.value, POLICY_AREAS);
+  const withAi = form.elements.ai.checked;
+  if (!country) return briefingStatus("Choose a country.", { error: true });
+  if (!(from >= 2010 && from <= 2100) || !(to >= 2010 && to <= 2100)) return briefingStatus("Enter the years of the period (for example 2021 and 2026).", { error: true });
+  if (from > to) [from, to] = [to, from];
+  const epoch = aiEpoch;
+  const controller = new AbortController();
+  const signal = controller.signal;
+  briefingRun = { controller };
+  briefingBusy(true);
+  const aiStep = $("briefing-steps")?.querySelector('[data-step="ai"]');
+  if (aiStep) aiStep.hidden = !withAi;
+  let aiError = "";
+  try {
+    briefingStep("data");
+    briefingStatus(`Collecting data for ${countryName(country)}, ${from}–${to}…`);
+    const [raw, lib] = await Promise.all([
+      fetchBriefingData(country, from, to, signal),
+      loadWord().catch((e) => { throw new Error(`could not load the Word library (${e?.message || "network error"}). Check your connection and try again.`); }),
+    ]);
+    if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    const model = B.briefingModel(raw, { country, countryName: countryName(country), from, to, topic, topicLabel: areaLabel(topic), areaLabel: ovPaName, date: new Date() });
+    let ai = null;
+    if (withAi) {
+      briefingStep("ai");
+      briefingStatus("Writing the summary (AI)… about 10 to 30 seconds.");
+      try {
+        const facts = B.briefingFacts(model);
+        if (JSON.stringify(facts).length > B.FACTS_MAX) throw new Error("The figures were too large for the AI summary.");
+        ai = await callBriefing({ country, period: { from, to }, topic: topic ? areaLabel(topic) : null, facts }, signal);
+      } catch (e) {
+        if (signal.aborted) throw e;
+        aiError = e?.message || String(e);
+      }
+    }
+    briefingStep("doc");
+    briefingStatus("Building the document…");
+    const doc = lib.W.buildBriefingDocument(lib.D, { model, ai, aiError, aiSkipped: !withAi, email: currentEmail, date: model.date,
+      labels: { anomaly: (t) => ANOMALY_TYPES[t] || t } });
+    const blob = await lib.D.Packer.toBlob(doc);
+    if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
+    if (epoch !== aiEpoch) return;
+    saveBlob(B.briefingFileName(country, from, to, topic), blob);
+    briefingStep(null);
+    briefingStatus(withAi && !ai ? `Briefing downloaded without the AI summary: ${aiError}` : "Briefing downloaded.", { error: withAi && !ai });
+  } catch (e) {
+    if (epoch !== aiEpoch) return;
+    briefingStep(null);
+    if (signal.aborted) briefingStatus("Cancelled: no document was created.");
+    else briefingStatus(`Could not create the briefing: ${e?.message || e}`, { error: true });
+  } finally {
+    if (briefingRun?.controller === controller) briefingRun = null;
+    briefingBusy(false);
+  }
+}
+
+function briefingButton(country) {
+  return Object.hasOwn(COUNTRIES, country)
+    ? `<button type="button" class="btn btn-secondary" data-briefing="${esc(country)}" aria-haspopup="dialog">Country briefing</button>` : "";
+}
+
 // ---------- auth and routing ----------
 
 function showScreen(name) {
@@ -4030,7 +4322,7 @@ async function init() {
   });
   // One Escape handler for the whole page: hides the chart tooltips and releases a pinned lineage node.
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || $("info-dialog")?.open) return;
+    if (e.key !== "Escape" || $("info-dialog")?.open || $("briefing-dialog")?.open) return;
     const tip = $("dash-tip");
     if (tip) tip.hidden = true;
     hideLineageTip();
@@ -4043,6 +4335,7 @@ async function init() {
     if (a) lnTabFocus = a.getAttribute("href") === location.hash ? null : a.dataset.lnview;
   });
   bindInfoDialog();
+  bindBriefing();
   bindAssistant();
   let resizeTimer = 0;
   window.addEventListener("resize", () => {

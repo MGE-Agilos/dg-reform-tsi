@@ -586,6 +586,38 @@ div.title-row:has(> h2) { margin-bottom: 12px; }
 .info-dl dt { font-weight: 600; margin-top: 8px; }
 .info-dl dd { margin: 2px 0 0; }
 
+/* Country briefing: entry button beside a heading, and its dialog (form, progress steps, actions). */
+.title-row-actions { justify-content: space-between; }
+.title-actions { margin-left: auto; display: inline-flex; gap: 8px; }
+.briefing-dialog { width: min(560px, calc(100vw - 2 * var(--gutter))); }
+.briefing-dialog .info-head .title-row { margin: 0; }
+.briefing-dialog .info-head h2 { margin: 0; }
+.briefing-body { padding-top: 10px; }
+.briefing-fields { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 0 6px; }
+.briefing-fields .field { flex: 1 1 100%; }
+.briefing-fields .field-half { flex: 1 1 calc(50% - 6px); }
+.briefing-fields select, .briefing-fields input { width: 100%; }
+.briefing-ai-note { margin-top: 2px !important; }
+.briefing-steps { list-style: none; padding: 0 !important; margin: 12px 0 4px !important; display: grid; gap: 6px; }
+.briefing-steps li { position: relative; padding-left: 26px; color: var(--muted); margin: 0 !important; }
+.briefing-steps li::before {
+  content: ""; position: absolute; left: 2px; top: 0.2em; width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--border); box-sizing: border-box;
+}
+.briefing-steps li.is-active { color: var(--fg); font-weight: 600; }
+.briefing-steps li.is-active::before { border-color: var(--accent); border-right-color: transparent; animation: briefing-spin 0.9s linear infinite; }
+.briefing-steps li.is-done { color: var(--fg); }
+.briefing-steps li.is-done::before { background: var(--direct); border-color: var(--direct); }
+.briefing-steps li.is-done::after {
+  content: ""; position: absolute; left: 7px; top: calc(0.2em + 3px); width: 3px; height: 6px;
+  border: solid var(--card); border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.briefing-steps li[hidden] { display: none; }
+@keyframes briefing-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .briefing-steps li.is-active::before { animation: none; border-right-color: var(--accent); } }
+.briefing-status { min-height: 1.4em; margin: 8px 0 0 !important; }
+.briefing-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); }
+
 /* Source of a project known only from a listing (factsheet, PDF list). */
 .source-line { margin-top: 2px; color: var(--muted); overflow-wrap: anywhere; }
 

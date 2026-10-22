@@ -1,5 +1,8 @@
 // Supabase Edge Function "tsi-assistant": serves the explorer's Chat and Impact tabs with Claude (Anthropic Messages API).
 // Same contract as haystack-proxy: POST {service: "chat"|"impact", messages} with the tester's session token -> {answer, saved}.
+// Service "briefing" (country briefing of the explorer): POST {service: "briefing", country, period: {from, to}, topic, facts}
+// -> {briefing: {key_messages, comments}, saved: false}; one model call without tools, written only from `facts` (a compact
+// digest built by the page, at most MAX_FACTS characters, else 413); nothing is saved.
 // Claude's client tools query the Supabase tables through PostgREST WITH THE TESTER'S TOKEN (RLS applies); the impact
 // analysis also uses Anthropic's server web search tool.
 // Single self-contained file, no imports: paste it into Supabase (Edge Functions > Via Editor), keep "Verify JWT" on.
@@ -16,7 +19,8 @@
 type Env = Record<string, string | undefined>;
 type Message = { role: "user" | "assistant"; content: string };
 type FetchImpl = (url: string, init: RequestInit) => Promise<Response>;
-type ServiceName = "chat" | "impact";
+type ServiceName = "chat" | "impact" | "briefing";
+type AgentService = "chat" | "impact";
 type Block = { type: string; [key: string]: unknown };
 type ApiMessage = { role: "user" | "assistant"; content: string | Block[] };
 type Usage = { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
@@ -32,8 +36,9 @@ export const MAX_TOTAL = 40000; // all messages together
 export const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 export const ANTHROPIC_VERSION = "2023-06-01";
 export const DEFAULT_MODEL = "claude-sonnet-5-5";
-export const MAX_TOKENS: Record<ServiceName, number> = { chat: 16000, impact: 16000 };
-export const EFFORT: Record<ServiceName, string> = { chat: "low", impact: "medium" };
+export const MAX_TOKENS: Record<ServiceName, number> = { chat: 16000, impact: 16000, briefing: 2000 };
+export const EFFORT: Record<ServiceName, string> = { chat: "low", impact: "medium", briefing: "low" };
+export const MAX_FACTS = 25000; // characters of JSON.stringify(facts) (briefing)
 export const MAX_STEPS = 8; // tool rounds; then one last call without tools
 export const MODEL_TIMEOUT_MS = 60000; // per Anthropic call
 export const DEADLINE_MS = 140000; // nothing runs past it (the page gives up at 160 s)
@@ -234,7 +239,7 @@ export const WEB_SEARCH_TOOL = { type: "web_search_20260209", name: "web_search"
 export const TOOLS_CHAT: Record<string, unknown>[] = [SEARCH_PROJECTS, LIST_PROJECTS, GET_PROJECT, SEARCH_CSRS, GET_CSR];
 export const TOOLS_IMPACT: Record<string, unknown>[] = [GET_PROJECT, SEARCH_PROJECTS, WEB_SEARCH_TOOL];
 
-const SERVICES: Record<ServiceName, { system: () => string; tools: Record<string, unknown>[]; clientTools: string[] }> = {
+const SERVICES: Record<AgentService, { system: () => string; tools: Record<string, unknown>[]; clientTools: string[] }> = {
   chat: { system: () => CHAT_SYSTEM, tools: TOOLS_CHAT, clientTools: ["search_projects", "list_projects", "get_project", "search_csrs", "get_csr"] },
   impact: { system: () => impactSystem(), tools: TOOLS_IMPACT, clientTools: ["get_project", "search_projects"] },
 };
@@ -665,8 +670,45 @@ export function withCacheBreakpoint(conversation: ApiMessage[]): ApiMessage[] {
   return out;
 }
 
+/** One Messages API call; errors mapped to 502/504 (only the Anthropic status and error type are logged); usage summed in stats. */
+async function modelRequest(service: ServiceName, body: Record<string, unknown>, key: string, fetchImpl: FetchImpl, timeout: number,
+  stats: RunStats): Promise<ModelResponse> {
+  let res: Response;
+  try {
+    res = await fetchImpl(ANTHROPIC_URL, {
+      method: "POST",
+      headers: { "x-api-key": key, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeout),
+    });
+  } catch (e) {
+    if (isTimeout(e)) throw new HttpError(504, "The model service timed out");
+    throw new HttpError(502, "The model service could not be reached");
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => null) as { error?: { type?: unknown } } | null;
+    console.log(JSON.stringify({ service, anthropicStatus: res.status, anthropicError: typeof err?.error?.type === "string" ? err.error.type : null, requestId: res.headers.get("request-id") }));
+    throw new HttpError(502, `Model service error ${res.status}`);
+  }
+  let json: ModelResponse;
+  try {
+    json = await res.json() as ModelResponse;
+  } catch (e) {
+    if (isTimeout(e)) throw new HttpError(504, "The model service timed out");
+    throw new HttpError(502, "Unexpected response from the model service");
+  }
+  if (!json || !Array.isArray(json.content)) throw new HttpError(502, "Unexpected response from the model service");
+  const u = json.usage ?? {};
+  stats.input_tokens += u.input_tokens ?? 0;
+  stats.output_tokens += u.output_tokens ?? 0;
+  stats.cache_read_tokens += u.cache_read_input_tokens ?? 0;
+  stats.cache_creation_tokens += u.cache_creation_input_tokens ?? 0;
+  stats.web_searches += json.content.filter((b) => b?.type === "server_tool_use" && b.name === "web_search").length;
+  return json;
+}
+
 export async function agentLoop(
-  service: ServiceName, messages: Message[], env: Env, fetchImpl: FetchImpl, now: () => number = Date.now,
+  service: AgentService, messages: Message[], env: Env, fetchImpl: FetchImpl, now: () => number = Date.now,
   ctx?: { supabaseUrl: string; apikey: string; userAuth: string }, stats: RunStats = emptyStats(),
 ): Promise<{ answer: string; steps: number; stats: RunStats }> {
   // Cle propre au projet TSI d'abord (le secret ANTHROPIC_API_KEY est partage avec une autre application).
@@ -691,39 +733,7 @@ export async function agentLoop(
       output_config: { effort: EFFORT[service] },
     };
     if (final) body.tool_choice = { type: "none" };
-    const timeout = Math.max(1000, Math.min(MODEL_TIMEOUT_MS, deadline - now()));
-    let res: Response;
-    try {
-      res = await fetchImpl(ANTHROPIC_URL, {
-        method: "POST",
-        headers: { "x-api-key": key, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json" },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(timeout),
-      });
-    } catch (e) {
-      if (isTimeout(e)) throw new HttpError(504, "The model service timed out");
-      throw new HttpError(502, "The model service could not be reached");
-    }
-    if (!res.ok) {
-      const err = await res.json().catch(() => null) as { error?: { type?: unknown } } | null;
-      console.log(JSON.stringify({ service, anthropicStatus: res.status, anthropicError: typeof err?.error?.type === "string" ? err.error.type : null, requestId: res.headers.get("request-id") }));
-      throw new HttpError(502, `Model service error ${res.status}`);
-    }
-    let json: ModelResponse;
-    try {
-      json = await res.json() as ModelResponse;
-    } catch (e) {
-      if (isTimeout(e)) throw new HttpError(504, "The model service timed out");
-      throw new HttpError(502, "Unexpected response from the model service");
-    }
-    if (!json || !Array.isArray(json.content)) throw new HttpError(502, "Unexpected response from the model service");
-    const u = json.usage ?? {};
-    stats.input_tokens += u.input_tokens ?? 0;
-    stats.output_tokens += u.output_tokens ?? 0;
-    stats.cache_read_tokens += u.cache_read_input_tokens ?? 0;
-    stats.cache_creation_tokens += u.cache_creation_input_tokens ?? 0;
-    stats.web_searches += json.content.filter((b) => b?.type === "server_tool_use" && b.name === "web_search").length;
-    return json;
+    return await modelRequest(service, body, key, fetchImpl, Math.max(1000, Math.min(MODEL_TIMEOUT_MS, deadline - now())), stats);
   };
 
   let res = await call(false);
@@ -886,6 +896,117 @@ async function saveImpact(answer: string, messages: Message[], env: Env, fetchIm
   }
 }
 
+// ---------- country briefing (single call, no tools, nothing saved) ----------
+
+export const BRIEFING_COMMENT_KEYS = ["figures", "csrs", "lineage", "results", "gaps"] as const;
+export type Briefing = { key_messages: string[]; comments: Record<(typeof BRIEFING_COMMENT_KEYS)[number], string> };
+export type BriefingInput = { country: string; period: { from: number; to: number }; topic: string | null; facts: Record<string, unknown> };
+const BRIEFING_MESSAGE_MAX = 500; // characters per key message
+const BRIEFING_COMMENT_MAX = 900; // characters per comment
+
+export const BRIEFING_SYSTEM = `You write the AI-generated parts of a country briefing on the European Commission's technical support
+(DG REFORM: TSI, SRSP, SRSS projects) and the EU country-specific recommendations (CSRs). The user message gives the
+country, the period, an optional policy area and FACTS: a JSON digest computed from the explorer's database.
+
+Rules:
+- Write only from the FACTS. Never invent a figure, a project, a recommendation, an assessment or an outcome; never use
+  outside knowledge. Every number you write must appear in the FACTS or follow directly from them (a share of two given
+  counts). If something is not in the FACTS, do not mention it.
+- Cautious, factual wording for policy officers, in English. No speculation about causality: projects "support" or are
+  "linked to" recommendations; they do not "implement" or "achieve" them.
+- Caveats to mention where relevant: project-CSR links are assessed by AI from the project text; impact analyses are
+  AI-generated and few; the results status comes from the project pages and is not an assessment of success; the latest
+  Commission-stage recommendations are not yet adopted nor assessed; projects known only by their title are not linked yet.
+- key_messages: 5 to 7 short bullet sentences (at most 40 words each), the most useful facts first: volume and focus of
+  support, coverage of the recommendations, results and impact, gaps.
+- comments: at most 3 sentences each, or an empty string when there is nothing useful to add.
+  figures: what the key figures show. csrs: the recommendations and their assessments. lineage: how the projects
+  support the recommendations. results: results and impact analyses. gaps: recommendations without support, phrased as
+  possible areas for future support to verify (e.g. "could be explored"), never as a finding or an instruction.
+- Answer with the JSON object only.`;
+
+export const BRIEFING_SCHEMA = {
+  type: "object",
+  properties: {
+    key_messages: { type: "array", items: { type: "string" } },
+    comments: {
+      type: "object",
+      properties: Object.fromEntries(BRIEFING_COMMENT_KEYS.map((k) => [k, { type: "string" }])),
+      required: [...BRIEFING_COMMENT_KEYS],
+      additionalProperties: false,
+    },
+  },
+  required: ["key_messages", "comments"],
+  additionalProperties: false,
+};
+
+/** Validates the briefing request; facts above MAX_FACTS characters (as JSON) -> 413. */
+export function validateBriefing(body: unknown): BriefingInput {
+  if (!body || typeof body !== "object") throw new HttpError(400, "Invalid request body");
+  const { country, period, topic, facts } = body as { country?: unknown; period?: unknown; topic?: unknown; facts?: unknown };
+  const code = typeof country === "string" ? country.trim().toUpperCase() : "";
+  if (!COUNTRIES.includes(code)) throw new HttpError(400, "country must be an EU ISO code");
+  const { from, to } = (period && typeof period === "object" ? period : {}) as { from?: unknown; to?: unknown };
+  const year = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v >= 2010 && v <= 2100;
+  if (!year(from) || !year(to) || (from as number) > (to as number)) throw new HttpError(400, "period must be {from, to} years with from <= to");
+  if (topic !== undefined && topic !== null && (typeof topic !== "string" || topic.length > 120)) throw new HttpError(400, "topic must be a short string");
+  if (!facts || typeof facts !== "object" || Array.isArray(facts)) throw new HttpError(400, "facts must be an object");
+  let size: number;
+  try {
+    size = JSON.stringify(facts).length;
+  } catch {
+    throw new HttpError(400, "facts must be JSON");
+  }
+  if (size > MAX_FACTS) throw new HttpError(413, `facts exceed ${MAX_FACTS} characters`);
+  return { country: code, period: { from: from as number, to: to as number }, topic: typeof topic === "string" && topic.trim() ? topic.trim() : null, facts: facts as Record<string, unknown> };
+}
+
+const cleanText = (v: unknown, max: number) => {
+  const t = typeof v === "string" ? v.replace(/\s+/g, " ").trim() : "";
+  return t.length > max ? t.slice(0, max - 1).trimEnd() + "…" : t;
+};
+
+/** The model's JSON (code fences and text around the object tolerated) -> Briefing; invalid -> 502. */
+export function parseBriefing(text: string): Briefing {
+  const raw = String(text ?? "").replace(/^\s*```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  let data: unknown;
+  try {
+    data = start >= 0 && end > start ? JSON.parse(raw.slice(start, end + 1)) : null;
+  } catch {
+    data = null;
+  }
+  const obj = data && typeof data === "object" && !Array.isArray(data) ? data as Record<string, unknown> : null;
+  const messages = Array.isArray(obj?.key_messages)
+    ? (obj!.key_messages as unknown[]).map((m) => cleanText(m, BRIEFING_MESSAGE_MAX)).filter(Boolean).slice(0, 7) : [];
+  if (!obj || !messages.length) throw new HttpError(502, "The model did not return a valid briefing");
+  const c = obj.comments && typeof obj.comments === "object" && !Array.isArray(obj.comments) ? obj.comments as Record<string, unknown> : {};
+  const comments = Object.fromEntries(BRIEFING_COMMENT_KEYS.map((k) => [k, cleanText(c[k], BRIEFING_COMMENT_MAX)])) as Briefing["comments"];
+  return { key_messages: messages, comments };
+}
+
+export function briefingUserMessage(input: BriefingInput): string {
+  return `Country: ${input.country}\nPeriod: ${input.period.from}-${input.period.to}\nPolicy area: ${input.topic ?? "all"}\n`
+    + `FACTS (JSON):\n${JSON.stringify(input.facts)}`;
+}
+
+/** One model call (structured JSON output, no tools); refusal -> 422; unparseable answer -> 502. */
+export async function runBriefing(input: BriefingInput, env: Env, fetchImpl: FetchImpl, stats: RunStats = emptyStats()): Promise<Briefing> {
+  const key = env.TSI_ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY;
+  if (!key) throw new HttpError(500, "ANTHROPIC_API_KEY not configured");
+  const body = {
+    model: env.TSI_MODEL || DEFAULT_MODEL, max_tokens: MAX_TOKENS.briefing,
+    system: BRIEFING_SYSTEM,
+    messages: [{ role: "user", content: briefingUserMessage(input) }],
+    output_config: { effort: EFFORT.briefing, format: { type: "json_schema", schema: BRIEFING_SCHEMA } },
+  };
+  const res = await modelRequest("briefing", body, key, fetchImpl, MODEL_TIMEOUT_MS, stats);
+  stats.steps = 1;
+  if (res.stop_reason === "refusal") throw new HttpError(422, "The model declined this request");
+  return parseBriefing(answerText(res.content));
+}
+
 // ---------- HTTP handler (same contract and checks as haystack-proxy) ----------
 
 export function allowedOrigins(env: Env): string[] {
@@ -904,7 +1025,7 @@ export function corsHeaders(origin: string | null, allowed: string[]): Record<st
   return headers;
 }
 
-export function validate(body: unknown): { service: ServiceName; messages: Message[] } {
+export function validate(body: unknown): { service: AgentService; messages: Message[] } {
   if (!body || typeof body !== "object") throw new HttpError(400, "Invalid request body");
   const { service, messages } = body as { service?: unknown; messages?: unknown };
   if (service !== "chat" && service !== "impact") throw new HttpError(400, "Unknown service");
@@ -974,6 +1095,13 @@ export async function handle(req: Request, env: Env, fetchImpl: FetchImpl, now: 
       body = await req.json();
     } catch {
       throw new HttpError(400, "Invalid JSON body");
+    }
+    if ((body as { service?: unknown } | null)?.service === "briefing") {
+      service = "briefing";
+      const input = validateBriefing(body);
+      const briefing = await runBriefing(input, env, fetchImpl, stats);
+      status = 200;
+      return reply(200, { briefing, saved: false });
     }
     const valid = validate(body);
     service = valid.service;

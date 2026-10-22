@@ -7,6 +7,7 @@ import {
   canonicalDocId, docIdOf,
   HttpError, CHAT_SYSTEM, impactSystem, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
   withCacheBreakpoint, emptyStats, parseImpact, extractVerdict, extractProject, jwtSub, SAVE_TIMEOUT_MS,
+  validateBriefing, parseBriefing, runBriefing, BRIEFING_SYSTEM, BRIEFING_SCHEMA, MAX_FACTS, MAX_TOKENS,
 } from "./index.ts";
 
 const ORIGIN = "https://mge-agilos.github.io";
@@ -782,4 +783,114 @@ test("impact save bounded by the time left: min(5 s, start + 145 s - now), at le
     }
     assert.deepEqual(timeouts, { check: expected, save: expected }, `elapsed ${elapsed}`);
   }
+});
+
+// ---------- country briefing ----------
+
+const FACTS = { country: { code: "HR", name: "Croatia" }, projects: { total: 4 }, coverage: { pct: 40 }, gaps: [{ id: "csr-HR-2023-2" }] };
+const briefingBody = { service: "briefing", country: "HR", period: { from: 2021, to: 2026 }, topic: "Health and long-term care", facts: FACTS };
+const BRIEFING_JSON = { key_messages: ["Croatia had 4 health projects.", "40% of the assessed recommendations are supported."],
+  comments: { figures: "Few projects.", csrs: "", lineage: "Links are AI-assessed.", results: "", gaps: "Primary care could be explored." } };
+
+test("briefing: one model call without tools, structured JSON output, effort low, facts in the user message; {briefing, saved: false}", async () => {
+  const f = fakeFetch({ model: [textReply(JSON.stringify(BRIEFING_JSON))] });
+  const res = await handle(post(briefingBody), ENV, f.impl);
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("Access-Control-Allow-Origin"), ORIGIN);
+  assert.deepEqual(await res.json(), { briefing: BRIEFING_JSON, saved: false });
+  assert.equal(f.modelCalls().length, 1);
+  assert.equal(f.dbCalls().length, 0); // nothing read nor saved besides is_tester
+  const body = sent(f.modelCalls()[0]);
+  assert.equal(body.tools, undefined);
+  assert.equal(body.max_tokens, MAX_TOKENS.briefing);
+  assert.ok(MAX_TOKENS.briefing >= 1500 && MAX_TOKENS.briefing <= 2000);
+  assert.equal(body.model, DEFAULT_MODEL);
+  assert.equal(body.system, BRIEFING_SYSTEM);
+  assert.deepEqual(body.output_config, { effort: "low", format: { type: "json_schema", schema: BRIEFING_SCHEMA } });
+  assert.equal(body.messages.length, 1);
+  assert.match(body.messages[0].content, /Country: HR\nPeriod: 2021-2026\nPolicy area: Health and long-term care/);
+  assert.ok(body.messages[0].content.includes(JSON.stringify(FACTS)));
+  assert.equal(new Headers(f.modelCalls()[0].init.headers).get("x-api-key"), ENV.ANTHROPIC_API_KEY);
+});
+
+test("briefing prompt: facts only, no invented figures, strict JSON, caveats, suggestions for gaps", () => {
+  assert.match(BRIEFING_SYSTEM, /only from the FACTS/);
+  assert.match(BRIEFING_SYSTEM, /Never invent a figure/);
+  assert.match(BRIEFING_SYSTEM, /5 to 7/);
+  assert.match(BRIEFING_SYSTEM, /at most 3 sentences/);
+  assert.match(BRIEFING_SYSTEM, /assessed by AI/);
+  assert.match(BRIEFING_SYSTEM, /JSON object only/);
+  assert.deepEqual(BRIEFING_SCHEMA.required, ["key_messages", "comments"]);
+  assert.deepEqual(BRIEFING_SCHEMA.properties.comments.required, ["figures", "csrs", "lineage", "results", "gaps"]);
+});
+
+test("briefing validation: country, period, topic and facts; 400 or 413 without calling Anthropic", async () => {
+  const bad: [unknown, number][] = [
+    [{ ...briefingBody, country: "XX" }, 400],
+    [{ ...briefingBody, country: undefined }, 400],
+    [{ ...briefingBody, period: { from: 2026, to: 2021 } }, 400],
+    [{ ...briefingBody, period: { from: "2021", to: 2026 } }, 400],
+    [{ ...briefingBody, period: null }, 400],
+    [{ ...briefingBody, topic: 5 }, 400],
+    [{ ...briefingBody, topic: "x".repeat(121) }, 400],
+    [{ ...briefingBody, facts: [] }, 400],
+    [{ ...briefingBody, facts: "text" }, 400],
+    [{ ...briefingBody, facts: { big: "x".repeat(MAX_FACTS) } }, 413],
+  ];
+  for (const [body, status] of bad) {
+    const f = fakeFetch();
+    const res = await handle(post(body), ENV, f.impl);
+    assert.equal(res.status, status, JSON.stringify(body).slice(0, 80));
+    assert.equal(f.modelCalls().length, 0);
+  }
+  assert.deepEqual(validateBriefing({ ...briefingBody, country: " hr ", topic: "  " }),
+    { country: "HR", period: { from: 2021, to: 2026 }, topic: null, facts: FACTS });
+  assert.equal(MAX_FACTS, 25000);
+});
+
+test("briefing: is_tester false -> 403 before the model; no bearer -> 401", async () => {
+  const f = fakeFetch({ tester: false });
+  assert.equal((await handle(post(briefingBody), ENV, f.impl)).status, 403);
+  assert.equal(f.modelCalls().length, 0);
+  assert.equal((await handle(post(briefingBody, { token: "" }), ENV, fakeFetch().impl)).status, 401);
+});
+
+test("parseBriefing: fences and surrounding text stripped, lists capped, comments cleaned; invalid -> 502", () => {
+  const eight = { key_messages: Array.from({ length: 8 }, (_, i) => ` Message  ${i} `), comments: { figures: 7, gaps: "  Some  gap. " } };
+  const p = parseBriefing("Here it is:\n```json\n" + JSON.stringify(eight) + "\n```");
+  assert.equal(p.key_messages.length, 7);
+  assert.equal(p.key_messages[0], "Message 0");
+  assert.deepEqual(p.comments, { figures: "", csrs: "", lineage: "", results: "", gaps: "Some gap." });
+  assert.equal(parseBriefing(JSON.stringify({ key_messages: ["x".repeat(800)], comments: {} })).key_messages[0].length, 500);
+  for (const text of ["", "not json", "{\"key_messages\": []}", "{\"comments\": {}}", "[1,2]", "{\"key_messages\": [\"a\"", "{\"key_messages\": [1, null]}"]) {
+    assert.throws(() => parseBriefing(text), (e: unknown) => e instanceof HttpError && e.status === 502, text);
+  }
+});
+
+test("briefing: invalid model JSON -> 502; refusal -> 422; Anthropic error -> 502; logs without content", async () => {
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
+  try {
+    let res = await handle(post(briefingBody), ENV, fakeFetch({ model: [textReply("I cannot produce JSON")] }).impl);
+    assert.equal(res.status, 502);
+    res = await handle(post(briefingBody), ENV, fakeFetch({ model: [{ body: { content: [], stop_reason: "refusal" } }] }).impl);
+    assert.equal(res.status, 422);
+    res = await handle(post(briefingBody), ENV, fakeFetch({ model: [{ status: 529, body: { error: { type: "overloaded_error" } } }] }).impl);
+    assert.equal(res.status, 502);
+  } finally {
+    console.log = orig;
+  }
+  assert.ok(logs.some((l) => /"service":"briefing"/.test(l)));
+  assert.ok(!logs.some((l) => l.includes("Croatia") || l.includes("csr-HR-2023-2")));
+});
+
+test("runBriefing: the TSI key and model are used; missing key -> 500", async () => {
+  const f = fakeFetch({ model: [textReply(JSON.stringify(BRIEFING_JSON))] });
+  const out = await runBriefing(validateBriefing(briefingBody), { ...ENV, TSI_ANTHROPIC_API_KEY: "sk-tsi", TSI_MODEL: "claude-test" }, f.impl);
+  assert.deepEqual(out, BRIEFING_JSON);
+  assert.equal(new Headers(f.modelCalls()[0].init.headers).get("x-api-key"), "sk-tsi");
+  assert.equal(sent(f.modelCalls()[0]).model, "claude-test");
+  await assert.rejects(runBriefing(validateBriefing(briefingBody), { SUPABASE_URL: ENV.SUPABASE_URL }, f.impl),
+    (e: unknown) => e instanceof HttpError && e.status === 500);
 });

@@ -348,7 +348,7 @@ function headerFooter(D) {
 }
 
 /** Cover block on page 1: title, subtitle, blue rule, meta lines, thin accent rule, shaded disclaimer box. */
-export function coverBlock(D, { title, subtitle, meta = [] }) {
+export function coverBlock(D, { title, subtitle, meta = [], notice = DISCLAIMER }) {
   const lines = meta.filter(([, v]) => v).map(([k, v]) => new D.Paragraph({
     style: "TsiMeta",
     children: [new D.TextRun({ text: `${k}: `, bold: true, color: TEXT }), new D.TextRun(String(v))],
@@ -367,7 +367,7 @@ export function coverBlock(D, { title, subtitle, meta = [] }) {
       border: { left: { style: D.BorderStyle.SINGLE, size: 18, color: BLUE, space: 8 } },
       spacing: { before: 60, after: 240 },
       indent: { left: 160, right: 160 },
-      children: [new D.TextRun({ text: DISCLAIMER, bold: true, color: BLUE })],
+      children: [new D.TextRun({ text: notice, bold: true, color: BLUE })],
     }),
   ];
 }
@@ -494,4 +494,268 @@ export function buildImpactDocument(D, lexer, { project = {}, report, at, source
       [generated ? `Analysis generated ${generated}` : "", source ? `source: ${source}` : ""].filter(Boolean).join(" · ") || "Generation date not recorded")] }),
   ];
   return makeDocument(D, { title: `Impact analysis — ${project.title || project.project_id || ""}`, description: "AI-generated impact analysis", children, ctx });
+}
+
+// ---------- country briefing ----------
+
+export const BRIEFING_NOTICE = "Prepared with AI assistance from public European Commission sources; AI-generated parts are marked; verify before use.";
+const AI_FILL = "FFF8DB"; // pale accent: AI-generated paragraphs stand out from the data
+const AI_BORDER = "C9A227";
+const AI_LABEL = "7A5C00";
+const WEAK = /limited|no progress/i;
+
+function fmtDay(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
+}
+
+function clipText(text, max) {
+  const t = String(text ?? "").replace(/\s+/g, " ").trim();
+  return t.length > max ? t.slice(0, max - 1).replace(/\s+\S*$/, "") + "…" : t;
+}
+
+/** A paragraph marked as AI-generated (label, shaded box with an accent border). */
+function aiPara(D, text, label = "AI-generated comment") {
+  return new D.Paragraph({
+    shading: { type: D.ShadingType.CLEAR, color: "auto", fill: AI_FILL },
+    border: { left: { style: D.BorderStyle.SINGLE, size: 18, color: AI_BORDER, space: 8 } },
+    spacing: { before: 80, after: 160 },
+    indent: { left: 160, right: 160 },
+    children: [new D.TextRun({ text: `${label} · `, bold: true, size: 18, color: AI_LABEL }), new D.TextRun({ text: String(text) })],
+  });
+}
+
+function noteLine(D, text, { italics = true } = {}) {
+  return new D.Paragraph({ style: "TsiMeta", spacing: { after: 120 }, children: [new D.TextRun({ text: String(text), italics })] });
+}
+
+function linkRuns(D, text, url, extra = {}) {
+  const u = typeof url === "string" && url.startsWith("https://") ? url : null;
+  return u ? [new D.ExternalHyperlink({ link: u, children: [new D.TextRun({ text: String(text), ...runProps({ link: true }), ...extra })] })]
+    : [new D.TextRun({ text: String(text), ...extra })];
+}
+
+const cellOf = (D, text, extra = {}) => ({ text: String(text ?? ""), runs: [new D.TextRun({ text: String(text ?? ""), ...extra })] });
+const headOf = (D, text) => ({ text: String(text), runs: [new D.TextRun({ text: String(text), bold: true, color: BLUE })] });
+const runsCell = (text, runs) => ({ text: String(text ?? ""), runs });
+const spacer = (D) => new D.Paragraph({ spacing: { after: 60 }, children: [] });
+
+/** Column widths (twips) from fractions of the content width. */
+function cols(...fr) {
+  const total = fr.reduce((a, b) => a + b, 0);
+  const w = fr.map((f) => Math.floor((CONTENT_WIDTH * f) / total));
+  w[w.length - 1] += CONTENT_WIDTH - w.reduce((a, b) => a + b, 0);
+  return w;
+}
+
+const RESULTS_TEXT = { achieved: "Achieved", expected: "Expected", none: "Not stated" };
+const scoreText = (imp) => (imp && Number.isFinite(imp.score) ? `${imp.score}/10` : "—");
+const assessText = (r) => (r.assessment ? `${r.assessment}${r.assessmentYear ? ` (${r.assessmentYear})` : ""}` : "—");
+
+/** "<Country> — Country briefing" file: built from briefing.js's model (data) and the AI summary (optional).
+ * opts: { model, ai ({ key_messages, comments } or null), aiError (text), aiSkipped (summary turned off),
+ *         email, date, labels: { anomaly(type) -> label } } */
+export function buildBriefingDocument(D, { model: m, ai = null, aiError = "", aiSkipped = false, email = "", date = new Date(), labels = {} }) {
+  const ctx = newContext();
+  const anomalyLabel = labels.anomaly || ((t) => t);
+  const comment = (key) => {
+    const t = ai?.comments?.[key];
+    return typeof t === "string" && t.trim() ? [aiPara(D, t.trim())] : [];
+  };
+  const bullet = (runs, extra = {}) => new D.Paragraph({ numbering: { reference: "tsi-bullets", level: 0 }, spacing: { after: 60 }, ...extra, children: runs });
+  const small = { size: 18 };
+  const period = m.from === m.to ? String(m.from) : `${m.from}–${m.to}`;
+  const n = (v) => Number(v || 0).toLocaleString("en");
+  const share = (a, b) => (b > 0 ? `${Math.round((100 * a) / b)}%` : "—");
+  const children = [];
+
+  // Cover
+  children.push(...coverBlock(D, {
+    title: `${m.countryName} — Country briefing`,
+    subtitle: "Technical support (TSI/SRSP/SRSS) and country-specific recommendations",
+    meta: [
+      ["Period", `${period} (years of the projects and of the CSR documents)`],
+      ["Policy area", m.topicLabel],
+      ["Generated", fmtDateTime(date)],
+      ["Generated by", email],
+      ["AI summary", ai ? "Claude (Anthropic), written only from the figures of this document" : aiSkipped ? "not requested" : "not available"],
+    ],
+    notice: BRIEFING_NOTICE,
+  }));
+  if (!ai && !aiSkipped) {
+    children.push(new D.Paragraph({
+      shading: { type: D.ShadingType.CLEAR, color: "auto", fill: "FDE8E7" },
+      border: { left: { style: D.BorderStyle.SINGLE, size: 18, color: "B42318", space: 8 } },
+      indent: { left: 160, right: 160 }, spacing: { after: 200 },
+      children: [new D.TextRun({ text: "AI summary not available. ", bold: true, color: "B42318" }),
+        new D.TextRun(`${aiError ? `${aiError} ` : ""}This document contains the data sections only: the key messages and the AI comments are missing.`)],
+    }));
+  }
+  if (m.topicMatch) {
+    const t = m.topicMatch;
+    children.push(noteLine(D, `Policy area filter "${m.topicLabel}": projects of that policy area; recommendations whose ECFIN policy areas `
+      + `correspond to it (${t.areas}) or supported by a project of that area (${t.projects})`
+      + (t.text ? `, or, not yet classified (2026), whose text mentions the topic (${t.text})` : "")
+      + `; ${t.excluded} other recommendation${t.excluded === 1 ? "" : "s"} of the period left out.`));
+  }
+
+  // 1. Key messages
+  children.push(headingPara(D, 1, [new D.TextRun("1. Key messages")]));
+  if (ai?.key_messages?.length) {
+    children.push(noteLine(D, "AI-generated from the figures and lists of this document: verify against the sections below and the sources."));
+    for (const k of ai.key_messages) {
+      children.push(bullet([new D.TextRun({ text: "AI · ", bold: true, size: 18, color: AI_LABEL }), new D.TextRun(String(k))],
+        { shading: { type: D.ShadingType.CLEAR, color: "auto", fill: AI_FILL }, spacing: { after: 80 } }));
+    }
+  } else {
+    children.push(noteLine(D, aiSkipped ? "AI summary not requested: see the figures below." : "AI summary not available: see the figures below."));
+  }
+
+  // 2. Key figures
+  children.push(headingPara(D, 1, [new D.TextRun("2. Key figures")]));
+  const scoredN = m.impacts.filter((p) => Number.isFinite(p.impact.score)).length;
+  const sev = Object.fromEntries(m.anomalyCounts.map((a) => [a.key, a.n]));
+  const row = (label, value) => [{ ...headOf(D, label), label: true }, cellOf(D, value)];
+  children.push(makeTable(D, [
+    row("Projects", `${n(m.projects.length)}${m.projects.length ? ` (${m.programmes.map((g) => [g, m.projects.filter((p) => p.programme === g).length]).filter(([, k]) => k).map(([g, k]) => `${g} ${k}`).join(", ")})` : ""}`),
+    row("Results", `achieved ${n(m.results.achieved)} · expected ${n(m.results.expected)} · not stated ${n(m.results.none)}`),
+    row("Deliverables", n(m.deliverables)),
+    row("Project–CSR links", `${n(m.links.pairs)} recommendation–project pairs (${share(m.links.direct, m.links.pairs)} direct), ${n(m.links.projects)} projects — AI-assessed`),
+    row("Recommendations supported", `${n(m.coverage.supported)} of ${n(m.coverage.recs)} assessed recommendations (${share(m.coverage.supported, m.coverage.recs)}) have at least one supporting project`),
+    row("Impact analyses", m.impacts.length ? `${n(m.impacts.length)}${scoredN ? `, mean score ${(Math.round(m.impactMean * 10) / 10).toFixed(1)}/10` : ""} — AI-generated` : "none"),
+    row("Anomalies", m.anomalies.length ? `${n(m.anomalies.length)} (${["high", "medium", "low", "info"].filter((k) => sev[k]).map((k) => `${k} ${sev[k]}`).join(", ")})` : "none"),
+  ], { header: false, widths: cols(1, 2.6) }));
+  children.push(noteLine(D, "Projects: those of the country whose year is in the period. Links: supporting projects of any year. Coverage excludes the Commission-stage recommendations (not yet adopted nor assessed)."));
+
+  children.push(headingPara(D, 2, [new D.TextRun("Projects by year and programme")]));
+  if (m.byYear.length) {
+    const progs = m.programmes.filter((g) => m.byYear.some((y) => y[g]));
+    const other = m.byYear.some((y) => y.other);
+    const header = [headOf(D, "Year"), ...progs.map((g) => headOf(D, g)), ...(other ? [headOf(D, "Other")] : []), headOf(D, "Total")];
+    const body = m.byYear.map((y) => [cellOf(D, y.year), ...progs.map((g) => cellOf(D, y[g] || "—")), ...(other ? [cellOf(D, y.other || "—")] : []), cellOf(D, y.total, { bold: true })]);
+    const totals = [cellOf(D, "Total", { bold: true }), ...progs.map((g) => cellOf(D, m.projects.filter((p) => p.programme === g).length, { bold: true })),
+      ...(other ? [cellOf(D, m.projects.filter((p) => !progs.includes(p.programme)).length, { bold: true })] : []), cellOf(D, m.projects.length, { bold: true })];
+    const k = header.length;
+    children.push(makeTable(D, [header, ...body, totals], { widths: cols(...Array.from({ length: k }, () => 1)), alignments: Array.from({ length: k }, (_, i) => (i ? "right" : undefined)) }), spacer(D));
+  } else children.push(noteLine(D, "No project in the period."));
+
+  children.push(headingPara(D, 2, [new D.TextRun("Projects by policy area")]));
+  if (m.byArea.length) {
+    children.push(makeTable(D, [[headOf(D, "Policy area"), headOf(D, "Projects"), headOf(D, "Share")],
+      ...m.byArea.map((a) => [cellOf(D, a.label), cellOf(D, a.n), cellOf(D, share(a.n, m.projects.length))])],
+    { widths: cols(4, 1, 1), alignments: [undefined, "right", "right"] }), spacer(D));
+  } else children.push(noteLine(D, "No project in the period."));
+  children.push(...comment("figures"));
+
+  // 3. Country-specific recommendations
+  children.push(headingPara(D, 1, [new D.TextRun("3. Country-specific recommendations")]));
+  const recRuns = (r) => [new D.TextRun({ text: `${r.number}. `, bold: true, size: 19 }), new D.TextRun({ text: r.summary || "", size: 19 })];
+  const shownDocs = m.docs.filter((d) => d.recs.length);
+  if (!shownDocs.length) children.push(noteLine(D, "No recommendation in the period."));
+  for (const d of shownDocs) {
+    const latest = d === m.latest;
+    children.push(headingPara(D, 2, [new D.TextRun(latest ? `Latest document: ${d.title}` : d.title)]));
+    children.push(new D.Paragraph({ style: "TsiMeta", children: [
+      new D.TextRun({ text: `${d.stage}${d.commission ? " — not yet adopted by the Council nor assessed" : ""}`, bold: true, color: TEXT }),
+      new D.TextRun(` · ${d.recs.length === d.total ? `${d.total}` : `${d.recs.length} of ${d.total}`} recommendation${d.total === 1 ? "" : "s"}${d.url ? " · source: " : ""}`),
+      ...(d.url ? linkRuns(D, /\.pdf(?:$|[?#])/i.test(d.url) ? "document (PDF)" : "ECFIN CSR database", d.url) : []),
+    ] }));
+    const rows = latest
+      ? [[headOf(D, "Recommendation (first sentence)"), headOf(D, "Policy areas (ECFIN)"), headOf(D, d.commission ? "Stage" : "Latest assessment"), headOf(D, "Projects")],
+        ...d.recs.map((r) => [runsCell(r.summary, recRuns(r)),
+          cellOf(D, r.areas.length ? `${r.areas.slice(0, 3).join("; ")}${r.areas.length > 3 ? `; +${r.areas.length - 3} more` : ""}` : "not classified", small),
+          cellOf(D, d.commission ? "not yet assessed" : assessText(r), small), cellOf(D, r.supporters.length)])]
+      : [[headOf(D, "Recommendation (first sentence)"), headOf(D, "Latest assessment"), headOf(D, "Projects")],
+        ...d.recs.map((r) => [runsCell(r.summary, recRuns(r)), cellOf(D, assessText(r), { ...small, bold: WEAK.test(r.assessment || "") }), cellOf(D, r.supporters.length)])];
+    children.push(makeTable(D, rows, latest ? { widths: cols(5, 2.2, 1.6, 0.9), alignments: [undefined, undefined, undefined, "right"] }
+      : { widths: cols(6.2, 2, 0.9), alignments: [undefined, undefined, "right"] }), spacer(D));
+  }
+  children.push(noteLine(D, "Assessments: the Commission's latest yearly assessment, from the ECFIN CSR database. Projects: distinct projects linked to the recommendation's sub-parts (AI-assessed)."));
+  children.push(...comment("csrs"));
+
+  // 4. Lineage
+  children.push(headingPara(D, 1, [new D.TextRun("4. Lineage: recommendations and supporting projects")]));
+  if (m.lineage.length) {
+    const rows = [["Recommendation", "Supporting project", "Prog.", "Year", "Level", "Results", "Deliv.", "Impact"].map((h) => headOf(D, h))];
+    for (const l of m.lineage) {
+      l.projects.forEach((p, i) => rows.push([
+        i ? cellOf(D, "") : runsCell(l.rec.id, [new D.TextRun({ text: l.rec.id, bold: true, ...small }), new D.TextRun({ text: ` — ${clipText(l.rec.summary, 80)}`, ...small })]),
+        runsCell(p.title, linkRuns(D, p.title, p.detail ? p.url : null, small)), cellOf(D, p.programme, small), cellOf(D, p.year, small),
+        cellOf(D, p.level, { ...small, bold: p.level === "direct" }), cellOf(D, RESULTS_TEXT[p.results], small), cellOf(D, p.deliverables, small), cellOf(D, scoreText(p.impact), small),
+      ]));
+    }
+    children.push(makeTable(D, rows, { widths: cols(2.5, 4.6, 0.75, 0.7, 0.85, 1.05, 0.7, 0.8), alignments: [undefined, undefined, undefined, undefined, undefined, undefined, "right", "right"] }), spacer(D));
+    children.push(noteLine(D, "One row per recommendation–project pair; direct when at least one sub-part link is direct. Links assessed by AI from the project text, not an official classification."));
+  } else children.push(noteLine(D, "No project is linked to a recommendation of the period."));
+  children.push(...comment("lineage"));
+
+  // 5. Results and impact
+  children.push(headingPara(D, 1, [new D.TextRun("5. Results and impact")]));
+  const withResults = m.projects.filter((p) => p.results !== "none");
+  children.push(headingPara(D, 2, [new D.TextRun(`Projects with results (${withResults.length})`)]));
+  if (withResults.length) {
+    children.push(makeTable(D, [["Project", "Year", "Prog.", "Results", "Deliv."].map((h) => headOf(D, h)),
+      ...withResults.map((p) => [runsCell(p.title, linkRuns(D, p.title, p.detail ? p.url : null, small)), cellOf(D, p.year, small), cellOf(D, p.programme, small),
+        cellOf(D, RESULTS_TEXT[p.results], small), cellOf(D, p.deliverables, small)])],
+    { widths: cols(6, 0.8, 0.9, 1.1, 0.8), alignments: [undefined, undefined, undefined, undefined, "right"] }), spacer(D));
+    children.push(noteLine(D, "Results status from the heading of the results section of the project page (achieved: completed project; expected: ongoing). Not an assessment of success."));
+  } else children.push(noteLine(D, "No project of the period states results."));
+  children.push(headingPara(D, 2, [new D.TextRun(`Latest impact analyses (${m.impacts.length})`)]));
+  if (m.impacts.length) {
+    children.push(makeTable(D, [["Project", "Score", "Level", "Confidence", "Date", "Verdict (first sentence)"].map((h) => headOf(D, h)),
+      ...m.impacts.map((p) => [runsCell(p.title, linkRuns(D, p.title, p.detail ? p.url : null, small)), cellOf(D, scoreText(p.impact), { ...small, bold: true }),
+        cellOf(D, p.impact.level || "—", small), cellOf(D, p.impact.confidence || "—", small), cellOf(D, fmtDay(p.impact.date), small), cellOf(D, p.impact.verdict || "—", small)])],
+    { widths: cols(2.6, 0.75, 1, 1.1, 1.2, 4.2) }), spacer(D));
+    children.push(noteLine(D, "Impact analyses are AI-generated (Claude, Anthropic, with web search): latest analysis of each project; with few analyses the mean is only indicative."));
+  } else children.push(noteLine(D, "No impact analysis for these projects yet."));
+  children.push(...comment("results"));
+
+  // 6. Gaps and opportunities
+  children.push(headingPara(D, 1, [new D.TextRun("6. Gaps and opportunities")]));
+  if (m.gaps.length) {
+    const weak = m.gaps.filter((r) => WEAK.test(r.assessment || "")).length;
+    children.push(new D.Paragraph({ children: [new D.TextRun(`${m.gaps.length} assessed recommendation${m.gaps.length === 1 ? "" : "s"} of the period ha${m.gaps.length === 1 ? "s" : "ve"} no supporting project`
+      + (weak ? `; ${weak} of them assessed Limited or No progress (listed first, in bold).` : "."))] }));
+    children.push(makeTable(D, [["Recommendation", "First sentence", "Latest assessment"].map((h) => headOf(D, h)),
+      ...m.gaps.map((r) => {
+        const w = WEAK.test(r.assessment || "");
+        return [cellOf(D, r.id, { ...small, bold: w }), cellOf(D, r.summary, small), cellOf(D, assessText(r), { ...small, bold: w })];
+      })], { widths: cols(1.7, 6, 1.7) }), spacer(D));
+    children.push(noteLine(D, "No link does not prove no support: projects known only by their title are not linked yet, and links are AI-assessed."));
+  } else children.push(noteLine(D, "Every assessed recommendation of the period has at least one supporting project."));
+  const gapComment = ai?.comments?.gaps;
+  if (typeof gapComment === "string" && gapComment.trim()) children.push(aiPara(D, gapComment.trim(), "AI-generated suggestions, to verify"));
+
+  // 7. Data quality
+  children.push(headingPara(D, 1, [new D.TextRun("7. Data quality")]));
+  if (m.anomalies.length) {
+    children.push(new D.Paragraph({ children: [new D.TextRun(`${m.anomalies.length} publication anomal${m.anomalies.length === 1 ? "y" : "ies"} `
+      + `(${m.anomalyCounts.map((a) => `${a.key} ${a.n}`).join(", ")})${m.anomalies.length > 20 ? "; the 20 most severe:" : ":"}`)] }));
+    children.push(makeTable(D, [["Type", "Severity", "Project", "Year"].map((h) => headOf(D, h)),
+      ...m.anomalies.slice(0, 20).map((a) => [cellOf(D, anomalyLabel(a.type), small), cellOf(D, a.severity, { ...small, bold: a.severity === "high" }),
+        cellOf(D, a.title || a.project_id || "—", small), cellOf(D, a.year ?? "—", small)])], { widths: cols(2.2, 1, 5.2, 0.8) }), spacer(D));
+    children.push(noteLine(D, "Rule-based checks of the Commission's publication (no AI), not judgements on the projects."));
+  } else children.push(noteLine(D, "No publication anomaly for these projects."));
+
+  // 8. Annex
+  children.push(headingPara(D, 1, [new D.TextRun("Annex — sources and method")]));
+  children.push(headingPara(D, 2, [new D.TextRun(`Sources (${m.sources.length})`)]));
+  if (m.sources.length) {
+    for (const s of m.sources) {
+      const i = s.label.indexOf(": ");
+      children.push(bullet([new D.TextRun({ text: `${s.label.slice(0, i)}: `, bold: true, ...small }), ...linkRuns(D, s.label.slice(i + 2) || s.url, s.url, small)]));
+    }
+  } else children.push(noteLine(D, "No source link."));
+  children.push(headingPara(D, 2, [new D.TextRun("Method")]));
+  for (const t of [
+    "Projects: DG REFORM technical support projects (TSI, SRSP, SRSS) published on reforms-investments.ec.europa.eu, with the country among their beneficiaries and a year in the period.",
+    "Results: status read from the project page (results achieved or expected); deliverables: publications attached to the project page.",
+    "CSRs: country-specific recommendations of the European Semester; assessments and sub-parts from the ECFIN CSR database. 2026: Commission recommendations, not yet adopted by the Council nor assessed.",
+    "Project–CSR links: assessed by an AI model from the project text, one CSR sub-part at a time (direct or partial); projects without a detail page are not linked yet.",
+    "Impact analyses: AI-generated (Claude, Anthropic, with web search); latest analysis per project.",
+    "AI summary: key messages and comments written by Claude (Anthropic) only from the figures and lists of this document, without web search. Verify before use.",
+    ...(m.topicMatch ? [`Policy area filter: project policy area "${m.topicLabel}"; recommendations matched through the corresponding ECFIN labels (${m.topicMatch.labels.join("; ") || "none"}), through a supporting project of that area, or, when not yet classified, through key words of their text.`] : []),
+  ]) children.push(bullet([new D.TextRun({ text: t, size: 19 })]));
+
+  return makeDocument(D, { title: `${m.countryName} — Country briefing (${period})`, description: "Country briefing: data and AI-generated summary", children, ctx });
 }
