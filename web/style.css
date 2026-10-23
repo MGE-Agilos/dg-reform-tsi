@@ -151,6 +151,27 @@ h3 { font-size: 1.05rem; margin: 20px 0 8px; }
 .site-header .btn-secondary { background: transparent; color: #fff; border-color: rgba(255, 255, 255, 0.6); }
 .site-header .btn-secondary:hover { background: rgba(255, 255, 255, 0.12); }
 .site-header :focus-visible { outline-color: #ffd24d; }
+/* Menu de l'utilisateur (adresse e-mail) : Admin, mot de passe, deconnexion. */
+.user-menu { position: relative; }
+.user-menu-btn { display: inline-flex; align-items: center; gap: 8px; max-width: min(360px, 70vw); }
+.user-menu-btn .session-email { opacity: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.user-menu-avatar { width: 18px; height: 18px; flex: none; fill: currentColor; }
+.user-menu-caret { width: 12px; height: 12px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform .15s; }
+.user-menu-btn[aria-expanded="true"] .user-menu-caret { transform: rotate(180deg); }
+.user-menu-list {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 60; min-width: 200px; padding: 6px;
+  display: flex; flex-direction: column; background: var(--card); color: var(--fg);
+  border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+}
+.user-menu-list[hidden] { display: none; }
+.user-menu-item {
+  display: block; width: 100%; text-align: left; padding: 9px 12px; border: 0; border-radius: 6px; background: transparent;
+  color: var(--fg); font: inherit; font-size: 0.95rem; text-decoration: none; cursor: pointer;
+}
+.user-menu-item:hover, .user-menu-item:focus-visible { background: var(--accent-soft); color: var(--accent); outline: none; }
+.user-menu-item[aria-current="page"] { font-weight: 600; color: var(--accent); }
+#admin-tab:not([hidden]) + .user-menu-item { border-top: 1px solid var(--border); border-radius: 0 0 6px 6px; margin-top: 4px; padding-top: 11px; }
+@media (prefers-reduced-motion: reduce) { .user-menu-caret { transition: none; } }
 
 .tabs { background: var(--card); border-bottom: 1px solid var(--border); margin-bottom: 20px; }
 .tabs-inner { display: flex; gap: 4px; overflow-x: auto; }

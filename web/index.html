@@ -16,10 +16,19 @@
         <p class="subtitle">DG REFORM technical support projects and EU country-specific recommendations</p>
       </div>
       <div class="session" id="session" hidden>
-        <span id="session-email" class="session-email"></span>
         <a href="#guide" class="btn btn-secondary help-btn" aria-label="User guide" title="User guide">?</a>
-        <button type="button" id="change-password-open" class="btn btn-secondary">Change password</button>
-        <button type="button" id="logout" class="btn btn-secondary">Sign out</button>
+        <div class="user-menu" id="user-menu-wrap">
+          <button type="button" id="user-menu-btn" class="btn btn-secondary user-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu">
+            <svg class="user-menu-avatar" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="5.2" r="3"/><path d="M2.2 14.5c.6-3 3-4.6 5.8-4.6s5.2 1.6 5.8 4.6z"/></svg>
+            <span id="session-email" class="session-email"></span>
+            <svg class="user-menu-caret" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="M2.5 4.5 6 8l3.5-3.5"/></svg>
+          </button>
+          <div id="user-menu" class="user-menu-list" role="menu" aria-labelledby="user-menu-btn" hidden>
+            <a href="#admin" role="menuitem" id="admin-tab" class="user-menu-item" hidden>Admin</a>
+            <button type="button" role="menuitem" id="change-password-open" class="user-menu-item">Change password</button>
+            <button type="button" role="menuitem" id="logout" class="user-menu-item">Sign out</button>
+          </div>
+        </div>
       </div>
     </div>
   </header>
@@ -33,7 +42,6 @@
       <a href="#anomalies" data-tab="anomalies">Anomalies</a>
       <a href="#impact" data-tab="impact">Impact</a>
       <a href="#guide" data-tab="guide">Guide</a>
-      <a href="#admin" data-tab="admin" id="admin-tab" hidden>Admin</a>
     </div>
   </nav>
 

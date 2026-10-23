@@ -2505,14 +2505,14 @@ const GUIDE = [
   { id: "start", title: "Getting started", html: () => `
     <p>The explorer is reserved for registered testers. Sign in with your e-mail address and password.</p>
     <ul><li><strong>First sign-in</strong>: the administrator gives you a temporary password; you are asked to replace it with your
-      own (at least 12 characters) before anything else. You can change it later with <em>Change password</em> in the header.</li>
+      own (at least 12 characters) before anything else. You can change it later with <em>Change password</em> in the menu under your e-mail address (top right).</li>
     <li><strong>No password, or forgotten it?</strong> Use <em>Send me a sign-in link instead</em>: a one-time sign-in link (&ldquo;magic link&rdquo;) arrives by e-mail.
       Only invited addresses receive it.</li>
     <li>If your session expires, you are asked to sign in again; nothing you were reading is changed.</li>
     <li><strong>Usage data</strong>: to improve the explorer, the pages you open and the time spent on them are recorded with your
       e-mail address; only administrators can see them (<a href="#guide/usage">details</a>).</li></ul>
-    <p>The tabs give the main views: Dashboard, Projects, CSRs, Lineage, Anomalies, Impact and this Guide (administrators also see
-      an Admin tab). The <em>?</em> button in the header brings you back to this guide, and the round button at the bottom right opens
+    <p>The tabs give the main views: Dashboard, Projects, CSRs, Lineage, Anomalies, Impact and this Guide. Your e-mail address at the
+      top right opens a menu with <em>Change password</em> and <em>Sign out</em> (and <em>Admin</em> for administrators). The <em>?</em> button in the header brings you back to this guide, and the round button at the bottom right opens
       the <a href="#guide/assistant">assistant</a> on any page.</p>` },
   { id: "projects", title: "Projects", html: () => `
     <p>All projects of the Technical Support Instrument (TSI) and of its predecessors SRSP and SRSS.</p>
@@ -2696,7 +2696,7 @@ const GUIDE = [
       administrators can see them.</p>
     ${infoHtml("monitoring").replace(/^\s*<p>[\s\S]*?<\/p>/, "")}` },
   { id: "admin", title: "Administration", admin: true, html: () => `
-    <p>The <em>Admin</em> tab is shown to administrators only.</p>
+    <p>The <em>Admin</em> page is shown to administrators only: open it from the menu under your e-mail address (top right).</p>
     <ul><li><strong>Users</strong>: every user with their role (User or Admin), status (active, pending first password change, not
       confirmed), last sign-in and invitation. <em>Make admin</em> / <em>Make user</em> changes the role (the last administrator cannot
       be demoted), <em>Reset password</em> gives a new temporary password (it also changes the password of any other application using
@@ -2740,7 +2740,7 @@ const GUIDE_IDS = GUIDE.map((s) => s.id);
 const GUIDE_PROJECT = "technical-support-transforming-existing-fully-state-administered-funded-pension-scheme-lithuania";
 const GUIDE_SHOT_DATE = "23 October 2026";
 const GUIDE_ESSENTIALS = [
-  { icon: "▦", title: "Tabs", text: "Dashboard, Projects, CSRs, Lineage, Anomalies, Impact and Guide (plus Admin for administrators). The ? button in the header brings you back here." },
+  { icon: "▦", title: "Tabs", text: "Dashboard, Projects, CSRs, Lineage, Anomalies, Impact and Guide. The ? button in the header brings you back here; the menu under your e-mail address holds Change password, Sign out (and Admin for administrators)." },
   { icon: "⚲", title: "Filters", text: "Each list has its filters (country, programme, years, text search…). The address of the page keeps them: bookmark or share it." },
   { icon: "⇄", title: "Click through", text: "Bars, ribbons, cards and names open the matching view: a country's projects, a CSR document, a project page, a lineage view." },
   { icon: "⋔", title: "Lineage", text: "Sankey, Network and Sunburst show all countries at once; By country follows one country from its CSR documents to the projects and their outcome." },
@@ -5003,6 +5003,38 @@ function paintAdminTab() {
   if (tab) tab.hidden = !isAdmin();
 }
 
+/** Menu sous l'adresse e-mail (en-tete) : Admin (admins seulement), Change password, Sign out. */
+function setupUserMenu() {
+  const btn = $("user-menu-btn"), menu = $("user-menu"), wrap = $("user-menu-wrap");
+  const items = () => [...menu.querySelectorAll(".user-menu-item")].filter((el) => !el.hidden);
+  const close = (focusBtn = false) => {
+    if (menu.hidden) return;
+    menu.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+    if (focusBtn) btn.focus();
+  };
+  const open = (focusFirst = false) => {
+    $("admin-tab").setAttribute("aria-current", location.hash.startsWith("#admin") ? "page" : "false");
+    menu.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    if (focusFirst) items()[0]?.focus();
+  };
+  btn.addEventListener("click", () => (menu.hidden ? open() : close()));
+  btn.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); open(true); }
+  });
+  menu.addEventListener("keydown", (e) => {
+    const list = items(), i = list.indexOf(document.activeElement);
+    if (e.key === "Escape") { e.preventDefault(); close(true); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); list[(i + 1) % list.length]?.focus(); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); list[(i - 1 + list.length) % list.length]?.focus(); }
+    else if (e.key === "Tab") close();
+  });
+  menu.addEventListener("click", (e) => { if (e.target.closest(".user-menu-item")) close(); });
+  document.addEventListener("click", (e) => { if (!wrap.contains(e.target)) close(); });
+  addEventListener("hashchange", () => close());
+}
+
 /** POST {action, ...} to tsi-admin with the session token; returns the JSON answer or throws Error(message). */
 async function callAdmin(action, payload = {}) {
   const { data } = await sb.auth.getSession();
@@ -5041,7 +5073,7 @@ function adminTabs(current) {
 async function renderAdmin(id, p, seq) {
   if (!isAdmin()) {
     view(heading("Admin") + `<div class="card notice notice-error" role="alert"><h3>Not authorised</h3>`
-      + `<p>The Admin tab is reserved for administrators of the explorer.</p></div>`);
+      + `<p>The Admin page is reserved for administrators of the explorer.</p></div>`);
     return;
   }
   if (id === "usage") return renderAdminUsage(p, seq);
@@ -5225,7 +5257,7 @@ async function adminAction(button) {
       confirm: role === "admin" ? "Make admin" : "Make user",
       html: role === "admin"
         ? `<p><strong>${esc(email)}</strong> will be able to invite and revoke users, change roles, reset passwords and see the usage monitoring.</p>`
-        : `<p><strong>${esc(email)}</strong> keeps access to the explorer as a User, without the Admin tab.</p>` };
+        : `<p><strong>${esc(email)}</strong> keeps access to the explorer as a User, without the Admin page.</p>` };
   } else if (action === "reset") {
     confirmText = { title: "Reset the password?", confirm: "Reset password", danger: true,
       html: `<p>A new temporary password is generated for <strong>${esc(email)}</strong>; they must replace it at the next sign-in.</p>`
@@ -5690,6 +5722,7 @@ async function init() {
   $("login-magic").addEventListener("click", sendMagicLink);
   $("change-password-form").addEventListener("submit", changePassword);
   $("change-password-open").addEventListener("click", () => { wantsPasswordChange = true; render(); });
+  setupUserMenu();
   $("change-password-cancel").addEventListener("click", () => { wantsPasswordChange = false; render(); });
   $("logout").addEventListener("click", async () => {
     testerCache = null;
