@@ -2511,8 +2511,9 @@ const GUIDE = [
     <li>If your session expires, you are asked to sign in again; nothing you were reading is changed.</li>
     <li><strong>Usage data</strong>: to improve the explorer, the pages you open and the time spent on them are recorded with your
       e-mail address; only administrators can see them (<a href="#guide/usage">details</a>).</li></ul>
-    <p>The tabs give the main views: Dashboard, Projects, CSRs, Lineage, Anomalies, Impact and this Guide. The round button at the
-      bottom right opens the <a href="#guide/assistant">assistant</a> on any page.</p>` },
+    <p>The tabs give the main views: Dashboard, Projects, CSRs, Lineage, Anomalies, Impact and this Guide (administrators also see
+      an Admin tab). The <em>?</em> button in the header brings you back to this guide, and the round button at the bottom right opens
+      the <a href="#guide/assistant">assistant</a> on any page.</p>` },
   { id: "projects", title: "Projects", html: () => `
     <p>All projects of the Technical Support Instrument (TSI) and of its predecessors SRSP and SRSS.</p>
     <ul><li><strong>Filters</strong>: title search, country, programme, years, policy area, &ldquo;Linked to a CSR&rdquo; and
@@ -2520,10 +2521,10 @@ const GUIDE = [
       the address of the page keeps the filters, so you can bookmark or share it.</li>
     <li><strong>Project page</strong>: programme, year, countries, policy area, results, deliverables, an AI-generated summary,
       the CSRs it supports (AI-assessed), the latest impact analysis and a link to the lineage network.</li>
-    <li><strong>Export to Excel</strong>: downloads the projects matching the current filters as a workbook
-      (<code>tsi-reporting-YYYY-MM-DD.xlsx</code>) with three sheets: <em>Projects</em> (one row per project, with its links,
-      latest impact score, anomalies and review summary), <em>Links</em> (one row per project–CSR sub-part link, with the AI rationale
-      and the latest review) and <em>Notes</em> (date, filters and definitions).</li>
+    <li><strong>Export to Excel</strong>: downloads the projects matching the current filters, with their links, as a workbook
+      (see <a href="#guide/reporting">Excel reporting</a>).</li>
+    <li><strong>Links to review</strong>: the button above the list opens the project–CSR links waiting for a review
+      (see <a href="#guide/reviews">Link review</a>).</li>
     <li><strong>Detail page or listed only</strong>: a project with a <em>detail page</em> has its own page on
       reforms-investments.ec.europa.eu (description, results, deliverables). Many projects are only <em>listed</em>: known by
       their title in a TSI country factsheet or in the SRSP list of approved requests (PDF). Their page shows that listing as the
@@ -2601,7 +2602,10 @@ const GUIDE = [
       &ldquo;Show CSRs without a project&rdquo;. On a narrow screen the network scrolls sideways inside its card.
       The table of links below the graph (with the results, deliverables and impact score of each project) can be downloaded as CSV.</li></ul>
     <h4>Links</h4>${infoHtml("links")}
-    <h4>Initial request</h4>${infoHtml("request")}` },
+    <h4>Link level</h4>${infoHtml("linklevel")}
+    <h4>Initial request</h4>${infoHtml("request")}
+    <p>The <em>Country briefing</em> button at the top of By country downloads a Word document on the country shown
+      (see <a href="#guide/briefing">Country briefing</a>).</p>` },
   { id: "dashboard", title: "Dashboard", html: () => `
     <p>Figures across all projects and CSRs, loaded once per session (<em>Refresh</em> reloads them).</p>
     <ul><li><strong>Tiles</strong>: projects (share with a detail page), deliverables, CSR documents (27 per year, with the total
@@ -2650,8 +2654,22 @@ const GUIDE = [
       the document. <em>Cancel</em> or Escape stops it; nothing is saved.</li>
     <li><strong>File</strong>: <code>briefing-&lt;country&gt;-&lt;from&gt;-&lt;to&gt;[-&lt;policy area&gt;].docx</code>, styled like the
       other Word exports.</li>
-    <li><strong>Cost</strong>: the AI summary is one model call (a few cents); untick <em>Include AI summary</em> for a data-only document.</li></ul>
+    <li><strong>Cost</strong>: the AI summary is one model call (a few cents); untick <em>Include AI summary</em> for a data-only document.</li>
+    <li><strong>Limits</strong>: the AI parts (key messages, comments, suggestions for the gaps) are written only from the figures of
+      the document and marked as AI-generated; the figures themselves come from the explorer's data, with the same caveats (AI-assessed
+      links, projects known only by their title not linked).</li></ul>
     ${infoHtml("briefing")}` },
+  { id: "reporting", title: "Excel reporting", html: () => `
+    <p><em>Export to Excel</em>, on the Projects tab and on <em>Links to review</em>, downloads a workbook built in your browser
+      (<code>tsi-reporting-YYYY-MM-DD.xlsx</code>, bold and frozen header rows):</p>
+    <ul><li><strong>Projects</strong>: one row per project matching the current filters, with its programme, year, countries, policy
+      area, results, deliverables, its linked recommendations and CSR sub-parts with the strongest link level, latest impact score,
+      anomalies and a summary of the reviews of its links, and a link back to its page in the explorer.</li>
+    <li><strong>Links</strong>: one row per project–CSR sub-part link of these projects, with the level, the AI rationale, the basis
+      (project text or title only) and the latest review (status, reviewer, date, comment).</li>
+    <li><strong>Notes</strong>: export date, the filters applied, who exported it, and the definitions of the columns.</li></ul>
+    <p>From <em>Links to review</em>, the export keeps the links matching that view's filters. Other exports: CSV for the anomalies
+      and the lineage table, Word for impact reports, assistant conversations and country briefings.</p>` },
   { id: "data", title: "Data and updates", html: () => `
     <ul><li><strong>Sources</strong>: reforms-investments.ec.europa.eu (TSI projects, detail pages, country factsheets, deliverables),
       the SRSP list of approved requests (PDF), and the ECFIN CSR database (2016–2025 recommendations and their assessments) and the Commission's 2026 country-specific
@@ -2659,7 +2677,12 @@ const GUIDE = [
     <li><strong>Monthly update</strong>: an automated run each month adds new or changed projects, publications, CSRs and links
       (incremental: only what changed is re-read; a full check runs quarterly), then refreshes the anomalies and this explorer.</li>
     <li><strong>Data releases</strong>: each update is also published as a dated data release (data-YYYY-MM-DD) in the project's
-      repository, so the figures of a given date can be retrieved.</li></ul>` },
+      repository, so the figures of a given date can be retrieved.</li>
+    <li><strong>AI batches</strong>: besides the analyses run from this page, impact analyses are also run in batches by the data
+      team (source <em>local</em> in the lists), and the related past projects of the 2026 recommendations are suggested by a batch
+      run as well. Both are loaded into the explorer with the other data at the next update.</li>
+    <li><strong>Your contributions</strong>: link reviews are written directly by the users and are never overwritten by the
+      updates.</li></ul>` },
   { id: "limits", title: "Limits and good practice", html: () => `
     <ul><li>Summaries, project–CSR links, assistant answers and impact analyses are <strong>generated by AI</strong>: useful to find
       and compare, not authoritative. Verify against the sources (project page, deliverables, CSR text) before use.</li>
@@ -2698,24 +2721,35 @@ const GUIDE = [
     <dt>Detail page</dt><dd>A project's own page on reforms-investments.ec.europa.eu; projects without one are known only from a listing.</dd>
     <dt>Sub-part</dt><dd>One distinct request inside a recommendation; the level at which project links are assessed.</dd>
     <dt>Lineage</dt><dd>The chain from a CSR document to its recommendations, the country's initial request (pending the JIRA export),
-      the projects that support them and their outcome, shown as a network per country.</dd>
-    <dt>Initial request</dt><dd>The Member State's request for support, in which it declares the CSRs it addresses; recorded in JIRA, not public.</dd></dl>` },
+      the projects that support them and their outcome: overviews of all countries (Sankey, Network, Sunburst) and a stage-by-stage
+      view per country.</dd>
+    <dt>Initial request</dt><dd>The Member State's request for support, in which it declares the CSRs it addresses; recorded in JIRA, not public.</dd>
+    <dt>Direct / partial link</dt><dd>Level of a project–CSR sub-part link assessed by AI: the project implements what the CSR asks
+      (direct), or contributes to one aspect or a precondition (partial).</dd>
+    <dt>Pair</dt><dd>One recommendation linked to one project, in the Lineage overviews; direct if at least one of its sub-part links is direct.</dd>
+    <dt>Review</dt><dd>A user's verdict on an AI-assessed link: confirmed, rejected or to review; shared with all users, with its history.</dd>
+    <dt>Related past project</dt><dd>A project of earlier years suggested by AI as working on the same issues as a 2026 recommendation;
+      a lead to verify, not a link.</dd>
+    <dt>Country briefing</dt><dd>A Word document on one country and period, built from the explorer's data, with an optional AI summary.</dd></dl>` },
 ];
 
 const GUIDE_IDS = GUIDE.map((s) => s.id);
 
 // Illustrated part of the guide (screenshots in web/guide/, relative paths: the site is served under a sub-path).
-// Screenshots taken on 20 Oct 2026 with the real data of that day; the figures quoted in the steps are read off them.
+// Screenshots taken on 23 Oct 2026 with the real data of that day; the figures quoted in the steps are read off them.
 const GUIDE_PROJECT = "technical-support-transforming-existing-fully-state-administered-funded-pension-scheme-lithuania";
-const GUIDE_SHOT_DATE = "20 October 2026";
+const GUIDE_SHOT_DATE = "23 October 2026";
 const GUIDE_ESSENTIALS = [
-  { icon: "▦", title: "Tabs", text: "Dashboard, Projects, CSRs, Lineage, Anomalies, Impact and Guide. The ? button in the header brings you back here." },
+  { icon: "▦", title: "Tabs", text: "Dashboard, Projects, CSRs, Lineage, Anomalies, Impact and Guide (plus Admin for administrators). The ? button in the header brings you back here." },
   { icon: "⚲", title: "Filters", text: "Each list has its filters (country, programme, years, text search…). The address of the page keeps them: bookmark or share it." },
-  { icon: "⇄", title: "Click through", text: "Bars, cards and names open the matching view: a country's projects, a CSR document, a project page, a lineage network." },
+  { icon: "⇄", title: "Click through", text: "Bars, ribbons, cards and names open the matching view: a country's projects, a CSR document, a project page, a lineage view." },
+  { icon: "⋔", title: "Lineage", text: "Sankey, Network and Sunburst show all countries at once; By country follows one country from its CSR documents to the projects and their outcome." },
   { icon: "info", title: "Definitions", text: "The round i buttons explain how a figure or a link level is defined, with a link to the reference below." },
+  { icon: "✓", title: "Your review", text: "Project–CSR links are assessed by AI: confirm or reject them with Review. Reviews are shared with all users, with their history." },
   { icon: "✦", title: "Assistant", text: "The round button at the bottom right opens the assistant beside any page. On a project or CSR page it offers to ask about it." },
-  { icon: "⎙", title: "Export", text: "Lists download as CSV, the projects and their links to Excel; impact reports, assistant conversations and country briefings export to Word." },
+  { icon: "⎙", title: "Export", text: "Projects and links to Excel, lists to CSV; impact reports, assistant conversations and country briefings to Word." },
 ];
+const LT_PROJECT_SEL = `sel=${encodeURIComponent(`project:${GUIDE_PROJECT}`)}`;
 const GUIDE_STEPS = [
   { img: "01-dashboard.jpg", to: "#dashboard", title: "Start from the big picture",
     alt: "Dashboard: tiles with the totals and the chart of projects by year and programme",
@@ -2737,19 +2771,32 @@ const GUIDE_STEPS = [
       recommendations). Below, each recommendation lists its sub-parts with their policy areas, assessment and linked projects:
       sub-part 1.6, &ldquo;social protection&rdquo;, is partially supported by the Lithuanian pension project followed in the
       next steps.` },
-  { img: "04-lineage.jpg", to: `#lineage?country=LT&sel=${encodeURIComponent(`project:${GUIDE_PROJECT}`)}`, title: "Follow the lineage",
-    alt: "Lineage network of Lithuania with the pension project pinned: its chain to two recommendations is highlighted",
-    text: `<em>Show in lineage network</em> draws the chain for the whole country. Lithuania, 2019–2025: 7 CSR documents,
-      25 recommendations (10 with at least one project), 23 projects and 35 recommendation–project pairs (11 direct) from 44
-      sub-part links. With the pension project pinned, its chain lights up: a solid line (direct link) to LT 2021 · CSR 1 and a
-      dashed line (partial link) to LT 2023 · CSR 1. In the <em>Outcome</em> column, on the project's row: its results status,
-      its deliverables and the pill <em>2/10</em>, its latest impact score.` },
+  { img: "04-lineage-sankey.jpg", to: "#lineage", title: "See where support goes, for all countries",
+    alt: "Lineage tab, Sankey view: countries, policy areas, programmes and outcomes of all recommendation–project pairs",
+    text: `The <strong>Lineage</strong> tab opens on the <em>Sankey</em>: for the CSRs of 2016–2025, 1,185 recommendation–project
+      pairs (391 recommendations, 597 projects, 27 countries, 34% direct) flow from the country of the recommendation to the policy
+      area of the project, its programme and its stated outcome. Croatia comes first with 90 pairs, Romania 84, Spain 82, and
+      Lithuania 64; TSI carries 948 pairs and 954 lead to results achieved. The CSR years and the link level (all, direct, partial)
+      filter the Sankey, the Network and the Sunburst alike; click a country to split it by CSR year.` },
+  { img: "04-lineage.jpg", to: `#lineage?view=country&country=LT&${LT_PROJECT_SEL}`, title: "Follow one country stage by stage",
+    alt: "Lineage By country, Lithuania, with the pension project pinned: its chain from two documents to its outcome is highlighted",
+    text: `<em>By country</em> follows the five stages for one country: CSR document → recommendation → initial request (a dashed
+      placeholder until the JIRA export) → project → outcome. Lithuania, 2019–2025: 7 CSR documents, 25 recommendations (10 with
+      at least one project), 35 recommendation–project pairs (11 direct) from 44 sub-part links and 23 projects. With the pension
+      project pinned, its chain lights up: a solid line (direct) to LT 2021 · CSR 1, a dashed line (partial) to LT 2023 · CSR 1,
+      and in the <em>Outcome</em> column: results achieved, 1 deliverable and the pill <em>2/10</em>, its latest impact score.` },
   { img: "05-project.jpg", to: `#project/${GUIDE_PROJECT}`, title: "Read the project page",
     alt: "Project page: Technical Support in transforming the existing fully state-administered funded pension scheme in Lithuania",
     text: `The project page gives the record (TSI, 2024, Lithuania, labour market and social protection, results achieved,
-      1 deliverable, detail page on the Commission's site), the AI summary (a project implemented by the ILO on the second
-      pension pillar) and the <strong>supported CSRs</strong>: 2, one direct (csr-LT-2021-1.4) and one partial (csr-LT-2023-1.6),
-      each with its rationale. The latest impact analysis is shown at the top: 2/10, weak, medium confidence, 7 Oct 2026.` },
+      1 deliverable, detail page on the Commission's site), the latest impact analysis (2/10, weak, medium confidence, 7 Oct 2026),
+      the AI summary (a project implemented by the ILO on the second pension pillar) and the <strong>supported CSRs</strong>:
+      2, one direct (csr-LT-2021-1.4) and one partial (csr-LT-2023-1.6), each with its rationale and its review status.` },
+  { img: "10-review.jpg", to: `#project/${GUIDE_PROJECT}`, title: "Confirm or reject the AI-assessed link",
+    alt: "Review dialog of the link between the pension project and csr-LT-2021-1.4, not reviewed yet",
+    text: `<em>Review</em>, next to each link, opens a short form: the link of the pension project to csr-LT-2021-1.4 is
+      <em>Not reviewed</em> yet. Choose Confirmed, Rejected or To review, add a comment if useful and save: the status is shared with
+      all users at once, and the history (who, when, why) stays in the form. <em>Links to review</em>, on the Projects tab, lists all
+      the links still to check; on the day of the screenshots none of the 1,339 links had been reviewed.` },
   { img: "06-impact.jpg", to: `#impact/${GUIDE_PROJECT}`, title: "Check the impact analysis",
     alt: "Impact tab: the saved analysis of the Lithuanian pension project, report open",
     text: `<em>Impact analysis</em> opens the project in the <strong>Impact</strong> tab. Its saved analysis (2/10, weak,
@@ -2757,6 +2804,12 @@ const GUIDE_STEPS = [
       parallel 2025 reform moved the second pillar in the opposite direction and the project closed two months early. Every
       claim cites numbered sources. <em>Export to Word</em> downloads the report; a new analysis takes 30 seconds to 2 minutes
       and has a cost.` },
+  { img: "09-briefing.jpg", to: "#lineage?view=country&country=LT", title: "Take a country briefing away",
+    alt: "Country briefing dialog opened from Lineage By country, Lithuania, years 2021 to 2026",
+    text: `<em>Country briefing</em>, at the top of the By country view (and of the CSRs tab once a country is chosen), builds a Word
+      document on the country: key figures, CSRs, lineage, results and impact, gaps and data quality. For Lithuania it proposes
+      2021–2026 and all policy areas; tick <em>Include AI summary</em> for key messages and comments written by AI from the figures
+      of the document (about 10 to 30 seconds, a small cost), then <em>Generate</em>.` },
   { img: "07-anomalies.jpg", to: "#anomalies", title: "Keep an eye on data quality",
     alt: "Anomalies tab: high and medium severity anomalies, first page",
     text: `The <strong>Anomalies</strong> tab lists rule-based checks of the Commission's publication. By default it shows the
@@ -2770,26 +2823,32 @@ const GUIDE_STEPS = [
       full texts) and are generated by AI: verify the cited sources.` },
 ];
 const GUIDE_CASES = [
-  { title: "Croatia's lineage", text: "One of the densest networks: 68 sub-part links from Croatian recommendations to projects.", to: "#lineage?country=HR", cta: "Open the network" },
-  { title: "Best-covered country", text: "Belgium has the highest share of recommendations supported by a project: 65% (22 of 34).", to: "#lineage?country=BE", cta: "See Belgium" },
+  { title: "Direct links only", text: "The Sankey with the direct pairs only: 399 pairs, 227 recommendations and 282 projects.", to: "#lineage?view=sankey&level=direct", cta: "Open the Sankey" },
+  { title: "Croatia, stage by stage", text: "One of the densest countries: 73 recommendation–project pairs from 78 sub-part links (2019–2025), 35 projects.", to: "#lineage?view=country&country=HR", cta: "Open By country" },
+  { title: "Best-covered country", text: "Belgium has the highest share of recommendations supported by a project: 65% (22 of 34).", to: "#lineage?view=country&country=BE", cta: "See Belgium" },
+  { title: "Projects that bridge countries", text: "The Network shows the projects linked to recommendations of several countries.", to: "#lineage?view=network", cta: "Open the Network" },
   { title: "Highest impact score", text: "Barnahus Slovenia (SRSP 2019), support for children victims of violence: 8/10, strong.", to: "#impact/barnahus-slovenia-supporting-children-victims-violence", cta: "Read the analysis" },
-  { title: "A multi-country project", text: "Inclusive education in Portugal, Italy and Spain: one project linked to four CSRs of three countries.", to: "#project/combatting-disparities-access-inclusive-education-portugal-italy-and-spain", cta: "Open the project" },
+  { title: "A multi-country project", text: "Inclusive education in Portugal, Italy and Spain: one project linked to four CSR sub-parts of three countries.", to: "#project/combatting-disparities-access-inclusive-education-portugal-italy-and-spain", cta: "Open the project" },
+  { title: "Links still to check", text: "Every AI-assessed link not reviewed, to review or rejected, with quick Confirm and Reject buttons.", to: "#reviews", cta: "Open the list" },
   { title: "Search the 2026 recommendations", text: "Full-text search in all recommendations, here “pension” in the 2026 documents.", to: "#csrs?view=recs&year=2026&q=pension", cta: "Run the search" },
   { title: "Possible duplicates", text: "Projects that look published twice: a quick check before counting projects.", to: "#anomalies?type=possible_duplicate&severity=all", cta: "See the list" },
 ];
 const GUIDE_ASK = [
   "Which projects support Lithuania's recommendations on pensions?",
   "What CSRs did Lithuania receive in 2023, and how were they assessed?",
+  "What do Croatia's 2026 recommendations ask on public administration?",
   "Which countries have projects on e-health or the digitalisation of healthcare?",
   "Which projects work on public procurement in the Baltic states?",
   ...CHAT_EXAMPLES.slice(0, 2),
 ];
 const GUIDE_TIPS = [
-  "Summaries, project–CSR links, assistant answers and impact analyses are generated by AI: verify against the sources before use.",
-  "The 2026 recommendations are Commission proposals: not yet assessed and not yet linked to projects.",
+  "Summaries, project–CSR links, assistant answers, impact analyses, related past projects and the briefing summaries are generated by AI: verify against the sources before use.",
+  "The 2026 recommendations are Commission proposals: not yet assessed and not yet linked to projects; related past projects suggested by AI are leads, not links.",
   "Projects known only by their title are not linked yet: no link does not mean no support.",
+  "Your reviews are shared with all users at once: add a short comment when you reject a link.",
   "Impact statistics rest on the analyses run so far (5 in October 2026): indicative only.",
   "Anomalies are deterministic checks of the publication, not judgements on the projects.",
+  "To improve the explorer, the pages you open and the time spent on them are recorded with your e-mail address; only administrators can see them.",
   "The data are updated every month: the figures in the screenshots may have changed since.",
 ];
 // Parts of the guide page, reachable as #guide/<id> like the reference sections.
@@ -2826,7 +2885,7 @@ function guideIllustratedHtml() {
   return hero
     + guidePart("essentials", "The essentials in one minute", ess)
     + guidePart("scenario", "Scenario: from a CSR document to a project and its impact", steps,
-      "Follow one thread through the data: Lithuania's 2023 recommendations, the projects that support them and the impact of one of them, a TSI project on the second pension pillar.")
+      "Follow one thread through the data: Lithuania's 2023 recommendations, where support goes across all countries, the projects that support Lithuania's recommendations, the review of an AI-assessed link and the impact of one project, a TSI project on the second pension pillar, then a country briefing to take away.")
     + guidePart("cases", "Other cases to explore", cases)
     + guidePart("ask", "Ideas of questions for the assistant", ask)
     + guidePart("tips", "Good to know", tips);
