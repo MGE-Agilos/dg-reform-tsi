@@ -4,6 +4,8 @@
 import { SUPABASE_URL, SUPABASE_ANON_KEY, PROXY_URL } from "./config.js";
 import * as B from "./briefing.js";
 import * as R from "./reporting.js";
+import * as A from "./admin.js";
+import * as T from "./tracking.js";
 
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
 const MARKED_JS = "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
@@ -1957,6 +1959,7 @@ function openAssistant({ focus = true } = {}) {
   launcher.hidden = true;
   launcher.setAttribute("aria-expanded", "true");
   storageSet(ASSISTANT_KEY, "1");
+  if (trackOn) chatTracker.start("chat", null);
   syncAssistantMode();
   paintAssistantContext();
   if (focus) ($("chat-input") || $("assistant-title")).focus();
@@ -1967,6 +1970,7 @@ function closeAssistant({ focusLauncher = true } = {}) {
   const launcher = $("assistant-launcher");
   if (!panel || panel.hidden) return;
   panel.hidden = true;
+  chatTracker.end();
   launcher.setAttribute("aria-expanded", "false");
   launcher.hidden = $("view").hidden;
   try { sessionStorage.removeItem(ASSISTANT_KEY); } catch { /* storage unavailable */ }
@@ -2429,9 +2433,24 @@ const INFO = {
       <li><strong>Claimed but not confirmed</strong>: a CSR declared in the request that the project text does not support.</li>
       <li><strong>Confirmed but not claimed</strong>: a CSR the project supports although the request did not mention it.</li></ul>`,
   }),
+  monitoring: () => ({
+    title: "Usage monitoring",
+    html: `<p>To improve the explorer, the pages each user opens and the time spent on them are recorded with their e-mail
+      address. Only administrators can see them, here.</p>
+      <ul><li><strong>View</strong>: the section of the explorer (Dashboard, Projects, a project page, Lineage, Guide, Admin…). Opening the
+      assistant counts as <em>Assistant (chat)</em>, for as long as it stays open (it overlaps the page behind it).</li>
+      <li><strong>Detail</strong>: the parameters of the page only (a project or CSR id, a lineage view, a country, filters). Texts typed by
+      the user (searches, questions to the assistant) are never recorded.</li>
+      <li><strong>Duration</strong>: visible, active time only. The clock stops while the tab is hidden and 5 minutes after the last
+      mouse, keyboard or touch input; views shorter than 2 seconds are not recorded.</li>
+      <li><strong>Session</strong>: one browser tab of one user, from the first view to the tab being closed.</li>
+      <li><strong>Days</strong> follow the time zone of this browser.</li></ul>
+      <p>Figures start when the monitoring was installed (database migration 007); a closed laptop or a lost network connection can drop
+      the last view.</p>`,
+  }),
 };
 
-const INFO_GUIDE = { linkreview: "reviews", related: "csrs", briefing: "briefing", results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", linklevel: "lineage", request: "lineage", overview: "lineage" };
+const INFO_GUIDE = { monitoring: "usage", linkreview: "reviews", related: "csrs", briefing: "briefing", results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", linklevel: "lineage", request: "lineage", overview: "lineage" };
 
 // Icone « i » des boutons d'information (SVG, couleur du texte).
 const INFO_ICON = `<svg class="info-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="4.1" r="1.35"/><path d="M6.4 6.7h2.4v5.6h1.1v1.4H6.2v-1.4h1.1V8.1h-.9z"/></svg>`;
@@ -2489,7 +2508,9 @@ const GUIDE = [
       own (at least 12 characters) before anything else. You can change it later with <em>Change password</em> in the header.</li>
     <li><strong>No password, or forgotten it?</strong> Use <em>Send me a sign-in link instead</em>: a one-time sign-in link (&ldquo;magic link&rdquo;) arrives by e-mail.
       Only invited addresses receive it.</li>
-    <li>If your session expires, you are asked to sign in again; nothing you were reading is changed.</li></ul>
+    <li>If your session expires, you are asked to sign in again; nothing you were reading is changed.</li>
+    <li><strong>Usage data</strong>: to improve the explorer, the pages you open and the time spent on them are recorded with your
+      e-mail address; only administrators can see them (<a href="#guide/usage">details</a>).</li></ul>
     <p>The tabs give the main views: Dashboard, Projects, CSRs, Lineage, Anomalies, Impact and this Guide. The round button at the
       bottom right opens the <a href="#guide/assistant">assistant</a> on any page.</p>` },
   { id: "projects", title: "Projects", html: () => `
@@ -2647,6 +2668,23 @@ const GUIDE = [
     <li>Impact statistics rest on the analyses run so far: with few analyses they are indicative only.</li>
     <li>Anomalies are deterministic checks of the publication, not judgements on the projects.</li>
     <li>Cite the official sources, not the explorer, in documents.</li></ul>` },
+  { id: "usage", title: "Usage data", html: () => `
+    <p>To improve the explorer, the pages you open and the time spent on them are recorded with your e-mail address; only
+      administrators can see them.</p>
+    ${infoHtml("monitoring").replace(/^\s*<p>[\s\S]*?<\/p>/, "")}` },
+  { id: "admin", title: "Administration", admin: true, html: () => `
+    <p>The <em>Admin</em> tab is shown to administrators only.</p>
+    <ul><li><strong>Users</strong>: every user with their role (User or Admin), status (active, pending first password change, not
+      confirmed), last sign-in and invitation. <em>Make admin</em> / <em>Make user</em> changes the role (the last administrator cannot
+      be demoted), <em>Reset password</em> gives a new temporary password (it also changes the password of any other application using
+      the same account), <em>Revoke</em> removes the access to the explorer but keeps the account.</li>
+    <li><strong>Invite</strong>: a new address gets an account and a temporary password, shown once: transmit it through a separate
+      channel. An address that already has an account in the shared sign-in service keeps its password. The optional sign-in link is
+      the same e-mail as <em>Send me a sign-in link</em>.</li>
+    <li><strong>Usage monitoring</strong>: active users, sessions and time spent over a period, sessions per day, time by section,
+      per-user figures and the visit log, with CSV and Excel exports.</li></ul>
+    <p>Fallback without the tab: in the Supabase SQL editor,
+      <code>update public.testers set role = 'admin' where email = 'name@example.org';</code></p>` },
   { id: "glossary", title: "Glossary", html: () => `
     <dl class="info-dl">
     <dt>TSI</dt><dd>Technical Support Instrument (since 2021): EU programme of tailor-made technical support to Member States' reforms, managed by DG REFORM.</dd>
@@ -2795,10 +2833,11 @@ function guideIllustratedHtml() {
 }
 
 /** Guide markup (pure: also used by the render test). */
-function guideHtml(section, { mobile = false } = {}) {
-  const key = GUIDE_IDS.includes(section) ? section : "";
-  const toc = GUIDE.map((s) => `<li><a href="#guide/${s.id}"${s.id === key ? ' aria-current="location"' : ""}>${esc(s.title)}</a></li>`).join("");
-  const body = GUIDE.map((s) => `<section class="guide-section" id="guide-${s.id}" aria-labelledby="guide-h-${s.id}">`
+function guideHtml(section, { mobile = false, admin = false } = {}) {
+  const sections = GUIDE.filter((s) => admin || !s.admin);
+  const key = sections.some((s) => s.id === section) ? section : "";
+  const toc = sections.map((s) => `<li><a href="#guide/${s.id}"${s.id === key ? ' aria-current="location"' : ""}>${esc(s.title)}</a></li>`).join("");
+  const body = sections.map((s) => `<section class="guide-section" id="guide-${s.id}" aria-labelledby="guide-h-${s.id}">`
     + `<h3 id="guide-h-${s.id}" tabindex="-1">${esc(s.title)}</h3>${s.html()}</section>`).join("");
   return `${heading("User guide")}<div class="guide-page">${guideIllustratedHtml()}`
     + `<section class="guide-part guide-reference" id="guide-reference" aria-labelledby="guide-h-reference">`
@@ -2810,7 +2849,7 @@ function guideHtml(section, { mobile = false } = {}) {
 }
 
 function renderGuide(section) {
-  view(guideHtml(section, { mobile: assistantIsMobile() }));
+  view(guideHtml(section, { mobile: assistantIsMobile(), admin: isAdmin() }));
   bindGuide();
   guideTarget = GUIDE_IDS.includes(section) || GUIDE_PART_IDS.includes(section) ? section : null;
 }
@@ -4805,6 +4844,549 @@ function briefingButton(country) {
     ? `<button type="button" class="btn btn-secondary" data-briefing="${esc(country)}" aria-haspopup="dialog">Country briefing</button>` : "";
 }
 
+// ---------- usage tracking (public.page_views, migration 007; logic in tracking.js) ----------
+
+const TRACK_SESSION_KEY = "tsi-track-session";
+const TRACK_OFF_KEY = "tsi-track-off"; // "1" once the table is known to be missing (this browser session)
+let trackToken = null; // access token of the signed-in user, kept for the keepalive request sent when the page is hidden
+let trackOn = false; // a tester is signed in and the explorer is shown
+
+function trackSessionId() {
+  let id = storageGet(TRACK_SESSION_KEY);
+  if (!id || !/^[0-9a-f]{8,64}$/.test(id)) {
+    id = T.newSessionId();
+    storageSet(TRACK_SESSION_KEY, id);
+  }
+  return id;
+}
+
+/** One INSERT per finished view, always with keepalive (the request survives the page being hidden or closed): the
+ * supabase-js client cannot set keepalive. Errors are ignored; a missing table switches tracking off for the session. */
+function trackSend(row) {
+  if (!trackToken || storageGet(TRACK_OFF_KEY) === "1") return;
+  fetch(`${SUPABASE_URL}/rest/v1/page_views`, {
+    method: "POST", keepalive: true,
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${trackToken}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify(row),
+  }).then(async (res) => {
+    if (res.ok) return;
+    let code = "";
+    try { code = (await res.json())?.code || ""; } catch { /* no body */ }
+    if (res.status === 404 || MISSING_CODES.has(code)) storageSet(TRACK_OFF_KEY, "1");
+  }, () => { /* offline: the view is lost, never retried */ });
+}
+
+const pageTracker = T.createTracker({ send: trackSend, sessionId: trackSessionId });
+const chatTracker = T.createTracker({ send: trackSend, sessionId: trackSessionId });
+
+/** The view on screen (hash route and its parameters, never a typed text). */
+function trackRoute() {
+  if (!trackOn) return;
+  const { view, detail } = T.routeView(location.hash);
+  pageTracker.start(view, detail);
+}
+
+/** Signed out, another screen or another user: the current views are ended (sent with the last token). */
+function trackStop() {
+  trackOn = false;
+  pageTracker.end();
+  chatTracker.end();
+}
+
+function bindTracking() {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      pageTracker.hide();
+      chatTracker.hide();
+    } else if (trackOn) {
+      pageTracker.show();
+      chatTracker.show();
+    }
+  });
+  window.addEventListener("pagehide", () => { pageTracker.hide(); chatTracker.hide(); });
+  let last = 0;
+  const active = () => {
+    const t = Date.now();
+    if (t - last < 1000) return;
+    last = t;
+    pageTracker.activity();
+    chatTracker.activity();
+  };
+  for (const type of ["pointerdown", "pointermove", "keydown", "wheel", "touchstart", "scroll"]) {
+    window.addEventListener(type, active, { passive: true, capture: true });
+  }
+}
+
+// ---------- admin (#admin: users and roles through the tsi-admin function; #admin/usage: usage monitoring) ----------
+
+const ADMIN_URL = SUPABASE_URL + "/functions/v1/tsi-admin";
+const ADMIN_TIMEOUT_MS = 30000;
+const ROLE_MISSING_CODES = new Set(["PGRST202", "42883"]); // my_role() not created yet (migration 007)
+const LOG_COLS_DB = "email,view,detail,started_at,duration_s,session_id";
+let roleCache = null; // { userId, role: "admin" | "user" | null }
+let adminUsers = null; // { uid, users, fallback } of the Users view
+let adminUsage = null; // { model, period } of the Usage view on screen (repaint on resize)
+let adminDialogOpener = null;
+
+const isAdmin = () => Boolean(roleCache && roleCache.userId === currentUid && roleCache.role === "admin");
+
+/** The caller's role ('admin' | 'user' | null) from my_role(); a missing function means no administrator yet. */
+async function fetchRole(session) {
+  if (roleCache && roleCache.userId === session.user.id) return roleCache.role;
+  const { data, error } = await sb.rpc("my_role");
+  if (error && !ROLE_MISSING_CODES.has(error.code) && !/could not find|does not exist/i.test(error.message || "")) return null; // retried later
+  roleCache = { userId: session.user.id, role: !error && (data === "admin" || data === "user") ? data : null };
+  return roleCache.role;
+}
+
+function paintAdminTab() {
+  const tab = $("admin-tab");
+  if (tab) tab.hidden = !isAdmin();
+}
+
+/** POST {action, ...} to tsi-admin with the session token; returns the JSON answer or throws Error(message). */
+async function callAdmin(action, payload = {}) {
+  const { data } = await sb.auth.getSession();
+  const token = data?.session?.access_token;
+  if (!token) throw new Error("Your session has expired. Please sign in again.");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ADMIN_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(ADMIN_URL, {
+      method: "POST", signal: controller.signal,
+      headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action, ...payload }),
+    });
+  } catch (e) {
+    throw new Error(e?.name === "AbortError" ? "the administration service did not answer in time"
+      : "the administration service is unreachable (not deployed yet, or network error)");
+  } finally {
+    clearTimeout(timer);
+  }
+  let body = null;
+  try { body = await res.json(); } catch { /* no JSON */ }
+  if (!res.ok) {
+    const err = new Error(body?.error || body?.message || (res.status === 404 ? "the administration function is not deployed yet" : `HTTP ${res.status}`));
+    err.status = res.status;
+    throw err;
+  }
+  return body || {};
+}
+
+function adminTabs(current) {
+  const a = (kind, href, label) => `<a class="btn btn-secondary seg" href="${href}"${kind === current ? ' aria-current="page"' : ""}>${label}</a>`;
+  return `<nav class="seg-group" aria-label="Admin views">${a("users", "#admin", "Users")}${a("usage", "#admin/usage", "Usage monitoring")}</nav>`;
+}
+
+async function renderAdmin(id, p, seq) {
+  if (!isAdmin()) {
+    view(heading("Admin") + `<div class="card notice notice-error" role="alert"><h3>Not authorised</h3>`
+      + `<p>The Admin tab is reserved for administrators of the explorer.</p></div>`);
+    return;
+  }
+  if (id === "usage") return renderAdminUsage(p, seq);
+  return renderAdminUsers(seq);
+}
+
+// Users: invitation form, temporary password shown once, users table with role / reset / revoke.
+
+function inviteFormHtml() {
+  return `<section class="card adm-invite" aria-labelledby="adm-invite-h"><h3 id="adm-invite-h">Invite a user</h3>`
+    + `<form id="adm-invite-form" class="adm-form" novalidate>`
+    + `<label class="field field-grow"><span>E-mail address</span><input type="email" name="email" required autocomplete="off" spellcheck="false" placeholder="name@example.org"></label>`
+    + `<label class="field"><span>Role</span><select name="role">${options(A.ROLES, "user", null)}</select></label>`
+    + `<label class="check"><input type="checkbox" name="send_link" value="1"> Also e-mail a sign-in link</label>`
+    + `<button type="submit" class="btn" id="adm-invite-submit">Invite</button></form>`
+    + `<p class="muted small">A new address gets an account with a temporary password, to be replaced at the first sign-in. An address that`
+    + ` already has an account in the shared sign-in service (for example another application) only receives access to the explorer: it`
+    + ` keeps its password, or signs in with an e-mailed link. Administrators can also invite users and see the usage monitoring.</p>`
+    + `<p id="adm-invite-status" class="briefing-status" role="status" aria-live="polite"></p></section>`
+    + `<div id="adm-secret" class="adm-secret-slot"></div>`;
+}
+
+/** Temporary password panel: shown once, never stored; "Hide" or any navigation removes it. */
+function showSecret(email, password, intro) {
+  const slot = $("adm-secret");
+  if (!slot) return;
+  slot.innerHTML = `<section class="card adm-secret" aria-labelledby="adm-secret-h"><h3 id="adm-secret-h" tabindex="-1">Temporary password for ${esc(email)}</h3>`
+    + `<p class="small">${esc(intro)}</p>`
+    + `<div class="adm-secret-row"><code id="adm-secret-value" class="adm-secret-value">${esc(password)}</code>`
+    + `<button type="button" class="btn btn-secondary" id="adm-copy">Copy</button>`
+    + `<button type="button" class="btn btn-secondary" id="adm-secret-hide">Hide</button></div>`
+    + `<p class="small adm-warning"><strong>Transmit it through a separate channel</strong> (not in the same message as the address);`
+    + ` it is not stored and will not be shown again.</p><p id="adm-copy-status" class="muted small" role="status" aria-live="polite"></p></section>`;
+  $("adm-copy").addEventListener("click", async () => {
+    let ok = false;
+    try { await navigator.clipboard.writeText(password); ok = true; } catch { /* clipboard refused */ }
+    if (!ok) {
+      const range = document.createRange();
+      range.selectNodeContents($("adm-secret-value"));
+      const sel = getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    $("adm-copy-status").textContent = ok ? "Copied to the clipboard." : "Copy refused by the browser: the password is selected, press Ctrl+C.";
+  });
+  $("adm-secret-hide").addEventListener("click", () => { slot.innerHTML = ""; $("adm-invite-form")?.elements.email.focus(); });
+  $("adm-secret-h").focus();
+}
+
+function usersTableHtml(state) {
+  const users = A.sortUsers(state.users);
+  const me = currentEmail.toLowerCase();
+  const rows = users.map((u) => {
+    const st = A.userStatus(u);
+    const other = u.role === "admin" ? "user" : "admin";
+    const lastAdmin = A.wouldRemoveLastAdmin(users, u.email, other);
+    const self = u.email === me;
+    const act = (action, label, disabled, why = "") => `<button type="button" class="btn btn-secondary adm-act" data-adm-action="${action}"`
+      + ` data-email="${esc(u.email)}"${action === "role" ? ` data-role="${other}"` : ""}${disabled ? ` disabled title="${esc(why)}"` : ""}>${esc(label)}</button>`;
+    const actions = state.fallback ? `<span class="muted small">—</span>`
+      : `<div class="adm-actions">${act("role", other === "admin" ? "Make admin" : "Make user", lastAdmin, "The last administrator cannot be demoted")}`
+        + act("reset", "Reset password", !u.account, "No account for this e-mail")
+        + act("revoke", "Revoke", self, "You cannot revoke your own access") + `</div>`;
+    return [
+      td(`${esc(u.email)}${self ? ` <span class="muted small">(you)</span>` : ""}`, "adm-email"),
+      td(`<span class="adm-role adm-role-${esc(u.role)}">${esc(A.ROLES[u.role] || u.role)}</span>`),
+      td(state.fallback ? `<span class="muted">unknown</span>` : `<span class="adm-status adm-status-${st.key}">${esc(st.label)}</span>`),
+      td(esc(u.last_sign_in_at ? fmtDateTime(u.last_sign_in_at) : "—"), "nowrap"),
+      td(esc(u.invited_at ? fmtDate(u.invited_at) : "—") + (u.invited_by ? `<br><span class="muted small">by ${esc(u.invited_by)}</span>` : ""), "nowrap"),
+      td(actions),
+    ];
+  });
+  const note = state.fallback
+    ? `<p class="notice-few" role="note">Account status and actions are unavailable: ${esc(state.fallback)}. The list comes from the testers table.</p>` : "";
+  return note + table(["E-mail", "Role", "Status", "Last sign-in", "Invited", "Actions"], rows, "No user yet.");
+}
+
+function paintAdminUsers() {
+  const box = $("adm-users");
+  if (!box || !adminUsers) return;
+  $("adm-users-count").textContent = `(${fmtN(adminUsers.users.length)})`;
+  box.innerHTML = usersTableHtml(adminUsers);
+  // Phones: each row becomes a card (CSS); the cells carry their column name.
+  const heads = [...box.querySelectorAll("thead th")].map((th) => th.textContent);
+  box.querySelectorAll("tbody td").forEach((cell) => { cell.dataset.label = heads[cell.cellIndex] || ""; });
+}
+
+/** Users from tsi-admin (accounts' status); if the function fails, the testers table (admin RLS) without status. */
+async function loadAdminUsers() {
+  try {
+    const res = await callAdmin("list");
+    return { uid: currentUid, users: arr(res.users), fallback: null };
+  } catch (e) {
+    const { data, error } = await sb.from("testers").select("email,role,invited_at,invited_by").order("email");
+    if (error) throw e;
+    return { uid: currentUid, users: arr(data).map((t) => ({ ...t, account: null })), fallback: e.message || String(e) };
+  }
+}
+
+async function renderAdminUsers(seq) {
+  view(heading("Admin") + adminTabs("users") + inviteFormHtml()
+    + `<section class="adm-users" aria-labelledby="adm-users-h"><div class="toolbar"><h3 id="adm-users-h" class="adm-h">Users <span id="adm-users-count" class="muted"></span></h3>`
+    + `<span class="toolbar-actions"><span id="adm-users-status" class="muted small" role="status" aria-live="polite"></span>`
+    + `<button type="button" class="btn btn-secondary" id="adm-refresh">Refresh</button></span></div>`
+    + `<div id="adm-users" class="adm-stack"><p class="loading" role="status">Loading…</p></div></section>`);
+  $("adm-invite-form").addEventListener("submit", (e) => { e.preventDefault(); submitInvite(); });
+  $("adm-refresh").addEventListener("click", () => refreshAdminUsers("Users reloaded."));
+  $("adm-users").addEventListener("click", (e) => {
+    const b = e.target instanceof Element ? e.target.closest("[data-adm-action]") : null;
+    if (b && !b.disabled) adminAction(b);
+  });
+  if (!adminUsers || adminUsers.uid !== currentUid) {
+    try {
+      adminUsers = await loadAdminUsers();
+    } catch (e) {
+      if (stale(seq)) return;
+      $("adm-users").innerHTML = `<div class="error" role="alert"><strong>Could not load the users.</strong> ${esc(e.message || e)}</div>`;
+      return;
+    }
+    if (stale(seq)) return;
+  }
+  paintAdminUsers();
+}
+
+async function refreshAdminUsers(message = "") {
+  const status = $("adm-users-status");
+  if (status) status.textContent = "Loading…";
+  try {
+    adminUsers = await loadAdminUsers();
+  } catch (e) {
+    if (status) status.textContent = `Could not reload the users: ${e.message || e}`;
+    return;
+  }
+  paintAdminUsers();
+  if ($("adm-users-status")) $("adm-users-status").textContent = message;
+}
+
+async function submitInvite() {
+  const form = $("adm-invite-form");
+  const say = (text, error = false) => briefingStatusIn("adm-invite-status", text, error);
+  const email = A.cleanEmail(form.elements.email.value);
+  if (!email) {
+    say("Enter a valid e-mail address.", true);
+    form.elements.email.focus();
+    return;
+  }
+  const role = form.elements.role.value === "admin" ? "admin" : "user";
+  const sendLink = form.elements.send_link.checked;
+  if (role === "admin" && !(await confirmAdmin({ title: "Invite an administrator?", confirm: "Invite as Admin",
+    html: `<p><strong>${esc(email)}</strong> will be able to invite and revoke users, change roles, reset passwords and see the usage monitoring.</p>` }, $("adm-invite-submit")))) return;
+  $("adm-invite-submit").disabled = true;
+  say("Inviting…");
+  let res;
+  try {
+    res = await callAdmin("invite", { email, role, send_link: sendLink });
+  } catch (e) {
+    if (form.isConnected) { $("adm-invite-submit").disabled = false; say(`Could not invite ${email}: ${e.message || e}.`, true); }
+    return;
+  }
+  if (!form.isConnected) return;
+  $("adm-invite-submit").disabled = false;
+  form.reset();
+  const link = res.link_sent === true ? " A sign-in link has been e-mailed." : res.link_sent === false ? " The sign-in link could not be sent (e-mail rate limit?): they can request one from the sign-in page." : "";
+  if (res.existing) {
+    say(`${email} already had an account in the shared sign-in service: access granted as ${A.ROLES[res.role] || res.role}. They keep their current password (or use “Send me a sign-in link”).${link}`);
+  } else {
+    say(`${email} invited as ${A.ROLES[res.role] || res.role}.${link}`);
+    if (res.password) showSecret(email, res.password, "Give this password to the user: they must replace it with their own at the first sign-in.");
+  }
+  refreshAdminUsers();
+}
+
+async function adminAction(button) {
+  const email = button.dataset.email;
+  const action = button.dataset.admAction;
+  const say = (text) => { if ($("adm-users-status")) $("adm-users-status").textContent = text; };
+  let confirmText;
+  if (action === "role") {
+    const role = button.dataset.role;
+    confirmText = { title: role === "admin" ? "Make this user an administrator?" : "Remove the administrator role?",
+      confirm: role === "admin" ? "Make admin" : "Make user",
+      html: role === "admin"
+        ? `<p><strong>${esc(email)}</strong> will be able to invite and revoke users, change roles, reset passwords and see the usage monitoring.</p>`
+        : `<p><strong>${esc(email)}</strong> keeps access to the explorer as a User, without the Admin tab.</p>` };
+  } else if (action === "reset") {
+    confirmText = { title: "Reset the password?", confirm: "Reset password", danger: true,
+      html: `<p>A new temporary password is generated for <strong>${esc(email)}</strong>; they must replace it at the next sign-in.</p>`
+        + `<p class="adm-warning"><strong>Warning:</strong> this also changes their password for any other application using the same account`
+        + ` (shared sign-in service). Prefer the e-mailed sign-in link when the user only forgot it.</p>` };
+  } else {
+    confirmText = { title: "Revoke the access?", confirm: "Revoke access", danger: true,
+      html: `<p><strong>${esc(email)}</strong> will no longer be able to open the explorer. Their account is kept (it may be used by another`
+        + ` application); you can invite them again later.</p>` };
+  }
+  if (!(await confirmAdmin(confirmText, button))) return;
+  say("Saving…");
+  try {
+    if (action === "role") {
+      await callAdmin("set_role", { email, role: button.dataset.role });
+      if (email === currentEmail.toLowerCase()) roleCache = null; // demoted yourself: the Admin tab goes
+      say(`${email} is now ${A.ROLES[button.dataset.role]}.`);
+    } else if (action === "reset") {
+      const res = await callAdmin("reset_password", { email });
+      say(`New temporary password for ${email}.`);
+      showSecret(email, res.password, "Give this password to the user: they must replace it with their own at the next sign-in.");
+    } else {
+      await callAdmin("revoke", { email });
+      say(`Access revoked for ${email}.`);
+    }
+  } catch (e) {
+    say(`Could not save: ${e.message || e}.`);
+    return;
+  }
+  if (roleCache === null) return render();
+  await refreshAdminUsers($("adm-users-status")?.textContent || "");
+}
+
+/** In-page confirmation (<dialog>): resolves true on Confirm, false on Cancel, Escape or a click on the backdrop. */
+function confirmAdmin({ title, html, confirm, danger = false }, opener) {
+  const dialog = $("admin-dialog");
+  if (!dialog || typeof dialog.showModal !== "function") return Promise.resolve(window.confirm(title));
+  adminDialogOpener = opener || null;
+  dialog.innerHTML = `<form method="dialog" class="info-inner"><div class="info-head"><h2 id="admin-dialog-title">${esc(title)}</h2></div>`
+    + `<div class="info-body" id="admin-dialog-body">${html}</div>`
+    + `<div class="briefing-actions"><button type="submit" value="cancel" class="btn btn-secondary" id="admin-dialog-cancel">Cancel</button>`
+    + `<button type="submit" value="ok" class="btn${danger ? " btn-danger" : ""}">${esc(confirm)}</button></div></form>`;
+  dialog.returnValue = "";
+  return new Promise((resolve) => {
+    const onClick = (e) => { if (e.target === dialog) dialog.close("cancel"); };
+    dialog.addEventListener("click", onClick);
+    dialog.addEventListener("close", () => {
+      dialog.removeEventListener("click", onClick);
+      if (adminDialogOpener?.isConnected) adminDialogOpener.focus();
+      adminDialogOpener = null;
+      resolve(dialog.returnValue === "ok");
+    }, { once: true });
+    dialog.showModal();
+    $("admin-dialog-cancel").focus();
+  });
+}
+
+// Usage monitoring: KPIs, visits per day, time by section, per-user table, visit log (filters, pages, exports).
+
+function fmtDateTime(value) {
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function usageFilters(p) {
+  return { period: p.get("period") || "", from: p.get("from") || "", to: p.get("to") || "", user: p.get("user") || "", section: p.get("section") || "" };
+}
+
+function usageHref(f, extra = {}) {
+  const v = { ...f, ...extra };
+  return hrefFor("admin/usage", { period: v.period, from: v.period === "custom" ? v.from : "", to: v.period === "custom" ? v.to : "", user: v.user, section: v.section });
+}
+
+function usageLogQuery(period, f, opts = {}) {
+  let q = sb.from("page_views").select(LOG_COLS_DB, opts)
+    .gte("started_at", period.from.toISOString()).lt("started_at", period.to.toISOString());
+  if (f.user) q = q.eq("email", f.user);
+  if (f.section) q = q.eq("view", f.section);
+  return q.order("started_at", { ascending: false }).order("id", { ascending: false });
+}
+
+function usageMissing(error) {
+  return Boolean(error) && (MISSING_CODES.has(error.code) || ROLE_MISSING_CODES.has(error.code) || /schema cache|does not exist|could not find/i.test(error.message || ""));
+}
+
+const ADMIN_CHARTS = {
+  days: (m, w) => vbarChart(m.perDay.map((d) => ({ label: new Date(`${d.day}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short" }),
+    segs: [{ v: d.sessions, key: "s1", tip: { label: new Date(`${d.day}T00:00:00`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" }),
+      value: `${fmtN(d.sessions)} session${d.sessions === 1 ? "" : "s"}`, share: `${fmtN(d.users)} user${d.users === 1 ? "" : "s"} · ${fmtN(d.views)} views · ${A.fmtDuration(d.total_s)}` } }] })),
+  w, { title: "Sessions per day" }),
+  sections: (m, w) => hbarChart(m.perView.map((v) => ({ label: A.viewLabel(v.view), display: A.fmtDuration(v.total_s),
+    segs: [{ v: v.total_s, key: "s1", href: usageHref(adminUsage.filters, { section: v.view }),
+      tip: { label: A.viewLabel(v.view), value: A.fmtDuration(v.total_s), share: `${fmtN(v.views)} views · ${fmtN(v.users)} user${v.users === 1 ? "" : "s"}` } }] })),
+  w, { title: "Time spent by section" }),
+};
+
+function paintAdminCharts() {
+  const root = $("adm-usage");
+  if (!root || !adminUsage) return;
+  adminUsage.width = root.clientWidth;
+  root.querySelectorAll("[data-adm-chart]").forEach((slot) => { slot.innerHTML = ADMIN_CHARTS[slot.dataset.admChart](adminUsage.model, slot.clientWidth); });
+}
+
+function usageFormHtml(f, period, model, sections) {
+  const periodField = selectField("period", "Period", A.PERIODS, period.key, null);
+  const custom = period.key === "custom" || f.period === "custom";
+  const dates = custom ? `<label class="field"><span>From</span><input type="date" name="from" value="${esc(A.isoDate(period.from))}"></label>`
+    + `<label class="field"><span>To</span><input type="date" name="to" value="${esc(A.isoDate(new Date(period.to.getTime() - 86400000)))}"></label>` : "";
+  const users = Object.fromEntries([...new Set([...model.perUser.map((u) => u.email), ...(f.user ? [f.user] : [])])].sort().map((e) => [e, e]));
+  return filterForm("admin/usage", periodField + dates + selectField("user", "User", users, f.user, "All users")
+    + selectField("section", "Section", sections, f.section, "All sections"));
+}
+
+async function renderAdminUsage(p, seq) {
+  const f = usageFilters(p);
+  const period = A.periodOf(f);
+  const page = pageOf(p);
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const [usage, log] = await Promise.all([
+    sb.rpc("admin_usage", { p_from: period.from.toISOString(), p_to: period.to.toISOString(), p_tz: tz }),
+    fetchPage((opts) => usageLogQuery(period, f, opts), page),
+  ]);
+  if (stale(seq)) return;
+  const intro = heading("Admin") + adminTabs("usage");
+  if (usageMissing(usage.error) || usageMissing(log.error)) {
+    view(intro + `<div class="card notice"><h3>Usage monitoring is not available yet</h3><p>The database has no usage table yet: run`
+      + ` <code>supabase/migrations/007_admin_monitoring.sql</code> in the Supabase SQL editor. Visits are recorded from then on.</p></div>`);
+    return;
+  }
+  if (usage.error) return showError(usage.error, "Could not load the usage figures");
+  if (log.redirectPage) return redirectToPage("admin/usage", p, log.redirectPage);
+  if (log.error) return showError(log.error, "Could not load the visit log");
+  let raw = usage.data;
+  if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { raw = null; } }
+  const model = A.usageModel(raw, period);
+  adminUsage = { model, period, filters: f, width: 0 };
+  const sections = Object.fromEntries([...new Set([...Object.keys(A.VIEW_LABELS), ...model.perView.map((v) => v.view), ...(f.section ? [f.section] : [])])]
+    .map((k) => [k, A.viewLabel(k)]));
+  const t = model.totals;
+  const kpis = `<div class="kpis">`
+    + tile("Active users", fmtN(t.users), "with at least one recorded view")
+    + tile("Sessions", fmtN(t.sessions), "browser tabs with activity")
+    + tile("Time spent", A.fmtDuration(t.total_s), `${fmtN(t.views)} page views`)
+    + tile("Average session", t.sessions ? A.fmtDuration(t.avg_session_s) : "—", "visible, active time") + `</div>`;
+  const userRows = model.perUser.map((u) => [
+    td(`<a href="${esc(usageHref(f, { user: u.email }))}">${esc(u.email)}</a>`, "adm-email"),
+    td(esc(u.last_seen ? fmtDateTime(u.last_seen) : "—"), "nowrap"), td(esc(fmtN(u.sessions)), "num"), td(esc(fmtN(u.views)), "num"),
+    td(esc(A.fmtDuration(u.total_s)), "num"), td(esc(u.top_view ? A.viewLabel(u.top_view) : "—")),
+  ]);
+  const logRows = arr(log.data).map((r) => [
+    td(esc(r.email), "adm-email"), td(esc(fmtDateTime(r.started_at)), "nowrap"), td(esc(A.viewLabel(r.view))),
+    td(r.detail ? `<code class="adm-detail">${esc(r.detail)}</code>` : `<span class="muted">—</span>`), td(esc(A.fmtDuration(r.duration_s)), "num"),
+  ]);
+  const filtered = [f.user && `user ${f.user}`, f.section && `section ${A.viewLabel(f.section)}`].filter(Boolean).join(", ");
+  view(intro + `<div id="adm-usage" class="dash adm-usage">`
+    + `<div class="title-row"><p class="muted small">${period.key === "custom" ? "" : `${esc(period.label)} · `}${esc(A.isoDate(period.from))} to ${esc(A.isoDate(new Date(period.to.getTime() - 86400000)))} (${esc(tz)})`
+    + `${f.user || f.section ? " · the user and section filters apply to the visit log; the figures and charts cover everyone" : ""}</p>`
+    + infoButton("monitoring", "About the usage monitoring") + `</div>`
+    + usageFormHtml(f, period, model, sections) + kpis
+    + (t.views ? "" : `<p class="empty">No visit recorded in this period.</p>`)
+    + `<div class="dash-grid">`
+    + `<figure class="viz viz-wide"><figcaption><div class="title-row"><h4 class="viz-title">Sessions per day</h4>${infoButton("monitoring", "About the usage monitoring")}</div>`
+    + `<p class="viz-sub">A session is one browser tab of one user; hover a bar for users, views and time.</p></figcaption>`
+    + `<div class="viz-slot" data-adm-chart="days"></div>`
+    + dataTable(["Day", "Users", "Sessions", "Views", "Time"], model.perDay.map((d) => [d.day, fmtN(d.users), fmtN(d.sessions), fmtN(d.views), A.fmtDuration(d.total_s)])) + `</figure>`
+    + `<figure class="viz viz-wide"><figcaption><h4 class="viz-title">Time spent by section</h4><p class="viz-sub">Click a bar to filter the visit log.</p></figcaption>`
+    + `<div class="viz-slot" data-adm-chart="sections"></div>`
+    + dataTable(["Section", "Views", "Users", "Time"], model.perView.map((v) => [A.viewLabel(v.view), fmtN(v.views), fmtN(v.users), A.fmtDuration(v.total_s)])) + `</figure>`
+    + `<section class="viz viz-wide adm-peruser" aria-labelledby="adm-peruser-h"><h4 class="viz-title" id="adm-peruser-h">Users</h4>`
+    + `<p class="viz-sub">Click an e-mail to filter the visit log.</p>`
+    + table(["User", "Last seen", "Sessions", "Views", "Time", "Most used section"], userRows, "No visit in this period.") + `</section></div>`
+    + `<section class="dash-section adm-log" aria-labelledby="adm-log-h"><div class="toolbar"><h3 id="adm-log-h" class="adm-h">Visit log${filtered ? ` <span class="muted small">(${esc(filtered)})</span>` : ""}</h3>`
+    + `<span class="toolbar-actions"><span id="adm-export-note" class="muted small" role="status" aria-live="polite"></span>`
+    + `<button type="button" class="btn btn-secondary" id="adm-csv">Download CSV</button>`
+    + `<button type="button" class="btn btn-secondary" id="adm-xlsx">Export to Excel</button></span></div>`
+    + table(["User", "When", "Section", "Detail", "Duration"], logRows, "No visit matches these filters.")
+    + (log.count ? pager("admin/usage", p, page, log.count) : "") + `</section>`
+    + `<div id="dash-tip" class="viz-tip" role="tooltip" hidden></div></div>`);
+  bindFilters();
+  bindDashTips($("adm-usage"));
+  paintAdminCharts();
+  $("adm-csv").addEventListener("click", (e) => exportVisits(e.currentTarget, "csv", period, f));
+  $("adm-xlsx").addEventListener("click", (e) => exportVisits(e.currentTarget, "xlsx", period, f));
+}
+
+/** The visit log with the current filters (up to EXPORT_MAX rows) as CSV or Excel (SheetJS, loaded on first use). */
+async function exportVisits(button, kind, period, f) {
+  if (button.dataset.busy) return;
+  button.dataset.busy = "1";
+  button.disabled = true;
+  const note = $("adm-export-note");
+  const say = (text, error = false) => { if (note?.isConnected) { note.textContent = text; note.classList.toggle("note-error", error); } };
+  try {
+    say("Collecting the visits…");
+    const rows = [];
+    for (let from = 0; from < A.EXPORT_MAX; from += CSV_PAGE) {
+      const { data, error } = await usageLogQuery(period, f).range(from, Math.min(from + CSV_PAGE, A.EXPORT_MAX) - 1);
+      if (error) throw error;
+      rows.push(...arr(data));
+      if (arr(data).length < CSV_PAGE) break;
+    }
+    const out = A.logExportRows(rows);
+    if (kind === "csv") {
+      saveCsv(A.logFileName("csv"), A.LOG_COLS, out);
+    } else {
+      say("Loading the Excel library…");
+      const X = await loadSheetJs();
+      const wb = X.utils.book_new();
+      X.utils.book_append_sheet(wb, X.utils.json_to_sheet(out, { header: A.LOG_COLS }), "Visits");
+      saveBlob(A.logFileName("xlsx"), new Blob([X.write(wb, { type: "array", bookType: "xlsx" })], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+    }
+    say(`Downloaded ${fmtN(out.length)} visit${out.length === 1 ? "" : "s"}${out.length >= A.EXPORT_MAX ? ` (limited to the first ${fmtN(A.EXPORT_MAX)})` : ""}.`);
+  } catch (e) {
+    say(`Could not export: ${e?.message || e}`, true);
+  } finally {
+    delete button.dataset.busy;
+    if (button.isConnected) button.disabled = false;
+  }
+}
+
 // ---------- auth and routing ----------
 
 function showScreen(name) {
@@ -4813,6 +5395,7 @@ function showScreen(name) {
   $("view").hidden = name !== "app";
   // The assistant exists only in the explorer (not on the sign-in, password or access-denied screens).
   if (name !== "app") {
+    trackStop();
     $("assistant").hidden = true;
     document.body.classList.remove("assistant-modal");
   }
@@ -4849,8 +5432,10 @@ async function route(seq) {
   }
   assistantContext = null;
   const viewKey = ["project", "csr", "csrdoc", "impact"].includes(r) && id ? `${r}/${id}`
-    : (["dashboard", "lineage", "csrs", "anomalies", "impact", "guide", "reviews"].includes(r) ? r : "projects");
+    : (["dashboard", "lineage", "csrs", "anomalies", "impact", "guide", "reviews"].includes(r) ? r
+      : r === "admin" ? (id === "usage" ? "admin/usage" : "admin") : "projects");
   setActiveTab(r);
+  trackRoute();
   loading();
   try {
     if (r === "project" && id) await renderProject(id, seq);
@@ -4862,6 +5447,7 @@ async function route(seq) {
     else if (r === "anomalies") await renderAnomalies(p, seq);
     else if (r === "reviews") await renderReviews(p, seq);
     else if (r === "guide") renderGuide(id);
+    else if (r === "admin") await renderAdmin(id, p, seq);
     else if (r === "impact") await renderImpact(id, p, seq);
     else { setActiveTab("projects"); await renderProjects(p, seq); }
   } catch (e) {
@@ -4885,6 +5471,7 @@ async function render() {
   const uid = session?.user?.id ?? null;
   if (currentUid && uid !== currentUid) clearAiState();
   currentUid = uid;
+  if (session?.access_token) trackToken = session.access_token;
   showSession(session);
   if (error || !session) {
     showScreen("login");
@@ -4917,7 +5504,11 @@ async function render() {
     $("change-password-title").focus();
     return;
   }
+  await fetchRole(session);
+  if (stale(seq)) return;
   showScreen("app");
+  paintAdminTab();
+  trackOn = true;
   if (storageGet(ASSISTANT_KEY) === "1" && !assistantOpen()) openAssistant({ focus: false }); // still open in this session
   await route(seq);
 }
@@ -5043,13 +5634,16 @@ async function init() {
   $("change-password-cancel").addEventListener("click", () => { wantsPasswordChange = false; render(); });
   $("logout").addEventListener("click", async () => {
     testerCache = null;
+    roleCache = null;
+    adminUsers = null;
+    trackStop(); // ends the current views while the token is still known
     wantsPasswordChange = false;
     await sb.auth.signOut({ scope: "local" }); // SIGNED_OUT re-renders (user id changes)
     history.replaceState(null, "", location.pathname + location.search + "#projects");
   });
   // One Escape handler for the whole page: hides the chart tooltips and releases a pinned lineage node.
   document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape" || $("info-dialog")?.open || $("briefing-dialog")?.open || $("review-dialog")?.open) return;
+    if (e.key !== "Escape" || $("info-dialog")?.open || $("briefing-dialog")?.open || $("review-dialog")?.open || $("admin-dialog")?.open) return;
     const tip = $("dash-tip");
     if (tip) tip.hidden = true;
     hideLineageTip();
@@ -5065,6 +5659,7 @@ async function init() {
   bindReviewDialog();
   bindBriefing();
   bindAssistant();
+  bindTracking();
   let resizeTimer = 0;
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
@@ -5072,6 +5667,8 @@ async function init() {
       syncAssistantMode();
       const root = $("dash");
       if (root && root.clientWidth !== dashWidth) paintDashCharts();
+      const adm = $("adm-usage");
+      if (adm && adminUsage && adm.clientWidth !== adminUsage.width) paintAdminCharts();
       const wrap = $("ln-wrap");
       if (wrap && lineageState && wrap.clientWidth !== lineageState.width) paintLineageGraph();
       const chart = $("ov-chart");
@@ -5085,12 +5682,15 @@ async function init() {
   // Re-render only when the signed-in user changes (or is updated): SIGNED_IN is also emitted when the tab
   // regains focus, and must not rebuild the view. The callback must not await Supabase calls (auth lock).
   sb.auth.onAuthStateChange((event, session) => {
+    trackToken = session?.access_token || null; // refreshed tokens too (keepalive requests read it synchronously)
     if (event === "INITIAL_SESSION") return; // covered by the first render() below
     const uid = session?.user?.id ?? null;
     if (uid === currentUid && event !== "USER_UPDATED") return;
     if (currentUid && uid !== currentUid) clearAiState(); // sign-out or another user: drop chat and reports
     currentUid = uid;
     testerCache = null;
+    roleCache = null;
+    adminUsers = null;
     setTimeout(render, 0);
   });
   await render();

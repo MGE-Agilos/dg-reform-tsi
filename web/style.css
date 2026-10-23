@@ -165,7 +165,7 @@ h3 { font-size: 1.05rem; margin: 20px 0 8px; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin: 0 0 16px; }
 .notice { margin-top: 20px; }
 .notice-error { border-left: 4px solid var(--high); }
-.notice h2 { margin-top: 0; }
+.notice h2, .notice h3 { margin-top: 0; }
 .error { color: var(--high); background: var(--high-bg); border: 1px solid var(--high); border-radius: var(--radius); padding: 12px 14px; overflow-wrap: anywhere; }
 .loading { color: var(--muted); padding: 24px 0; }
 .empty { color: var(--muted); font-style: italic; }
@@ -181,7 +181,7 @@ h3 { font-size: 1.05rem; margin: 20px 0 8px; }
 
 /* Form controls */
 input, select, button { font: inherit; color: inherit; }
-input[type="text"], input[type="email"], input[type="number"], select {
+input[type="text"], input[type="email"], input[type="number"], input[type="date"], select {
   background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
   padding: 7px 10px; min-height: 38px; max-width: 100%;
 }
@@ -798,3 +798,52 @@ div.title-row:has(> h2) { margin-bottom: 12px; }
   .rv-table td.title-cell { min-width: 0; }
   .rv-table td.nowrap { white-space: normal; }
 }
+
+/* Admin tab: invitation form, temporary password (shown once), users table, usage monitoring. */
+.login-privacy { margin: 14px 0 0; border-top: 1px solid var(--border); padding-top: 10px; }
+.adm-invite h3, .adm-secret h3 { margin-top: 0; }
+.adm-form { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: flex-end; margin: 0 0 8px; }
+.adm-form .field-grow input { width: 100%; }
+.adm-secret { border-left: 4px solid var(--partial); }
+.adm-secret h3:focus { outline: none; }
+.adm-secret-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+.adm-secret-value {
+  font-size: 1.15rem; letter-spacing: 0.06em; padding: 6px 12px; border: 1px dashed var(--border); border-radius: 6px;
+  background: var(--row-alt); user-select: all; overflow-wrap: anywhere;
+}
+.adm-warning { color: var(--fg); }
+.adm-h { margin: 0; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.adm-users .toolbar { margin-top: 8px; }
+td.adm-email { min-width: 14em; overflow-wrap: anywhere; }
+.adm-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 15em; }
+.adm-actions .btn { min-height: 32px; padding: 4px 10px; font-size: 0.88rem; white-space: nowrap; }
+
+.adm-role, .adm-status {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.8rem; font-weight: 700; border: 1px solid currentColor; white-space: nowrap;
+}
+.adm-role-admin { color: var(--accent); background: var(--accent-soft); }
+.adm-role-user { color: var(--info); background: var(--info-bg); }
+.adm-status { white-space: normal; border-radius: 10px; }
+.adm-status-active { color: var(--direct); background: var(--direct-bg); }
+.adm-status-pending { color: var(--partial); background: var(--partial-bg); }
+.adm-status-unconfirmed, .adm-status-none { color: var(--high); background: var(--high-bg); }
+.btn-danger { background: var(--high); border-color: var(--high); color: #fff; }
+.adm-usage .filters { margin-top: 4px; }
+.adm-usage > .title-row { margin: 0 0 6px; }
+.adm-usage > .title-row p { margin: 0; }
+.adm-detail { overflow-wrap: anywhere; font-size: 0.84rem; }
+.adm-log { margin-top: 20px; }
+@media (max-width: 800px) { .adm-usage .dash-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 600px) {
+  .adm-stack .table-wrap { overflow: visible; }
+  .adm-stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .adm-stack table, .adm-stack tbody, .adm-stack tr, .adm-stack td { display: block; }
+  .adm-stack tr { border-bottom: 1px solid var(--border); padding: 8px 0; }
+  .adm-stack tbody tr:last-child { border-bottom: 0; }
+  .adm-stack td { border: 0; padding: 3px 12px; min-width: 0; }
+  .adm-stack td::before { content: attr(data-label); display: block; font-size: 0.78rem; font-weight: 600; color: var(--muted); }
+  .adm-stack td.adm-email::before { display: none; }
+  .adm-stack td.adm-email { font-weight: 600; }
+  .adm-stack .adm-actions { flex-wrap: wrap; }
+}
+@media (prefers-color-scheme: dark) { .btn-danger { color: #1b0b0a; } }

@@ -33,6 +33,7 @@
       <a href="#anomalies" data-tab="anomalies">Anomalies</a>
       <a href="#impact" data-tab="impact">Impact</a>
       <a href="#guide" data-tab="guide">Guide</a>
+      <a href="#admin" data-tab="admin" id="admin-tab" hidden>Admin</a>
     </div>
   </nav>
 
@@ -56,6 +57,7 @@
         <p class="muted">No password, or forgotten it? <button type="button" id="login-magic" class="btn btn-link">Send me a sign-in link instead</button></p>
       </form>
       <p id="login-message" class="message" role="status" aria-live="polite"></p>
+      <p class="muted small login-privacy">To improve the explorer, the pages you open and the time spent on them are recorded with your e-mail address; only administrators can see them.</p>
     </section>
 
     <section id="change-password" class="card login" hidden aria-labelledby="change-password-title">
@@ -93,6 +95,8 @@
   </dialog>
 
   <dialog id="briefing-dialog" class="info-dialog briefing-dialog" aria-labelledby="briefing-title" aria-describedby="briefing-intro"></dialog>
+
+  <dialog id="admin-dialog" class="info-dialog briefing-dialog admin-dialog" aria-labelledby="admin-dialog-title"></dialog>
 
   <dialog id="review-dialog" class="info-dialog briefing-dialog review-dialog" aria-labelledby="review-title"></dialog>
 

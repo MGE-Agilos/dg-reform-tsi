@@ -723,6 +723,41 @@ Tests de la fonction (Node 22, sans réseau : `fetch` est simulé) :
 node --experimental-strip-types --test supabase/functions/tsi-assistant/index.test.ts
 ```
 
+### Administration and usage monitoring (lot 5)
+
+The explorer has two roles: **User** (reads the explorer, reviews links) and **Admin** (also the *Admin* tab). The role
+is the `role` column of `public.testers`; `maxime.gerard@agilos.com` is the first administrator.
+
+- **Migration:** paste `supabase/migrations/007_admin_monitoring.sql` into *Supabase > SQL Editor* (after 001 to 006,
+  idempotent). It adds `testers.role / invited_at / invited_by`, the functions `is_admin()`, `my_role()` and
+  `admin_usage(from, to, tz)`, the table `page_views` (insert by testers for themselves, read by admins only) and lets
+  admins read `testers`. It touches nothing else of the shared project (no Auth settings, no users).
+- **Edge Function `tsi-admin`:** paste `supabase/functions/tsi-admin/index.ts` (*Edge Functions > Via Editor*, name
+  `tsi-admin`, keep "Verify JWT" on). It uses the provided `SUPABASE_URL`, `SUPABASE_ANON_KEY` and
+  `SUPABASE_SERVICE_ROLE_KEY`; optional secrets `ALLOWED_ORIGINS` (same default as `tsi-assistant`) and `TSI_SITE_URL`
+  (redirect of the sign-in link). Actions: `list`, `invite` (new address: confirmed account with a temporary password
+  shown once and `must_change_password`; existing account of another app: access only, password untouched),
+  `set_role` (the last admin cannot be demoted), `revoke` (testers row only, the account is kept), `reset_password`.
+  It never deletes an account and never returns users that are not testers.
+- **Usage monitoring:** the page records one row per finished view (section, route parameters, visible and active
+  time; never typed text) in `page_views`; the sign-in screen and the guide tell users. Before the migration the page
+  records nothing and the *Admin* tab stays hidden.
+
+Fallback without the *Admin* tab (SQL Editor):
+
+```sql
+update public.testers set role = 'admin' where email = 'name@example.org';    -- make someone admin
+update public.testers set role = 'user' where email = 'name@example.org';     -- back to User
+delete from public.page_views where started_at < now() - interval '13 months'; -- optional retention purge
+```
+
+Tests (Node 22, no network):
+
+```bash
+node --experimental-strip-types --test supabase/functions/tsi-admin/index.test.ts
+node --test tests/js/admin-tracking.test.mjs
+```
+
 ## Planification (Windows)
 
 À exécuter depuis le dossier du dépôt (les chemins sont résolus en absolu à partir du dossier courant) :
