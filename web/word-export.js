@@ -685,7 +685,7 @@ export function buildBriefingDocument(D, { model: m, ai = null, aiError = "", ai
       ]));
     }
     children.push(makeTable(D, rows, { widths: cols(2.5, 4.6, 0.75, 0.7, 0.85, 1.05, 0.7, 0.8), alignments: [undefined, undefined, undefined, undefined, undefined, undefined, "right", "right"] }), spacer(D));
-    children.push(noteLine(D, "One row per recommendation–project pair; direct when at least one sub-part link is direct. Links assessed by AI from the project text, not an official classification."));
+    children.push(noteLine(D, "One row per CSR Recommendation (one recommendation linked to one project); direct when at least one sub-part link is direct. Links assessed by AI from the project text, not an official classification."));
   } else children.push(noteLine(D, "No project is linked to a recommendation of the period."));
   children.push(...comment("lineage"));
 

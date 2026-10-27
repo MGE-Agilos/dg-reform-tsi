@@ -373,17 +373,21 @@ function projectsQuery(f, opts, cols = PROJECT_LIST_COLS) {
   if (f.from) q = q.gte("year", f.from);
   if (f.to) q = q.lte("year", f.to);
   if (f.area) q = q.eq("policy_area", f.area);
-  if (f.linked) q = q.not("csrs", "eq", "{}");
+  if (f.linked === "yes") q = q.not("csrs", "eq", "{}");
+  if (f.linked === "no") q = q.or("csrs.is.null,csrs.eq.{}");
   if (f.detail) q = q.eq("detail_page", true);
   return q;
 }
+
+/** Projects filter on CSR links: URL value -> label; empty = all (linked=1 from the former checkbox = yes). */
+const LINKED_OPTIONS = { yes: "Linked", no: "Not linked" };
 
 async function renderProjects(p, seq) {
   const page = pageOf(p);
   const f = {
     q: p.get("q") || "", country: pick(p.get("country"), COUNTRIES), programme: pick(p.get("programme"), PROGRAMMES),
     from: yearOf(p, "from"), to: yearOf(p, "to"), area: pick(p.get("area"), POLICY_AREAS),
-    linked: p.get("linked") === "1", detail: p.get("detail") === "1",
+    linked: p.get("linked") === "1" ? "yes" : pick(p.get("linked"), LINKED_OPTIONS), detail: p.get("detail") === "1",
   };
   const [res, reviews] = await Promise.all([fetchPage((opts) => projectsQuery(f, opts), page), reviewsAvailable()]);
   if (stale(seq)) return;
@@ -397,7 +401,7 @@ async function renderProjects(p, seq) {
     + selectField("programme", "Programme", Object.fromEntries(PROGRAMMES.map((x) => [x, x])), f.programme)
     + yearField("from", "From year", f.from) + yearField("to", "To year", f.to)
     + selectField("area", "Policy area", POLICY_AREAS, f.area, "All areas")
-    + checkField("linked", "Linked to a CSR", f.linked)
+    + selectField("linked", "Linked to a CSR", LINKED_OPTIONS, f.linked)
     + checkField("detail", "Has a detail page", f.detail));
   const rows = data.map((r) => [
     td(hashLink("project", r.project_id, r.title), "title-cell"),
@@ -423,7 +427,7 @@ function projectFilterLabels(f) {
   return [
     f.q ? ["Title contains", f.q] : null, f.country ? ["Country", countryName(f.country)] : null, f.programme ? ["Programme", f.programme] : null,
     f.from ? ["From year", String(f.from)] : null, f.to ? ["To year", String(f.to)] : null, f.area ? ["Policy area", areaLabel(f.area)] : null,
-    f.linked ? ["Linked to a CSR", "yes"] : null, f.detail ? ["Has a detail page", "yes"] : null,
+    f.linked ? ["Linked to a CSR", LINKED_OPTIONS[f.linked]] : null, f.detail ? ["Has a detail page", "yes"] : null,
   ].filter(Boolean);
 }
 
@@ -2326,7 +2330,7 @@ const INFO = {
         (e.g. the CSR asks for a pension reform and the project supports that very reform).</li>
       <li><strong>Partial</strong>: the project contributes to one aspect of the recommendation, or to a precondition for it
         (e.g. the CSR asks for a more efficient public administration and the project digitalises one service).</li></ul>
-      <p>In the Sankey, Network and Sunburst views a recommendation–project pair counts as <em>direct</em> when at least one of its
+      <p>In the Sankey, Network and Sunburst views a CSR Recommendation counts as <em>direct</em> when at least one of its
       sub-part links is direct, and <em>partial</em> otherwise. <strong>All</strong> shows both.</p>
       <p>This is not the CSR claimed by the country in its request (self-declared in JIRA): that one will appear in the
       <em>Initial request</em> stage once the JIRA export is available.</p>`,
@@ -2351,25 +2355,25 @@ const INFO = {
     title: "Lineage views",
     html: `<p>The Lineage tab has four views. The first three show <strong>all countries at once</strong>; the last one follows a
       single country stage by stage.</p>
-      <p>A <strong>pair</strong> is one recommendation linked to one project: the project's links to the sub-parts of a recommendation
-      are grouped, and the pair is <em>direct</em> if at least one of them is direct. The country is that of the recommendation, so a
+      <p>A <strong>CSR Recommendation</strong> (in these counts) is one recommendation linked to one project: the project's links to the sub-parts of a recommendation
+      are grouped, and it is <em>direct</em> if at least one of them is direct. The country is that of the recommendation, so a
       project supporting recommendations of three countries counts in each of them. Only recommendations with at least one linked
       project appear (none of the 2026 Commission recommendations yet).</p>
       <h3>Filters</h3><p><strong>CSR years</strong> (year of the recommendation) and <strong>link level</strong> (all, direct, partial)
-      apply to the Sankey, the Network and the Sunburst and are kept when you switch between them. The summary line gives the pairs,
-      recommendations, projects and countries selected and the share of direct pairs.</p>
+      apply to the Sankey, the Network and the Sunburst and are kept when you switch between them. The summary line gives the CSR Recommendations,
+      distinct recommendations, projects and countries selected and the share of direct CSR Recommendations.</p>
       <h3>The four views</h3><dl class="info-dl">
       <dt>Sankey: where support concentrates</dt><dd>Country → policy area of the project → programme → stated outcome; ribbon width is the
         number of pairs. Click a country to split it by CSR year (the other countries merge into one block).</dd>
-      <dt>Network: projects that bridge countries</dt><dd>Countries as dark discs (size = pairs), projects as dots (fill = programme,
-        ring = outcome). Opens with all projects; untick <em>Show all projects</em> to keep the multi-country ones. Click a country to
+      <dt>Network: projects that bridge countries</dt><dd>Countries as dark discs (size = CSR Recommendations), projects as dots (fill = programme,
+        ring = outcome). Opens with all projects; choose <em>Linked to several countries only</em> in <em>Projects</em> to keep the multi-country ones. Click a country to
         highlight its projects, a project for its link; drag, zoom and search.</dd>
       <dt>Sunburst: each country's policy mix</dt><dd>Rings: country → policy area → project (coloured by outcome); angle = pairs.
         Click a segment to zoom in, the centre to zoom out.</dd>
       <dt>By country: the full chain</dt><dd>One country's CSR documents, recommendations, initial request (pending JIRA), projects and
         outcomes, with every recommendation and project as a node.</dd></dl>
       <p>Below each chart, the selected country or project links to its By country view, its projects or its project page.
-      Counts are pairs, not projects: a project linked to three recommendations weighs three. Links assessed by AI: verify before use.</p>`,
+      Counts are CSR Recommendations, not projects: a project linked to three recommendations weighs three. Links assessed by AI: verify before use.</p>`,
   }),
   briefing: () => ({
     title: "Country briefing",
@@ -2559,17 +2563,17 @@ const GUIDE = [
     ${infoHtml("linkreview")}` },
   { id: "lineage", title: "Lineage", html: () => `
     <p>The Lineage tab has four sub-tabs, in this order: <strong>Sankey</strong> (opened by default), <strong>Network</strong>,
-      <strong>Sunburst</strong> and <strong>By country</strong>. The first three give an overview of the recommendation–project pairs
+      <strong>Sunburst</strong> and <strong>By country</strong>. The first three give an overview of the CSR Recommendations
       of all 27 countries; By country follows one country stage by stage. Links from a project, CSR or document page, from the
       dashboard and from this guide open By country directly. The address keeps the sub-tab, the filters and the drilled country
       (for instance <code>#lineage?view=sunburst&amp;cc=IT</code>), so a view can be bookmarked or shared.</p>
     <h4>Overviews: Sankey, Network, Sunburst</h4>
     <ul><li><strong>Filters</strong>: CSR years (from, to) and link level (all, direct, partial), shared by the three views and kept
-      when you switch between them; the summary line gives the pairs, recommendations, projects, countries and the share of direct pairs.</li>
+      when you switch between them; the summary line gives the CSR Recommendations, distinct recommendations, projects, countries and the share of direct CSR Recommendations.</li>
     <li><strong>Sankey</strong>: country of the recommendation → policy area → programme → outcome, ribbon width = pairs. Click a
       country (or choose it in <em>Drill into</em>) to split it by CSR year; <em>All countries</em> returns.</li>
     <li><strong>Network</strong>: countries (dark discs) and projects (dots: fill = programme, ring = outcome), all projects shown.
-      Untick <em>Show all projects</em> to keep the projects shared by several countries. Click a country (or Enter) to highlight
+      Choose <em>Linked to several countries only</em> in <em>Projects</em> to keep the projects shared by several countries. Click a country (or Enter) to highlight
       its projects, a project for its details; drag, scroll to zoom, search by title or country, <em>Reset</em> and <em>Fit to view</em>.</li>
     <li><strong>Sunburst</strong>: rings country → policy area → project (coloured by outcome). Click a segment (or choose a country in
       <em>Zoom to</em>) to zoom in, the centre to zoom out.</li>
@@ -2592,7 +2596,7 @@ const GUIDE = [
     <li><strong>Outcome</strong> (last column, on the row of its project): the results status (filled disc = results achieved,
       ring = results expected, dashed ring = not stated), the number of deliverables and a pill such as &ldquo;6/10&rdquo; for
       the latest impact score.</li>
-    <li><strong>Lines</strong>: thin lines join a document to its recommendations; one line per recommendation–project pair,
+    <li><strong>Lines</strong>: thin lines join a document to its recommendations; one line per CSR Recommendation,
       solid = direct, dashed = partial (direct if at least one sub-part link is direct); a short line joins a project to its outcome.</li>
     <li><strong>Reading it</strong>: hover or focus a node to highlight its chain (a document lights up its recommendations, their
       projects and outcomes), click (or Enter) to pin the highlight and see the details below the graph (for a project or an
@@ -2726,7 +2730,7 @@ const GUIDE = [
     <dt>Initial request</dt><dd>The Member State's request for support, in which it declares the CSRs it addresses; recorded in JIRA, not public.</dd>
     <dt>Direct / partial link</dt><dd>Level of a project–CSR sub-part link assessed by AI: the project implements what the CSR asks
       (direct), or contributes to one aspect or a precondition (partial).</dd>
-    <dt>Pair</dt><dd>One recommendation linked to one project, in the Lineage overviews; direct if at least one of its sub-part links is direct.</dd>
+    <dt>CSR Recommendation (count)</dt><dd>One recommendation linked to one project, in the Lineage overviews; direct if at least one of its sub-part links is direct.</dd>
     <dt>Review</dt><dd>A user's verdict on an AI-assessed link: confirmed, rejected or to review; shared with all users, with its history.</dd>
     <dt>Related past project</dt><dd>A project of earlier years suggested by AI as working on the same issues as a 2026 recommendation;
       a lead to verify, not a link.</dd>
@@ -2772,17 +2776,17 @@ const GUIDE_STEPS = [
       sub-part 1.6, &ldquo;social protection&rdquo;, is partially supported by the Lithuanian pension project followed in the
       next steps.` },
   { img: "04-lineage-sankey.jpg", to: "#lineage", title: "See where support goes, for all countries",
-    alt: "Lineage tab, Sankey view: countries, policy areas, programmes and outcomes of all recommendation–project pairs",
-    text: `The <strong>Lineage</strong> tab opens on the <em>Sankey</em>: for the CSRs of 2016–2025, 1,185 recommendation–project
-      pairs (391 recommendations, 597 projects, 27 countries, 34% direct) flow from the country of the recommendation to the policy
-      area of the project, its programme and its stated outcome. Croatia comes first with 90 pairs, Romania 84, Spain 82, and
-      Lithuania 64; TSI carries 948 pairs and 954 lead to results achieved. The CSR years and the link level (all, direct, partial)
+    alt: "Lineage tab, Sankey view: countries, policy areas, programmes and outcomes of all CSR Recommendations",
+    text: `The <strong>Lineage</strong> tab opens on the <em>Sankey</em>: for the CSRs of 2016–2025, 1,185 CSR
+      Recommendations (391 distinct recommendations, 597 projects, 27 countries, 34% direct) flow from the country of the recommendation to the policy
+      area of the project, its programme and its stated outcome. Croatia comes first with 90 CSR Recommendations, Romania 84, Spain 82, and
+      Lithuania 64; TSI carries 948 CSR Recommendations and 954 lead to results achieved. The CSR years and the link level (all, direct, partial)
       filter the Sankey, the Network and the Sunburst alike; click a country to split it by CSR year.` },
   { img: "04-lineage.jpg", to: `#lineage?view=country&country=LT&${LT_PROJECT_SEL}`, title: "Follow one country stage by stage",
     alt: "Lineage By country, Lithuania, with the pension project pinned: its chain from two documents to its outcome is highlighted",
     text: `<em>By country</em> follows the five stages for one country: CSR document → recommendation → initial request (a dashed
       placeholder until the JIRA export) → project → outcome. Lithuania, 2019–2025: 7 CSR documents, 25 recommendations (10 with
-      at least one project), 35 recommendation–project pairs (11 direct) from 44 sub-part links and 23 projects. With the pension
+      at least one project), 35 CSR Recommendations (11 direct) from 44 sub-part links and 23 projects. With the pension
       project pinned, its chain lights up: a solid line (direct) to LT 2021 · CSR 1, a dashed line (partial) to LT 2023 · CSR 1,
       and in the <em>Outcome</em> column: results achieved, 1 deliverable and the pill <em>2/10</em>, its latest impact score.` },
   { img: "05-project.jpg", to: `#project/${GUIDE_PROJECT}`, title: "Read the project page",
@@ -2823,8 +2827,8 @@ const GUIDE_STEPS = [
       full texts) and are generated by AI: verify the cited sources.` },
 ];
 const GUIDE_CASES = [
-  { title: "Direct links only", text: "The Sankey with the direct pairs only: 399 pairs, 227 recommendations and 282 projects.", to: "#lineage?view=sankey&level=direct", cta: "Open the Sankey" },
-  { title: "Croatia, stage by stage", text: "One of the densest countries: 73 recommendation–project pairs from 78 sub-part links (2019–2025), 35 projects.", to: "#lineage?view=country&country=HR", cta: "Open By country" },
+  { title: "Direct links only", text: "The Sankey with the direct CSR Recommendations only: 399 CSR Recommendations, 227 recommendations and 282 projects.", to: "#lineage?view=sankey&level=direct", cta: "Open the Sankey" },
+  { title: "Croatia, stage by stage", text: "One of the densest countries: 73 CSR Recommendations from 78 sub-part links (2019–2025), 35 projects.", to: "#lineage?view=country&country=HR", cta: "Open By country" },
   { title: "Best-covered country", text: "Belgium has the highest share of recommendations supported by a project: 65% (22 of 34).", to: "#lineage?view=country&country=BE", cta: "See Belgium" },
   { title: "Projects that bridge countries", text: "The Network shows the projects linked to recommendations of several countries.", to: "#lineage?view=network", cta: "Open the Network" },
   { title: "Highest impact score", text: "Barnahus Slovenia (SRSP 2019), support for children victims of violence: 8/10, strong.", to: "#impact/barnahus-slovenia-supporting-children-victims-violence", cta: "Read the analysis" },
@@ -3947,7 +3951,7 @@ function lineageSummary(s, { country = "", from = null, to = null } = {}) {
       + ` · ${fmtN(s.withImpact)} with an impact analysis` : "";
   return `${where ? `${where}: ` : ""}${s.docs !== undefined ? `${plural(s.docs, "CSR document")} · ` : ""}`
     + `${plural(s.csrs, "recommendation")} (${fmtN(s.csrsLinked)} with at least one project) · `
-    + `${plural(s.links, "recommendation–project pair")} (${fmtN(s.direct)} direct) from ${plural(s.subLinks ?? s.links, "sub-part link")} · `
+    + `${plural(s.links, "CSR Recommendation")} (${fmtN(s.direct)} direct) from ${plural(s.subLinks ?? s.links, "sub-part link")} · `
     + `${plural(s.projects, "project")}${outcome}`;
 }
 
@@ -4507,15 +4511,15 @@ function focusLineageTab() {
 function ovIntro(kind) {
   const how = {
     sankey: `Columns: country of the recommendation → policy area of the project → programme → stated outcome. Ribbon width is the number of `
-      + `recommendation–project pairs. Hover a ribbon or a block for its pairs, distinct projects and share of direct links. Click a country `
+      + `CSR Recommendations. Hover a ribbon or a block for its CSR Recommendations, distinct projects and share of direct links. Click a country `
       + `to split it by CSR year (the other countries merge into one block); click again or use <em>All countries</em> to return.`,
-    network: `Dark discs are countries (size = recommendation–project pairs), small dots are projects (fill = programme, ring = outcome). `
-      + `All projects are shown; untick <em>Show all projects</em> to keep only the multi-country projects, which bridge countries. Click a `
+    network: `Dark discs are countries (size = CSR Recommendations), small dots are projects (fill = programme, ring = outcome). `
+      + `All projects are shown; choose <em>Linked to several countries only</em> in <em>Projects</em> to keep only the multi-country projects, which bridge countries. Click a `
       + `country (or focus it and press Enter) to highlight its projects; click it again to clear. Drag nodes, scroll to zoom, search by title or country.`,
     sunburst: `Centre EU → ring 1 countries → ring 2 policy areas of the projects → ring 3 projects, coloured by outcome. Angle is proportional `
-      + `to the recommendation–project pairs. Click a segment to make it the centre, click the centre to zoom back out; hover for details.`,
+      + `to the CSR Recommendations. Click a segment to make it the centre, click the centre to zoom back out; hover for details.`,
   }[kind];
-  return `<p class="muted">All countries at once: each <strong>pair</strong> is one recommendation linked to one project (direct if at least one `
+  return `<p class="muted">All countries at once: each <strong>CSR Recommendation</strong> counted is one recommendation linked to one project (direct if at least one `
     + `of its sub-part links is direct); the country is that of the recommendation. ${how} Links assessed by AI: verify before use. `
     + `${infoButton("overview", "About the lineage views")}</p>`;
 }
@@ -4561,7 +4565,7 @@ function ovSummaryHtml(ps) {
   const dir = ps.filter((x) => x.d).length;
   const years = ovState.from === ovState.to ? String(ovState.from) : `${ovState.from}–${ovState.to}`;
   const n = (v, word) => `<strong>${fmtN(v)}</strong> ${word}${v === 1 ? "" : "s"}`;
-  return `CSRs ${years}: ${n(ps.length, "recommendation–project pair")} · ${n(recs, "recommendation")} · `
+  return `CSRs ${years}: ${n(ps.length, "CSR Recommendation")} · ${n(recs, "distinct recommendation")} · `
     + `${n(proj, "project")} · ${n(cs, "country").replace(/countrys$/, "countries")} · <strong>${share(dir, ps.length) || "–"}</strong> direct`;
 }
 

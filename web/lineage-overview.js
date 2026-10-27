@@ -27,7 +27,7 @@ export { RES, RES_COLOR, PROG_COLOR };
 function statLine(ps) {
   const proj = new Set(ps.map((x) => x.p.i)).size;
   const dir = ps.filter((x) => x.d).length;
-  return `${plural(ps.length, "pair")} · ${plural(proj, "project")} · ${pct(dir, ps.length)} direct`;
+  return `${plural(ps.length, "CSR Recommendation")} · ${plural(proj, "project")} · ${pct(dir, ps.length)} direct`;
 }
 
 /** Text fitted to a pixel width (measured on the rendered SVG text), with an ellipsis. */
@@ -59,7 +59,8 @@ export function toolbarHtml(kind) {
       + `<span class="muted small" id="ov-info"></span></div>`;
   }
   return `<div class="ov-tools"><input type="search" id="nw-search" placeholder="Search a project or country" aria-label="Search a project or country">`
-    + `<label class="check"><input type="checkbox" id="nw-all"> Show all projects</label>`
+    + `<label class="ov-inline">Projects <select id="nw-all" aria-label="Projects shown">`
+    + `<option value="all">All projects</option><option value="multi">Linked to several countries only</option></select></label>`
     + `<button type="button" class="btn btn-secondary" id="nw-reset">Reset</button>`
     + `<button type="button" class="btn btn-secondary" id="nw-fit">Fit to view</button>`
     + `<span class="muted small" id="ov-info"></span></div>`;
@@ -120,7 +121,7 @@ export function mount(kind, root, ctx) {
       detail.innerHTML = drilled
         ? `<p><strong>${esc(cname(drilled))}</strong>, split by CSR year (all other countries merged). ${countryLinks(drilled)}</p>`
         : `<p class="muted small">Click a country block (or choose it above) to split it by CSR year.</p>`;
-      if (!ps.length) { chart.innerHTML = `<p class="empty ov-empty">No pair in the selected period.</p>`; info.textContent = ""; return; }
+      if (!ps.length) { chart.innerHTML = `<p class="empty ov-empty">No CSR Recommendation in the selected period.</p>`; info.textContent = ""; return; }
       const col0 = (x) => (drilled ? (x.c.cc === drilled ? `y:${x.c.year}` : "c:other") : `c:${x.c.cc}`);
       const keys = [col0, (x) => `pa:${x.p.pa}`, (x) => `pg:${x.p.prog}`, (x) => `o:${x.p.res}`];
       const nodeMeta = (id) => {
@@ -176,7 +177,7 @@ export function mount(kind, root, ctx) {
         .on("mousemove", moveTip).on("mouseleave", (e, d) => { hl(false, d); hideTip(); });
       const act = (d) => { if (d.click === "drill") drill(d.cc); else if (d.click === "back") drill(""); };
       nd.filter((d) => d.click).attr("tabindex", 0).attr("role", "button")
-        .attr("aria-label", (d) => (d.click === "drill" ? `Drill into ${d.name}, ${d.value} pairs` : `Back to all countries (${d.name})`))
+        .attr("aria-label", (d) => (d.click === "drill" ? `Drill into ${d.name}, ${d.value} CSR Recommendations` : `Back to all countries (${d.name})`))
         .on("click", (e, d) => { hideTip(); act(d); })
         .on("keydown", (e, d) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(d); refocus(); } })
         .on("focus", (e, d) => { hl(true, d); tipAt(e.currentTarget, `<strong>${esc(d.name)}</strong><div>${statLine(d.pairs)}</div>${hint(d)}`); })
@@ -197,7 +198,7 @@ export function mount(kind, root, ctx) {
         lastY[d.col] = cy;
       });
       const projN = new Set(ps.map((x) => x.p.i)).size;
-      info.textContent = drilled ? `${cname(drilled)} split by CSR year` : `${n0} countries · ${fmt(ps.length)} pairs · ${fmt(projN)} projects`;
+      info.textContent = drilled ? `${cname(drilled)} split by CSR year` : `${n0} countries · ${fmt(ps.length)} CSR Recommendations · ${fmt(projN)} projects`;
     }
     // After a keyboard drill the clicked block is gone: keep the focus in the chart.
     const refocus = () => { (chart.querySelector("g.click") || sel).focus(); };
@@ -211,7 +212,7 @@ export function mount(kind, root, ctx) {
     function render() {
       chart.innerHTML = "";
       hideTip();
-      if (!ps.length) { chart.innerHTML = `<p class="empty ov-empty">No pair in the selected period.</p>`; info.textContent = ""; detail.innerHTML = ""; sel.innerHTML = ""; return; }
+      if (!ps.length) { chart.innerHTML = `<p class="empty ov-empty">No CSR Recommendation in the selected period.</p>`; info.textContent = ""; detail.innerHTML = ""; sel.innerHTML = ""; return; }
       const byC = d3.group(ps, (x) => x.c.cc);
       const data = { name: "EU", kind: "root", ps, children: ctx.countries.filter((cc) => byC.has(cc)).map((cc) => {
         const cps = byC.get(cc);
@@ -233,7 +234,7 @@ export function mount(kind, root, ctx) {
       const labelVisible = (d) => d.y1 <= 4 && d.y0 >= 1 && (d.x1 - d.x0) * ((d.y0 + d.y1) / 2 * radius) > 12.5;
       const labelTransform = (d) => { const x = (d.x0 + d.x1) / 2 * 180 / Math.PI; const y = (d.y0 + d.y1) / 2 * radius; return `rotate(${x - 90}) translate(${y},0) rotate(${x < 180 ? 0 : 180})`; };
       const svg = d3.select(chart).append("svg").attr("width", size).attr("height", size).attr("viewBox", [-size / 2, -size / 2, size, size]).attr("class", "sb")
-        .attr("aria-label", "Sunburst of the pairs by country, policy area and project");
+        .attr("aria-label", "Sunburst of the CSR Recommendations by country, policy area and project");
       const g = svg.append("g");
       const path = g.append("g").selectAll("path").data(root.descendants().slice(1)).join("path")
         .style("fill", color).attr("fill-opacity", (d) => (arcVisible(d.current) ? 1 : 0))
@@ -246,7 +247,7 @@ export function mount(kind, root, ctx) {
           return `<strong>${esc(p.title)}</strong><div class="muted">${trail.slice(0, 2).join(" › ")}</div>`
             + `<div>${esc(p.prog)} ${esc(p.year ?? "")} · ${RES[p.res]} · ${plural(p.deliv, "deliverable")}${impText(p)}</div><div>${statLine(d.data.ps)}</div><div class="muted">Click for the project link</div>`;
         }
-        return `<strong>${trail.join(" › ")}</strong><div>${statLine(d.data.ps)}</div><div class="muted">${pct(d.value, root.value)} of all pairs · click to zoom in</div>`;
+        return `<strong>${trail.join(" › ")}</strong><div>${statLine(d.data.ps)}</div><div class="muted">${pct(d.value, root.value)} of all CSR Recommendations · click to zoom in</div>`;
       });
       const maxChars = Math.max(3, Math.floor((radius - 8) / 5.6));
       const label = g.append("g").attr("pointer-events", "none").attr("text-anchor", "middle").selectAll("text").data(root.descendants().slice(1)).join("text")
@@ -260,9 +261,9 @@ export function mount(kind, root, ctx) {
       const ccOf = (p) => (p.depth === 1 ? p.data.cc : p.depth === 2 ? p.parent.data.cc : "");
       function setCenter(p) {
         fitText(c1, p.depth ? p.data.name : "EU", radius * 1.7);
-        fitText(c2, p.depth && radius > 60 ? `${fmt(p.value)} pairs · zoom out` : `${fmt(p.value)} pairs`, radius * 1.75);
+        fitText(c2, p.depth && radius > 60 ? `${fmt(p.value)} CSR Recommendations · zoom out` : `${fmt(p.value)} CSR Recommendations`, radius * 1.75);
         center.attr("aria-label", p.depth ? `Zoom out from ${p.data.name}` : "EU, all countries");
-        info.textContent = p.depth ? p.ancestors().reverse().map((a) => a.data.name).join(" › ") : `${root.children.length} countries · ${fmt(root.value)} pairs`;
+        info.textContent = p.depth ? p.ancestors().reverse().map((a) => a.data.name).join(" › ") : `${root.children.length} countries · ${fmt(root.value)} CSR Recommendations`;
         sel.value = ccOf(p);
         const cc = ccOf(p);
         detail.innerHTML = !cc ? `<p class="muted small">Click a country to zoom in, then a policy area; click the centre to zoom out. Click a project slice for its link.</p>`
@@ -327,14 +328,14 @@ export function mount(kind, root, ctx) {
     const search = $("nw-search");
     const all = $("nw-all");
     search.value = st.q || "";
-    all.checked = st.all !== false;
+    all.value = st.all === false ? "multi" : "all";
     const cc0 = ctx.getCc();
     if (cc0) { expanded.add(cc0); focus = `c:${cc0}`; }
     let tm;
     search.addEventListener("input", () => { clearTimeout(tm); tm = setTimeout(() => { st.q = search.value.trim(); render(); }, 200); });
-    all.addEventListener("change", () => { st.all = all.checked; render(); });
+    all.addEventListener("change", () => { st.all = all.value === "all"; refit = !REDUCED; render(); });
     $("nw-reset").addEventListener("click", () => {
-      expanded.clear(); focus = null; st.q = ""; search.value = ""; st.all = true; all.checked = true; posCache.clear(); ctx.setCc(""); render();
+      expanded.clear(); focus = null; st.q = ""; search.value = ""; st.all = true; all.value = "all"; posCache.clear(); ctx.setCc(""); render();
     });
     $("nw-fit").addEventListener("click", () => fit(true));
     const query = () => (st.q || "").toLowerCase();
@@ -359,11 +360,11 @@ export function mount(kind, root, ctx) {
       const n = nodes.find((x) => x.id === focus);
       if (!n) { detail.innerHTML = ""; return; }
       if (n.type === "c") {
-        detail.innerHTML = `<p><strong>${esc(cname(n.cc))}</strong>: ${plural(n.pairs, "pair")} · ${plural(n.projects.size, "project")} · ${fmt(n.multi)} shared with other countries. ${countryLinks(n.cc)}</p>`;
+        detail.innerHTML = `<p><strong>${esc(cname(n.cc))}</strong>: ${plural(n.pairs, "CSR Recommendation")} · ${plural(n.projects.size, "project")} · ${fmt(n.multi)} shared with other countries. ${countryLinks(n.cc)}</p>`;
         return;
       }
       const cs = [...n.countries].sort((a, b) => cname(a).localeCompare(cname(b)));
-      detail.innerHTML = projectHtml(n.p, `<p class="small">Linked to CSRs of ${cs.map((cc) => `<a href="${esc(ctx.countryHref(cc))}">${esc(cname(cc))}</a>`).join(", ")} (${plural(n.pairs, "pair")}).</p>`);
+      detail.innerHTML = projectHtml(n.p, `<p class="small">Linked to CSRs of ${cs.map((cc) => `<a href="${esc(ctx.countryHref(cc))}">${esc(cname(cc))}</a>`).join(", ")} (${plural(n.pairs, "CSR Recommendation")}).</p>`);
     }
     function render() {
       curNodes.forEach((n) => posCache.set(n.id, { x: n.x, y: n.y }));
@@ -375,7 +376,7 @@ export function mount(kind, root, ctx) {
       W = chart.clientWidth;
       H = W < 600 ? 560 : (showAll ? 820 : 620);
       chart.style.height = `${H + 2}px`;
-      if (!ps.length) { chart.innerHTML = `<p class="empty ov-empty">No pair in the selected period.</p>`; info.textContent = ""; detail.innerHTML = ""; curNodes = []; svg = null; return; }
+      if (!ps.length) { chart.innerHTML = `<p class="empty ov-empty">No CSR Recommendation in the selected period.</p>`; info.textContent = ""; detail.innerHTML = ""; curNodes = []; svg = null; return; }
       const cN = new Map(); const pN = new Map(); const lM = new Map();
       ps.forEach((x) => {
         const cc = x.c.cc;
@@ -391,8 +392,10 @@ export function mount(kind, root, ctx) {
       countries.forEach((c) => { c.r = 9 + Math.sqrt(c.pairs) * 1.7; c.multi = 0; });
       const projAll = Array.from(pN.values());
       projAll.forEach((p) => { p.r = Math.min(8, 3.2 + Math.sqrt(p.pairs) * 0.9); p.multi = p.countries.size > 1; if (p.multi) p.countries.forEach((cc) => cN.get(cc).multi++); });
-      const visP = projAll.filter((p) => p.multi || showAll || [...p.countries].some((cc) => expanded.has(cc)) || matches(p));
-      const nodes = countries.concat(visP);
+      // Multi-country filter: only projects linked to CSRs of several countries, and the countries they link.
+      const visP = showAll ? projAll : projAll.filter((p) => p.multi);
+      const visC = showAll ? countries : countries.filter((c) => c.multi);
+      const nodes = visC.concat(visP);
       const vis = new Set(nodes.map((n) => n.id));
       if (focus && !vis.has(focus)) focus = null;
       const links = Array.from(lM.values()).filter((l) => vis.has(l.source)).map((l) => ({ ...l, multi: pN.get(+l.source.slice(2)).multi }));
@@ -416,7 +419,7 @@ export function mount(kind, root, ctx) {
         .force("x", d3.forceX(0).strength(0.05)).force("y", d3.forceY(0).strength(0.05))
         .stop();
       svg = d3.select(chart).append("svg").attr("width", W).attr("height", H).attr("class", "nw")
-        .attr("aria-label", `Network of ${countries.length} countries and ${visP.length} projects`);
+        .attr("aria-label", `Network of ${visC.length} countries and ${visP.length} projects`);
       svg.append("rect").attr("class", "nw-bg").attr("width", W).attr("height", H);
       const gRoot = svg.append("g");
       zoom = d3.zoom().scaleExtent([0.2, 5]).on("zoom", (e) => { gRoot.attr("transform", e.transform); hideTip(); });
@@ -425,16 +428,16 @@ export function mount(kind, root, ctx) {
       const lk = gRoot.append("g").selectAll("line").data(links).join("line").attr("stroke-width", (l) => 0.6 + Math.sqrt(l.n) * 0.5);
       const pn = gRoot.append("g").selectAll("circle").data(visP).join("circle").attr("class", "pn")
         .attr("r", (d) => d.r).style("fill", (d) => progColor(d.p.prog)).style("stroke", (d) => resColor(d.p.res)).attr("stroke-width", 2);
-      const cn = gRoot.append("g").selectAll("g").data(countries).join("g").attr("class", "cn").attr("tabindex", 0).attr("role", "button")
-        .attr("aria-label", (d) => `${cname(d.cc)}: ${d.pairs} pairs, ${d.projects.size} projects. ${expanded.has(d.cc) ? "Press Enter to clear the highlight" : "Press Enter to highlight its projects"}`)
+      const cn = gRoot.append("g").selectAll("g").data(visC).join("g").attr("class", "cn").attr("tabindex", 0).attr("role", "button")
+        .attr("aria-label", (d) => `${cname(d.cc)}: ${d.pairs} CSR Recommendations, ${d.projects.size} projects. ${expanded.has(d.cc) ? "Press Enter to clear the highlight" : "Press Enter to highlight its projects"}`)
         .attr("aria-pressed", (d) => String(focus === d.id));
       cn.append("circle").attr("r", (d) => d.r).style("fill", "var(--ov-cnode)")
         .style("stroke", (d) => (expanded.has(d.cc) ? "var(--accent)" : "var(--card)")).attr("stroke-width", (d) => (expanded.has(d.cc) ? 3.5 : 1.5));
       cn.append("text").attr("text-anchor", "middle").attr("dy", "0.35em").text((d) => d.cc);
-      const cTip = (d) => `<strong>${esc(cname(d.cc))}</strong><div>${fmt(d.pairs)} pairs · ${d.projects.size} projects · ${d.multi} shared with other countries</div>`
+      const cTip = (d) => `<strong>${esc(cname(d.cc))}</strong><div>${fmt(d.pairs)} CSR Recommendations · ${d.projects.size} projects · ${d.multi} shared with other countries</div>`
         + `<div class="muted">${expanded.has(d.cc) ? "Click to clear the highlight" : "Click to highlight its projects"}</div>`;
       const pTip = (d) => { const p = d.p; return `<strong>${esc(p.title)}</strong><div class="muted">${esc(p.prog)} ${esc(p.year ?? "")} · ${esc(paName(p.pa))}</div>`
-        + `<div>${RES[p.res]} · ${plural(p.deliv, "deliverable")}${impText(p)}</div><div><span class="muted">Linked to CSRs of:</span> ${esc([...d.countries].map(cname).join(", "))} (${plural(d.pairs, "pair")})</div>`; };
+        + `<div>${RES[p.res]} · ${plural(p.deliv, "deliverable")}${impText(p)}</div><div><span class="muted">Linked to CSRs of:</span> ${esc([...d.countries].map(cname).join(", "))} (${plural(d.pairs, "CSR Recommendation")})</div>`; };
       bindTip(cn, cTip); bindTip(pn, pTip);
       const toggleC = (d, key) => {
         hideTip();
@@ -477,7 +480,7 @@ export function mount(kind, root, ctx) {
         cn.attr("aria-pressed", (d) => String(focus === d.id));
         pn.classed("sel", (d) => focus === d.id);
         const nm = query() ? nodes.filter(matches).length : 0;
-        info.textContent = `${countries.length} countries · ${visP.length} of ${projAll.length} projects shown`
+        info.textContent = `${visC.length} countries · ${visP.length} of ${projAll.length} projects shown`
           + (query() ? ` · ${nm} match${nm === 1 ? "" : "es"}` : "") + (focus ? " · click the background to clear the highlight" : "");
         showDetail(nodes, links);
       };
