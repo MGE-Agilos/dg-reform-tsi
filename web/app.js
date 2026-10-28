@@ -5529,6 +5529,7 @@ function showSession(session) {
   $("session").hidden = !session;
   currentEmail = session?.user?.email || "";
   $("session-email").textContent = currentEmail;
+  paintProgressTab();
 }
 
 async function isTester(session) {
@@ -5553,8 +5554,29 @@ const PROGRESS_TABLES = [ // [table, columns, stable order for the pagination]
   ["projects", "project_id,year", ["project_id"]],
 ];
 const PROGRESS_LEVELS = { all: "All links", direct: "Direct links only" };
+// Exploratory page, shown to its owner only: SHA-256 of the lower-case e-mail (the address stays out of the public code).
+// Not access control: the tables it reads are open to every tester.
+const PROGRESS_OWNER_SHA256 = "8307da8b528207b828488888edf8ee976f8e120df08d7313d7d193d6d1999d6a";
+let progressOwnerCheck = { email: null, promise: Promise.resolve(false) };
 let progressCache = null; // { uid, data } for the session; cleared on sign-out and by the dashboard Refresh
 let progressView = null; // { model, width } of the page on screen (repaint on resize)
+
+/** Whether the signed-in user is the owner of the CSR progress page (checked once per e-mail). */
+function isProgressOwner() {
+  if (progressOwnerCheck.email !== currentEmail) {
+    const email = currentEmail.trim().toLowerCase();
+    const promise = email ? crypto.subtle.digest("SHA-256", new TextEncoder().encode(email))
+      .then((d) => [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("") === PROGRESS_OWNER_SHA256, () => false)
+      : Promise.resolve(false);
+    progressOwnerCheck = { email: currentEmail, promise };
+  }
+  return progressOwnerCheck.promise;
+}
+
+function paintProgressTab() {
+  const email = currentEmail;
+  isProgressOwner().then((ok) => { const tab = $("progress-tab"); if (tab && email === currentEmail) tab.hidden = !ok; });
+}
 
 async function fetchProgressData() {
   const uid = currentUid;
@@ -5678,7 +5700,7 @@ async function route(seq) {
     else if (r === "csrdoc" && id) await renderCsrDoc(id, seq);
     else if (r === "dashboard") await renderDashboard(seq);
     else if (r === "lineage") await renderLineage(p, seq);
-    else if (r === "progress") await renderProgress(p, seq);
+    else if (r === "progress" && (await isProgressOwner())) await renderProgress(p, seq);
     else if (r === "csrs") await renderCsrs(p, seq);
     else if (r === "anomalies") await renderAnomalies(p, seq);
     else if (r === "reviews") await renderReviews(p, seq);
