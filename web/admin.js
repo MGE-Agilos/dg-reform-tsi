@@ -8,7 +8,7 @@ export const LOG_PAGE = 50;
 export const EXPORT_MAX = 20000;
 export const VIEW_LABELS = {
   dashboard: "Dashboard", projects: "Projects", project: "Project page", csrs: "CSRs", csr: "Recommendation page",
-  csrdoc: "CSR document page", lineage: "Lineage", anomalies: "Anomalies", impact: "Impact", guide: "Guide",
+  csrdoc: "CSR document page", lineage: "Lineage", progress: "CSR progress", anomalies: "Anomalies", impact: "Impact", guide: "Guide",
   reviews: "Links to review", admin: "Admin", chat: "Assistant (chat)",
 };
 export const LOG_COLS = ["email", "view", "section", "detail", "started_at", "duration_s", "session_id"];

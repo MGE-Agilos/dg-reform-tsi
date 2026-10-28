@@ -6,6 +6,7 @@ import * as B from "./briefing.js";
 import * as R from "./reporting.js";
 import * as A from "./admin.js";
 import * as T from "./tracking.js";
+import * as PG from "./progress.js";
 
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
 const MARKED_JS = "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
@@ -1614,6 +1615,7 @@ function clearAiState() {
   lineageState = null;
   ovCache = null;
   ovLoading = null;
+  progressCache = null;
   ovState.countryHash = "";
   csrYearsCache = null;
   csrDocsMissing = false;
@@ -2250,6 +2252,31 @@ async function refreshPrevious(id) {
 // ---------- "About this chart" dialogs (static English text written here: no database string) ----------
 
 const INFO = {
+  progress: () => ({
+    title: "CSR progress and project support",
+    html: `<p>Each year the European Commission assesses how far every country-specific recommendation has been implemented
+      (ECFIN CSR database). The page uses the <strong>latest assessment</strong> of each recommendation: no progress, limited
+      progress, some progress, substantial progress or full implementation. Recommendations marked <em>not assessed</em> and the
+      2026 Commission recommendations (not yet assessed) are left out.</p>
+      <h3>Groups</h3><ul>
+      <li><strong>Supported</strong>: at least one TSI or SRSP project is linked to one of its sub-parts (AI-assessed links;
+      <em>Direct links only</em> keeps the direct ones).</li>
+      <li><strong>Not supported</strong>: no linked project.</li></ul>
+      <p><strong>Progressing</strong> = some progress, substantial progress or full implementation. The <strong>gap</strong> is the
+      share progressing among supported recommendations minus the share among the others, in percentage points. The gap
+      <strong>within the same CSR year</strong> compares recommendations of the same year only, then averages the yearly gaps
+      (weighted by the size of both groups): older recommendations have had more time to progress and more time to be supported,
+      so this figure is the fairer one.</p>
+      <p>By default the period ends with the last CSR year that has a supported recommendation: projects supporting the most recent
+      recommendations are not published yet.</p>
+      <p><em>Only projects started by the assessment year</em> keeps a project only when its year is at most the year of the
+      assessment (projects without a year are then left out), so that the support came before the assessment.</p>
+      <h3>Reading with care</h3><ul>
+      <li>A correlation, not proof of impact: countries committed to a reform may also ask for more support.</li>
+      <li>One assessment per recommendation (the latest), not the year-by-year history.</li>
+      <li>Small groups (fewer than 10 recommendations on one side) are greyed: too few to compare.</li>
+      <li>The project–CSR links are assessed by AI: verify before use (link review).</li></ul>`,
+  }),
   results: () => ({
     title: "Projects by results",
     html: `<p>The value comes from the official heading of the results section on the project's detail page
@@ -2454,7 +2481,7 @@ const INFO = {
   }),
 };
 
-const INFO_GUIDE = { monitoring: "usage", linkreview: "reviews", related: "csrs", briefing: "briefing", results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", linklevel: "lineage", request: "lineage", overview: "lineage" };
+const INFO_GUIDE = { progress: "progress", monitoring: "usage", linkreview: "reviews", related: "csrs", briefing: "briefing", results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", linklevel: "lineage", request: "lineage", overview: "lineage" };
 
 // Icone « i » des boutons d'information (SVG, couleur du texte).
 const INFO_ICON = `<svg class="info-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="4.1" r="1.35"/><path d="M6.4 6.7h2.4v5.6h1.1v1.4H6.2v-1.4h1.1V8.1h-.9z"/></svg>`;
@@ -2610,6 +2637,17 @@ const GUIDE = [
     <h4>Initial request</h4>${infoHtml("request")}
     <p>The <em>Country briefing</em> button at the top of By country downloads a Word document on the country shown
       (see <a href="#guide/briefing">Country briefing</a>).</p>` },
+  { id: "progress", title: "CSR progress", html: () => `
+    <p>The <strong>CSR progress</strong> tab asks whether recommendations supported by a TSI or SRSP project progress more than the
+    others, using the Commission's latest assessment of each recommendation.</p>
+    <ul><li><strong>Filters</strong>: CSR years, project links (all or direct only), and <em>Only projects started by the
+      assessment year</em>.</li>
+    <li><strong>Tiles</strong>: share of supported and not supported recommendations progressing (at least some progress), and the gap
+      in percentage points.</li>
+    <li><strong>Chart</strong>: the full scale of assessments for each group (hover a segment for its count).</li>
+    <li><strong>Tables</strong>: the same comparison by CSR year, policy area and country; greyed rows are too small to compare.
+      A country links to its lineage.</li></ul>
+    ${infoHtml("progress")}` },
   { id: "dashboard", title: "Dashboard", html: () => `
     <p>Figures across all projects and CSRs, loaded once per session (<em>Refresh</em> reloads them).</p>
     <ul><li><strong>Tiles</strong>: projects (share with a detail page), deliverables, CSR documents (27 per year, with the total
@@ -3565,6 +3603,7 @@ async function refreshDashboard() {
   }
   dashCache = { uid: currentUid, model: res.model, at: new Date() };
   ovCache = null; // the lineage views reload their links on next use
+  progressCache = null;
   lineageCache.clear();
   reviewStats = null;
   reviewLinksCache = null;
@@ -5515,6 +5554,118 @@ async function isTester(session) {
   return testerCache;
 }
 
+// ---------- CSR progress ----------
+// Implementation of the recommendations (Commission assessment, ECFIN database): supported by a project or not.
+
+const PROGRESS_TABLES = [ // [table, columns, stable order for the pagination]
+  ["csrs", "csr_id,country,year,assessment,assessment_year,policy_areas", ["csr_id"]],
+  ["csr_parts", "part_id,csr_id", ["part_id"]],
+  ["project_csr_links", "project_id,part_id,level", ["project_id", "part_id"]],
+  ["projects", "project_id,year", ["project_id"]],
+];
+const PROGRESS_LEVELS = { all: "All links", direct: "Direct links only" };
+let progressCache = null; // { uid, data } for the session; cleared on sign-out and by the dashboard Refresh
+let progressView = null; // { model, width } of the page on screen (repaint on resize)
+
+async function fetchProgressData() {
+  const uid = currentUid;
+  if (progressCache?.uid === uid) return progressCache.data;
+  const [csrs, parts, links, projects] = await Promise.all(PROGRESS_TABLES.map(([t, cols, order]) => fetchAllRows(t, cols, order)));
+  const data = { csrs, parts, links, projects };
+  if (currentUid === uid) progressCache = { uid, data };
+  return data;
+}
+
+const pctOf = (x) => (x === null ? "–" : `${Math.round(x * 100)}%`);
+const signedPts = (g) => (g === null ? "–" : `${g > 0 ? "+" : ""}${g.toFixed(1)} pts`);
+
+/** One 100 % bar per group, segments from full implementation to no progress. */
+function progressSplitRows(m) {
+  const scale = [...PG.PROGRESS_SCALE].reverse();
+  return [["s", "Supported by a project"], ["u", "Not supported"]].map(([side, label]) => {
+    const t = m[side];
+    return { label, display: t.n ? `${pctOf(PG.okShare(t))} progressing` : "none",
+      segs: scale.map(([, name, key, rank]) => ({ v: t.n ? (100 * t.counts[rank]) / t.n : 0, key,
+        tip: { series: name, label, value: `${fmtN(t.counts[rank])} recommendations`, share: `${share(t.counts[rank], t.n)} of ${fmtN(t.n)}`, key } })) };
+  });
+}
+
+/** Breakdown table: supported and other recommendations with their share progressing, and the gap. */
+function progressTable(rows, head, labelHtml) {
+  const small = (r) => r.s.n < PG.FEW || r.u.n < PG.FEW;
+  const body = rows.map((r) => {
+    const cls = small(r) ? "num muted" : "num";
+    return [td(labelHtml(r.key), small(r) ? "muted" : ""), td(fmtN(r.s.n), cls), td(pctOf(PG.okShare(r.s)), cls),
+      td(fmtN(r.u.n), cls), td(pctOf(PG.okShare(r.u)), cls), td(esc(signedPts(PG.gapPoints(r.s, r.u))), cls)];
+  });
+  return table([head, "Supported", "Progressing", "Not supported", "Progressing", "Gap"], body, "No assessed recommendation.");
+}
+
+async function renderProgress(p, seq) {
+  let data;
+  try { data = await fetchProgressData(); } catch (error) {
+    if (stale(seq)) return;
+    return showError(error, "Could not load the CSR assessments");
+  }
+  if (stale(seq)) return;
+  const years = PG.assessedYears(data.csrs);
+  const title = `<div class="title-row">${heading("CSR progress and project support")}${infoButton("progress", "About this comparison")}</div>`;
+  if (!years.length) return view(`${title}<p class="empty">No assessed recommendation.</p>`);
+  const clamp = (y) => Math.min(years[years.length - 1], Math.max(years[0], y));
+  const level = p.get("level") === "direct" ? "direct" : "all";
+  const before = p.get("before") === "1";
+  // Default end: the last CSR year with a supported recommendation (later ones have no linked project yet).
+  const lastYear = PG.lastSupportedYear(PG.progressModel(data, { level, before })) ?? years[years.length - 1];
+  let from = clamp(yearOf(p, "from") ?? years[0]);
+  let to = clamp(yearOf(p, "to") ?? lastYear);
+  if (from > to) [from, to] = [to, from];
+  const m = PG.progressModel(data, { from, to, level, before });
+  const yearMap = Object.fromEntries(years.map((y) => [String(y), String(y)]));
+  const form = filterForm("progress",
+    selectField("from", "CSR years from", yearMap, String(from), null) + selectField("to", "to", yearMap, String(to), null)
+    + selectField("level", "Project links", PROGRESS_LEVELS, level, null)
+    + checkField("before", "Only projects started by the assessment year", before));
+  const tiles = `<div class="kpis">`
+    + tile("Supported recommendations", pctOf(PG.okShare(m.s)), `progressing · ${fmtN(m.s.n)} recommendations, ${fmtN(m.projects)} projects`, "progress")
+    + tile("Not supported", pctOf(PG.okShare(m.u)), `progressing · ${fmtN(m.u.n)} recommendations`)
+    + tile("Gap", signedPts(m.gap), `supported minus not supported · ${signedPts(m.sameYearGap)} within the same CSR year`) + `</div>`;
+  const few = m.s.n < PG.FEW || m.u.n < PG.FEW ? `<p class="notice-few" role="note">Few recommendations on one side: the comparison is not meaningful.</p>` : "";
+  const legendHtml = legend([...PG.PROGRESS_SCALE].reverse().map(([, label, key, rank]) => ({ key, label, n: m.s.counts[rank] + m.u.counts[rank] })));
+  const split = figure("split", "Latest assessment of the recommendations", { wide: true, legendHtml,
+    sub: `CSRs ${from === to ? from : `${from}–${to}`}, share of each group. Progressing = some progress, substantial progress or full implementation.`,
+    tableHtml: dataTable(["Group", ...PG.PROGRESS_SCALE.map(([, l]) => l), "Total"],
+      [["Supported", m.s], ["Not supported", m.u]].map(([l, t]) => [l, ...t.counts.map(fmtN), fmtN(t.n)])) });
+  const countryLink = (cc) => `<a href="${esc(hrefFor("lineage", { view: "country", country: cc }))}">${esc(countryName(cc))}</a>`;
+  const section = (id, h, sub, html) => `<section class="dash-section" aria-labelledby="${id}"><h3 id="${id}">${h}</h3><p class="muted small">${sub}</p>`
+    + `${html}</section>`;
+  const greyed = `Greyed rows have fewer than ${PG.FEW} recommendations on one side: too few to compare.`;
+  view(`${title}<p class="muted">Does a recommendation progress more when a TSI or SRSP project supports it? The Commission assesses
+      every year how far each country-specific recommendation has been implemented (ECFIN database, latest assessment). This page compares
+      the recommendations with at least one linked project and those without. A correlation, not proof of impact: countries committed to
+      a reform may also ask for more support. Links assessed by AI: verify before use.</p>`
+    + form + `<div id="prog" class="dash">${tiles}${few}`
+    + `<section class="dash-section"><div class="dash-grid">${split}</div></section>`
+    + section("prog-year", "By CSR year", greyed, progressTable(m.byYear, "CSR year", (y) => esc(y)))
+    + section("prog-area", "By policy area", `A recommendation counts in each of its policy areas (ECFIN classification). ${greyed}`,
+      progressTable(m.byArea, "Policy area", (a) => esc(a)))
+    + section("prog-country", "By country", `Click a country for its lineage. ${greyed}`, progressTable(m.byCountry, "Country", countryLink))
+    + `<p class="muted small">${fmtN(m.unassessed)} recommendation${m.unassessed === 1 ? "" : "s"} of these years without a progress assessment `
+    + `(marked not assessed, or not yet assessed) are left out.</p>`
+    + `<div id="dash-tip" class="viz-tip" role="tooltip" hidden></div></div>`);
+  bindFilters();
+  progressView = { model: m, width: 0 };
+  paintProgressCharts();
+  bindDashTips($("prog"));
+}
+
+function paintProgressCharts() {
+  const root = $("prog");
+  if (!root || !progressView) return;
+  progressView.width = root.clientWidth;
+  const slot = root.querySelector('[data-chart="split"]');
+  if (slot) slot.innerHTML = hbarChart(progressSplitRows(progressView.model), slot.clientWidth, { max: 100, title: "Latest assessment, supported and not supported recommendations" });
+}
+
 async function route(seq) {
   let { route: r, id, params: p } = params();
   let focusAssistant = false;
@@ -5527,7 +5678,7 @@ async function route(seq) {
   }
   assistantContext = null;
   const viewKey = ["project", "csr", "csrdoc", "impact"].includes(r) && id ? `${r}/${id}`
-    : (["dashboard", "lineage", "csrs", "anomalies", "impact", "guide", "reviews"].includes(r) ? r
+    : (["dashboard", "lineage", "progress", "csrs", "anomalies", "impact", "guide", "reviews"].includes(r) ? r
       : r === "admin" ? (id === "usage" ? "admin/usage" : "admin") : "projects");
   setActiveTab(r);
   trackRoute();
@@ -5538,6 +5689,7 @@ async function route(seq) {
     else if (r === "csrdoc" && id) await renderCsrDoc(id, seq);
     else if (r === "dashboard") await renderDashboard(seq);
     else if (r === "lineage") await renderLineage(p, seq);
+    else if (r === "progress") await renderProgress(p, seq);
     else if (r === "csrs") await renderCsrs(p, seq);
     else if (r === "anomalies") await renderAnomalies(p, seq);
     else if (r === "reviews") await renderReviews(p, seq);
@@ -5763,6 +5915,8 @@ async function init() {
       syncAssistantMode();
       const root = $("dash");
       if (root && root.clientWidth !== dashWidth) paintDashCharts();
+      const prog = $("prog");
+      if (prog && progressView && prog.clientWidth !== progressView.width) paintProgressCharts();
       const adm = $("adm-usage");
       if (adm && adminUsage && adm.clientWidth !== adminUsage.width) paintAdminCharts();
       const wrap = $("ln-wrap");
