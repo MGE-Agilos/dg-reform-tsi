@@ -2481,7 +2481,7 @@ const INFO = {
   }),
 };
 
-const INFO_GUIDE = { progress: "progress", monitoring: "usage", linkreview: "reviews", related: "csrs", briefing: "briefing", results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", linklevel: "lineage", request: "lineage", overview: "lineage" };
+const INFO_GUIDE = { monitoring: "usage", linkreview: "reviews", related: "csrs", briefing: "briefing", results: "projects", anomalies: "anomalies", impact: "impact", csrlevels: "csrs", assessments: "csrs", links: "lineage", linklevel: "lineage", request: "lineage", overview: "lineage" };
 
 // Icone « i » des boutons d'information (SVG, couleur du texte).
 const INFO_ICON = `<svg class="info-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><circle cx="8" cy="4.1" r="1.35"/><path d="M6.4 6.7h2.4v5.6h1.1v1.4H6.2v-1.4h1.1V8.1h-.9z"/></svg>`;
@@ -2637,17 +2637,6 @@ const GUIDE = [
     <h4>Initial request</h4>${infoHtml("request")}
     <p>The <em>Country briefing</em> button at the top of By country downloads a Word document on the country shown
       (see <a href="#guide/briefing">Country briefing</a>).</p>` },
-  { id: "progress", title: "CSR progress", html: () => `
-    <p>The <strong>CSR progress</strong> tab asks whether recommendations supported by a TSI or SRSP project progress more than the
-    others, using the Commission's latest assessment of each recommendation.</p>
-    <ul><li><strong>Filters</strong>: CSR years, project links (all or direct only), and <em>Only projects started by the
-      assessment year</em>.</li>
-    <li><strong>Tiles</strong>: share of supported and not supported recommendations progressing (at least some progress), and the gap
-      in percentage points.</li>
-    <li><strong>Chart</strong>: the full scale of assessments for each group (hover a segment for its count).</li>
-    <li><strong>Tables</strong>: the same comparison by CSR year, policy area and country; greyed rows are too small to compare.
-      A country links to its lineage.</li></ul>
-    ${infoHtml("progress")}` },
   { id: "dashboard", title: "Dashboard", html: () => `
     <p>Figures across all projects and CSRs, loaded once per session (<em>Refresh</em> reloads them).</p>
     <ul><li><strong>Tiles</strong>: projects (share with a detail page), deliverables, CSR documents (27 per year, with the total
