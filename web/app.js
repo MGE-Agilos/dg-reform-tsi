@@ -2403,24 +2403,22 @@ const INFO = {
       Counts are CSR Recommendations, not projects: a project linked to three recommendations weighs three. Links assessed by AI: verify before use.</p>`,
   }),
   briefing: () => ({
-    title: "Country briefing",
-    html: `<p>A Word document (.docx) on one country, for a period of years and optionally one policy area, built in your
-      browser from the explorer's data, with an optional summary written by AI.</p>
+    title: "Briefing",
+    html: `<p>A Word document (.docx) to prepare an occasion with one country (a bilateral meeting, a panel, a speech, a mission or a
+      conference), in the layout of a Commission briefing, built in your browser from the explorer's data and the occasion you describe,
+      with optional parts written by AI.</p>
       <h3>Contents</h3><ol>
-      <li><strong>Key messages</strong> (AI-generated, 5 to 7 bullets).</li>
-      <li><strong>Key figures</strong>: projects by programme, year and policy area, results status, deliverables, project–CSR
-        links, share of the recommendations supported by a project, impact analyses and anomalies.</li>
-      <li><strong>Country-specific recommendations</strong>: the latest document of the period, then the earlier ones, each
-        recommendation with its latest assessment and number of supporting projects.</li>
-      <li><strong>Lineage</strong>: each recommendation with its supporting projects (level, results, deliverables, impact score).</li>
-      <li><strong>Results and impact</strong>: projects with results, latest impact analyses with their verdict.</li>
-      <li><strong>Gaps and opportunities</strong>: assessed recommendations without a supporting project (Limited or No progress first),
-        with AI suggestions to verify, and, for the latest (2026) recommendations, the related past projects suggested by AI
-        (top 3 each), when available.</li>
-      <li><strong>Data quality</strong> (anomalies) and an <strong>annex</strong> with the sources and the method.</li></ol>
+      <li><strong>Header</strong>: "Briefing for" the recipient, the occasion, the place and the date.</li>
+      <li><strong>Scene setter</strong>: what, when, where, who organises it and why it matters (AI; without AI, one sentence from the fields).</li>
+      <li><strong>Purpose</strong> and <strong>Role</strong>: objectives, what the recipient does, the participants named in the pasted context (AI).</li>
+      <li><strong>Speaking points</strong>: in the first person, one block per question announced in the context, in that order (AI).</li>
+      <li><strong>Defensives</strong>: sensitive questions visible in the data (weak assessments, recommendations without support, anomalies) with a cautious answer (AI).</li>
+      <li><strong>Background</strong>: the Commission's support to the country (AI) and key figures (from the data).</li>
+      <li><strong>Annexes A to G</strong>: key figures, country-specific recommendations, lineage, results and impact, gaps and related
+        past projects, data quality, sources and method.</li></ol>
+      <p>Figures in the AI parts must come from the data or the occasion: a text holding another figure is flagged ⚠ in the document.
+      General policy framing, without figures, may be added by the AI. Verify before use.</p>
       <h3>Limits</h3><ul>
-      <li>The AI summary is one call to Claude (Anthropic), written only from the figures of the document (no web search): its parts
-        are marked <em>AI-generated</em>. If it fails, the document is still created, without them, and says so.</li>
       <li>Links between projects and CSRs are assessed by AI; projects known only by their title are not linked yet, so a gap is
         not proof of absence of support.</li>
       <li>Policy area filter: projects by their policy area; CSRs through the corresponding ECFIN policy areas (the two
@@ -2635,8 +2633,8 @@ const GUIDE = [
     <h4>Links</h4>${infoHtml("links")}
     <h4>Link level</h4>${infoHtml("linklevel")}
     <h4>Initial request</h4>${infoHtml("request")}
-    <p>The <em>Country briefing</em> button at the top of By country downloads a Word document on the country shown
-      (see <a href="#guide/briefing">Country briefing</a>).</p>` },
+    <p>The <em>Prepare a briefing</em> button at the top of By country downloads a Word briefing for an occasion with the country shown
+      (see <a href="#guide/briefing">Briefing</a>).</p>` },
   { id: "dashboard", title: "Dashboard", html: () => `
     <p>Figures across all projects and CSRs, loaded once per session (<em>Refresh</em> reloads them).</p>
     <ul><li><strong>Tiles</strong>: projects (share with a detail page), deliverables, CSR documents (27 per year, with the total
@@ -2676,19 +2674,22 @@ const GUIDE = [
       the previous ones, and the dashboard their statistics.</li>
     <li><strong>Export to Word</strong>: a report (new or saved) can be downloaded as a .docx document.</li></ul>
     ${infoHtml("impact")}` },
-  { id: "briefing", title: "Country briefing", html: () => `
-    <p><em>Country briefing</em> (in <a href="#lineage?view=country">Lineage › By country</a>, and on the CSRs tab once a country is
-      chosen) downloads a Word document on one country. In the dialog choose the country, the period (years of the projects and
-      of the CSR documents; by default the last five years and the current one), optionally a policy area, and whether to
-      include the AI summary, then <em>Generate</em>.</p>
-    <ul><li><strong>Steps</strong>: collecting the data (a few seconds), writing the summary (AI, about 10 to 30 seconds), building
-      the document. <em>Cancel</em> or Escape stops it; nothing is saved.</li>
-    <li><strong>File</strong>: <code>briefing-&lt;country&gt;-&lt;from&gt;-&lt;to&gt;[-&lt;policy area&gt;].docx</code>, styled like the
+  { id: "briefing", title: "Briefing", html: () => `
+    <p><em>Prepare a briefing</em> (in <a href="#lineage?view=country">Lineage › By country</a>, and on the CSRs tab once a country is
+      chosen) downloads a Word document to prepare an occasion with one country. In the dialog describe the occasion: who the briefing is
+      for and the occasion (required), the date, the format and the place, and optionally paste the invitation, the agenda, the participants
+      or the questions announced by the moderator. Then choose the country, the period (by default the last five years and the current one),
+      optionally a policy area, and whether to include the AI parts, then <em>Generate</em>.</p>
+    <ul><li><strong>Steps</strong>: collecting the data (a few seconds), writing the scene setter and speaking points (AI, about 20 to 40
+      seconds), building the document. <em>Cancel</em> or Escape stops it; nothing is saved on the server. The occasion fields are kept in
+      this browser tab until a briefing is downloaded.</li>
+    <li><strong>File</strong>: <code>briefing-&lt;country&gt;-&lt;date of the occasion&gt;-&lt;occasion&gt;.docx</code>, styled like the
       other Word exports.</li>
-    <li><strong>Cost</strong>: the AI summary is one model call (a few cents); untick <em>Include AI summary</em> for a data-only document.</li>
-    <li><strong>Limits</strong>: the AI parts (key messages, comments, suggestions for the gaps) are written only from the figures of
-      the document and marked as AI-generated; the figures themselves come from the explorer's data, with the same caveats (AI-assessed
-      links, projects known only by their title not linked).</li></ul>
+    <li><strong>Cost</strong>: the AI parts are one model call (a few cents); untick <em>Include AI parts</em> for a document with the
+      header, a scene setter from the fields and the data annexes only.</li>
+    <li><strong>Limits</strong>: the AI writes figures only from the data and names, dates and questions only from the occasion; a text holding
+      a figure found in neither is flagged ⚠. It may add general policy framing without figures. Participants are listed only when the
+      pasted context names them. The data keep their usual caveats (AI-assessed links, projects known only by their title not linked).</li></ul>
     ${infoHtml("briefing")}` },
   { id: "reporting", title: "Excel reporting", html: () => `
     <p><em>Export to Excel</em>, on the Projects tab and on <em>Links to review</em>, downloads a workbook built in your browser
@@ -2700,7 +2701,7 @@ const GUIDE = [
       (project text or title only) and the latest review (status, reviewer, date, comment).</li>
     <li><strong>Notes</strong>: export date, the filters applied, who exported it, and the definitions of the columns.</li></ul>
     <p>From <em>Links to review</em>, the export keeps the links matching that view's filters. Other exports: CSV for the anomalies
-      and the lineage table, Word for impact reports, assistant conversations and country briefings.</p>` },
+      and the lineage table, Word for impact reports, assistant conversations and briefings.</p>` },
   { id: "data", title: "Data and updates", html: () => `
     <ul><li><strong>Sources</strong>: reforms-investments.ec.europa.eu (TSI projects, detail pages, country factsheets, deliverables),
       the SRSP list of approved requests (PDF), and the ECFIN CSR database (2016–2025 recommendations and their assessments) and the Commission's 2026 country-specific
@@ -2761,7 +2762,7 @@ const GUIDE = [
     <dt>Review</dt><dd>A user's verdict on an AI-assessed link: confirmed, rejected or to review; shared with all users, with its history.</dd>
     <dt>Related past project</dt><dd>A project of earlier years suggested by AI as working on the same issues as a 2026 recommendation;
       a lead to verify, not a link.</dd>
-    <dt>Country briefing</dt><dd>A Word document on one country and period, built from the explorer's data, with an optional AI summary.</dd></dl>` },
+    <dt>Briefing</dt><dd>A Word document to prepare an occasion (meeting, panel, mission…) with one country: scene setter and speaking points by AI, the country's data in annexes.</dd></dl>` },
 ];
 
 const GUIDE_IDS = GUIDE.map((s) => s.id);
@@ -2778,7 +2779,7 @@ const GUIDE_ESSENTIALS = [
   { icon: "info", title: "Definitions", text: "The round i buttons explain how a figure or a link level is defined, with a link to the reference below." },
   { icon: "✓", title: "Your review", text: "Project–CSR links are assessed by AI: confirm or reject them with Review. Reviews are shared with all users, with their history." },
   { icon: "✦", title: "Assistant", text: "The round button at the bottom right opens the assistant beside any page. On a project or CSR page it offers to ask about it." },
-  { icon: "⎙", title: "Export", text: "Projects and links to Excel, lists to CSV; impact reports, assistant conversations and country briefings to Word." },
+  { icon: "⎙", title: "Export", text: "Projects and links to Excel, lists to CSV; impact reports, assistant conversations and briefings to Word." },
 ];
 const LT_PROJECT_SEL = `sel=${encodeURIComponent(`project:${GUIDE_PROJECT}`)}`;
 const GUIDE_STEPS = [
@@ -2835,12 +2836,12 @@ const GUIDE_STEPS = [
       parallel 2025 reform moved the second pillar in the opposite direction and the project closed two months early. Every
       claim cites numbered sources. <em>Export to Word</em> downloads the report; a new analysis takes 30 seconds to 2 minutes
       and has a cost.` },
-  { img: "09-briefing.jpg", to: "#lineage?view=country&country=LT", title: "Take a country briefing away",
-    alt: "Country briefing dialog opened from Lineage By country, Lithuania, years 2021 to 2026",
-    text: `<em>Country briefing</em>, at the top of the By country view (and of the CSRs tab once a country is chosen), builds a Word
-      document on the country: key figures, CSRs, lineage, results and impact, gaps and data quality. For Lithuania it proposes
-      2021–2026 and all policy areas; tick <em>Include AI summary</em> for key messages and comments written by AI from the figures
-      of the document (about 10 to 30 seconds, a small cost), then <em>Generate</em>.` },
+  { img: "09-briefing.jpg", to: "#lineage?view=country&country=LT", title: "Prepare a briefing",
+    alt: "Briefing dialog opened from Lineage By country, Lithuania",
+    text: `<em>Prepare a briefing</em>, at the top of the By country view (and of the CSRs tab once a country is chosen), builds a Word
+      briefing for an occasion with the country: say who it is for and what the occasion is, paste the invitation or the announced
+      questions if you have them, and the AI writes the scene setter, the speaking points and the defensives from the occasion and the
+      country's data, which follow in annexes (about 20 to 40 seconds, a small cost).` },
   { img: "07-anomalies.jpg", to: "#anomalies", title: "Keep an eye on data quality",
     alt: "Anomalies tab: high and medium severity anomalies, first page",
     text: `The <strong>Anomalies</strong> tab lists rule-based checks of the Commission's publication. By default it shows the
@@ -2916,7 +2917,7 @@ function guideIllustratedHtml() {
   return hero
     + guidePart("essentials", "The essentials in one minute", ess)
     + guidePart("scenario", "Scenario: from a CSR document to a project and its impact", steps,
-      "Follow one thread through the data: Lithuania's 2023 recommendations, where support goes across all countries, the projects that support Lithuania's recommendations, the review of an AI-assessed link and the impact of one project, a TSI project on the second pension pillar, then a country briefing to take away.")
+      "Follow one thread through the data: Lithuania's 2023 recommendations, where support goes across all countries, the projects that support Lithuania's recommendations, the review of an AI-assessed link and the impact of one project, a TSI project on the second pension pillar, then a briefing to prepare an occasion with a country.")
     + guidePart("cases", "Other cases to explore", cases)
     + guidePart("ask", "Ideas of questions for the assistant", ask)
     + guidePart("tips", "Good to know", tips);
