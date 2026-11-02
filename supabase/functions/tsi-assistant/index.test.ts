@@ -7,7 +7,7 @@ import {
   canonicalDocId, docIdOf,
   HttpError, CHAT_SYSTEM, impactSystem, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
   withCacheBreakpoint, emptyStats, parseImpact, extractVerdict, extractProject, jwtSub, SAVE_TIMEOUT_MS,
-  validateBriefing, parseBriefing, runBriefing, BRIEFING_SYSTEM, BRIEFING_SCHEMA, MAX_FACTS, MAX_TOKENS,
+  validateBriefing, validateOccasion, OCCASION_FORMATS, parseBriefing, runBriefing, BRIEFING_SYSTEM, BRIEFING_SCHEMA, MAX_FACTS, MAX_TOKENS,
 } from "./index.ts";
 
 const ORIGIN = "https://mge-agilos.github.io";
@@ -788,7 +788,9 @@ test("impact save bounded by the time left: min(5 s, start + 145 s - now), at le
 // ---------- country briefing ----------
 
 const FACTS = { country: { code: "HR", name: "Croatia" }, projects: { total: 4 }, coverage: { pct: 40 }, gaps: [{ id: "csr-HR-2023-2" }] };
-const briefingBody = { service: "briefing", country: "HR", period: { from: 2021, to: 2026 }, topic: "Health and long-term care", facts: FACTS };
+const OCCASION = { recipient: "Director Judit Rozsa", title: "Meeting with the Minister of Health", date: "2026-11-12",
+  place: "Zagreb", format: "bilateral", context: "Agenda: health reform.\nParticipants: Ana Horvat, Minister of Health." };
+const briefingBody = { service: "briefing", country: "HR", period: { from: 2021, to: 2026 }, topic: "Health and long-term care", facts: FACTS, occasion: OCCASION };
 const BRIEFING_JSON = { key_messages: ["Croatia had 4 health projects.", "40% of the assessed recommendations are supported."],
   comments: { figures: "Few projects.", csrs: "", lineage: "Links are AI-assessed.", results: "", gaps: "Primary care could be explored." } };
 
@@ -844,8 +846,27 @@ test("briefing validation: country, period, topic and facts; 400 or 413 without 
     assert.equal(f.modelCalls().length, 0);
   }
   assert.deepEqual(validateBriefing({ ...briefingBody, country: " hr ", topic: "  " }),
-    { country: "HR", period: { from: 2021, to: 2026 }, topic: null, facts: FACTS });
+    { country: "HR", period: { from: 2021, to: 2026 }, topic: null, facts: FACTS, occasion: OCCASION });
   assert.equal(MAX_FACTS, 25000);
+});
+
+test("briefing occasion: recipient and title required, lengths, date, format; 400 without calling Anthropic", async () => {
+  const bad: unknown[] = [
+    undefined, null, "text", [],
+    { ...OCCASION, recipient: "" }, { ...OCCASION, recipient: "   " }, { ...OCCASION, recipient: "x".repeat(121) },
+    { ...OCCASION, title: undefined }, { ...OCCASION, title: "x".repeat(201) }, { ...OCCASION, place: "x".repeat(121) },
+    { ...OCCASION, place: 5 }, { ...OCCASION, date: "12/11/2026" }, { ...OCCASION, date: "2026-02-30" }, { ...OCCASION, date: "1999-01-01" },
+    { ...OCCASION, format: "party" }, { ...OCCASION, context: "x".repeat(8001) }, { ...OCCASION, context: 3 },
+  ];
+  for (const occasion of bad) {
+    const f = fakeFetch();
+    const res = await handle(post({ ...briefingBody, occasion }), ENV, f.impl);
+    assert.equal(res.status, 400, JSON.stringify(occasion)?.slice(0, 80));
+    assert.equal(f.modelCalls().length, 0);
+  }
+  assert.deepEqual(validateOccasion({ recipient: "  Director   X ", title: "Panel\non reforms", context: " a\r\nb ", date: null }),
+    { recipient: "Director X", title: "Panel on reforms", date: "", place: "", format: "other", context: "a\nb" });
+  assert.deepEqual(Object.keys(OCCASION_FORMATS), ["bilateral", "panel", "speech", "mission", "conference", "other"]);
 });
 
 test("briefing: is_tester false -> 403 before the model; no bearer -> 401", async () => {

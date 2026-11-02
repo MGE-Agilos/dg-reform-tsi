@@ -900,7 +900,11 @@ async function saveImpact(answer: string, messages: Message[], env: Env, fetchIm
 
 export const BRIEFING_COMMENT_KEYS = ["figures", "csrs", "lineage", "results", "gaps"] as const;
 export type Briefing = { key_messages: string[]; comments: Record<(typeof BRIEFING_COMMENT_KEYS)[number], string> };
-export type BriefingInput = { country: string; period: { from: number; to: number }; topic: string | null; facts: Record<string, unknown> };
+export const OCCASION_FORMATS: Record<string, string> = { bilateral: "Bilateral meeting", panel: "Panel discussion",
+  speech: "Speech", mission: "Country mission", conference: "Conference", other: "Other" };
+export const OCCASION_MAX = { recipient: 120, title: 200, place: 120, context: 8000 } as const;
+export type Occasion = { recipient: string; title: string; date: string; place: string; format: string; context: string };
+export type BriefingInput = { country: string; period: { from: number; to: number }; topic: string | null; facts: Record<string, unknown>; occasion: Occasion };
 const BRIEFING_MESSAGE_MAX = 500; // characters per key message
 const BRIEFING_COMMENT_MAX = 900; // characters per comment
 
@@ -940,16 +944,47 @@ export const BRIEFING_SCHEMA = {
   additionalProperties: false,
 };
 
+/** YYYY-MM-DD, a real day, year 2010-2100. */
+function validDay(s: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  const y = Number(s.slice(0, 4));
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s && y >= 2010 && y <= 2100;
+}
+
+/** The occasion of the briefing: recipient and title required, the rest optional; invalid -> 400. */
+export function validateOccasion(value: unknown): Occasion {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "occasion must be an object");
+  const o = value as Record<string, unknown>;
+  const text = (k: string, multiline = false): string => {
+    const v = o[k];
+    if (v === undefined || v === null) return "";
+    if (typeof v !== "string") throw new HttpError(400, `occasion.${k} must be a string`);
+    return multiline ? v.replace(/\r\n?/g, "\n").trim() : v.replace(/\s+/g, " ").trim();
+  };
+  const out = { recipient: text("recipient"), title: text("title"), date: text("date"), place: text("place"),
+    format: text("format") || "other", context: text("context", true) };
+  if (!out.recipient) throw new HttpError(400, "occasion.recipient is required");
+  if (!out.title) throw new HttpError(400, "occasion.title is required");
+  for (const k of ["recipient", "title", "place", "context"] as const) {
+    if (out[k].length > OCCASION_MAX[k]) throw new HttpError(400, `occasion.${k} exceeds ${OCCASION_MAX[k]} characters`);
+  }
+  if (out.date && !validDay(out.date)) throw new HttpError(400, "occasion.date must be a day YYYY-MM-DD");
+  if (!Object.hasOwn(OCCASION_FORMATS, out.format)) throw new HttpError(400, "occasion.format is not a known format");
+  return out;
+}
+
 /** Validates the briefing request; facts above MAX_FACTS characters (as JSON) -> 413. */
 export function validateBriefing(body: unknown): BriefingInput {
   if (!body || typeof body !== "object") throw new HttpError(400, "Invalid request body");
-  const { country, period, topic, facts } = body as { country?: unknown; period?: unknown; topic?: unknown; facts?: unknown };
+  const { country, period, topic, facts, occasion } = body as { country?: unknown; period?: unknown; topic?: unknown; facts?: unknown; occasion?: unknown };
   const code = typeof country === "string" ? country.trim().toUpperCase() : "";
   if (!COUNTRIES.includes(code)) throw new HttpError(400, "country must be an EU ISO code");
   const { from, to } = (period && typeof period === "object" ? period : {}) as { from?: unknown; to?: unknown };
   const year = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v >= 2010 && v <= 2100;
   if (!year(from) || !year(to) || (from as number) > (to as number)) throw new HttpError(400, "period must be {from, to} years with from <= to");
   if (topic !== undefined && topic !== null && (typeof topic !== "string" || topic.length > 120)) throw new HttpError(400, "topic must be a short string");
+  const occ = validateOccasion(occasion);
   if (!facts || typeof facts !== "object" || Array.isArray(facts)) throw new HttpError(400, "facts must be an object");
   let size: number;
   try {
@@ -958,7 +993,7 @@ export function validateBriefing(body: unknown): BriefingInput {
     throw new HttpError(400, "facts must be JSON");
   }
   if (size > MAX_FACTS) throw new HttpError(413, `facts exceed ${MAX_FACTS} characters`);
-  return { country: code, period: { from: from as number, to: to as number }, topic: typeof topic === "string" && topic.trim() ? topic.trim() : null, facts: facts as Record<string, unknown> };
+  return { country: code, period: { from: from as number, to: to as number }, topic: typeof topic === "string" && topic.trim() ? topic.trim() : null, facts: facts as Record<string, unknown>, occasion: occ };
 }
 
 const cleanText = (v: unknown, max: number) => {
