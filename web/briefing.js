@@ -326,7 +326,9 @@ const pct = (a, b) => (b > 0 ? Math.round((100 * a) / b) : null);
 /** The background figures of the briefing, built from the model (not by the AI): label and text. */
 export function keyFigures(m) {
   const progs = m.programmes.map((g) => [g, m.projects.filter((p) => p.programme === g).length]).filter(([, k]) => k);
-  const out = [{ label: "Projects in the period", value: `${m.projects.length}${progs.length ? ` (${progs.map(([g, k]) => `${g} ${k}`).join(", ")})` : ""}` }];
+  const other = m.projects.length - progs.reduce((a, [, k]) => a + k, 0);
+  const parts = [...progs.map(([g, k]) => `${g} ${k}`), ...(other > 0 ? [`other ${other}`] : [])];
+  const out = [{ label: "Projects in the period", value: `${m.projects.length}${parts.length ? ` (${parts.join(", ")})` : ""}` }];
   if (m.coverage.recs) {
     out.push({ label: "Assessed recommendations supported by a project", value: `${m.coverage.supported} of ${m.coverage.recs} (${pct(m.coverage.supported, m.coverage.recs)}%)` });
   }

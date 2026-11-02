@@ -88,3 +88,23 @@ test("AI failed: red banner and the reason in each missing section", () => {
   assert.match(text, /Not generated \(AI summary unavailable: The AI summary took too long\)\./);
   assert.match(text, /You will attend: Meeting with the Minister of Finance\.\n/);
 });
+
+test("a participant is flagged when its name or its function is unverified", () => {
+  const doc = buildBriefingDocument(D, { model, occasion: OCCASION, ai: AI, unverified: ["Minister of Finance"], date: model.date });
+  const flagged = body(doc).map(textOf).filter((t) => t.includes("⚠ figure not found in the data"));
+  assert.equal(flagged.length, 1);
+  assert.match(flagged[0], /Ana Horvat, Minister of Finance/);
+  assert.equal(flagged[0].split("⚠").length - 1, 1);
+});
+
+test("the scene setter from the fields drops trailing dots of the title", () => {
+  const doc = buildBriefingDocument(D, { model, occasion: { ...OCCASION, title: "Meeting with the Minister...  ", date: "", place: "", format: "other" }, ai: null, aiSkipped: true, date: model.date });
+  assert.match(allText(doc), /You will attend: Meeting with the Minister\.\n/);
+});
+
+test("AI with empty purpose and defensives: the empty-section notes", () => {
+  const doc = buildBriefingDocument(D, { model, occasion: OCCASION, ai: { ...AI, purpose: [], defensives: [] }, date: model.date });
+  const text = allText(doc);
+  assert.match(text, /No objective stated\./);
+  assert.match(text, /No sensitive point found in the data\./);
+});

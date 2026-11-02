@@ -38,3 +38,10 @@ test("keyFigures: projects by programme, coverage, impact analyses; absent figur
   assert.deepEqual(keyFigures({ ...m, projects: [], coverage: { recs: 0, supported: 0 }, impacts: [], impactMean: null }),
     [{ label: "Projects in the period", value: "0" }]);
 });
+
+test("keyFigures: projects of another programme are counted as other", () => {
+  const m = { programmes: ["TSI", "SRSP", "SRSS"], projects: [{ programme: "TSI" }, { programme: "EEA" }, { programme: "" }],
+    coverage: { recs: 0, supported: 0 }, impacts: [], impactMean: null };
+  assert.equal(keyFigures(m)[0].value, "3 (TSI 1, other 2)");
+  assert.equal(keyFigures({ ...m, projects: [{ programme: "EEA" }] })[0].value, "1 (other 1)");
+});
