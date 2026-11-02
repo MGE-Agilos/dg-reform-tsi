@@ -1,5 +1,5 @@
-// Country briefing: pure model of the data of one country and period (optionally one policy area) and the compact
-// "facts" digest sent to the AI summary (tsi-assistant, service "briefing"). No DOM, no network: app.js fetches the
+// Briefing for an occasion: pure model of the data of one country and period (optionally one policy area), the occasion
+// helpers and the compact "facts" digest sent to the AI (tsi-assistant, service "briefing"). No DOM, no network: app.js fetches the
 // rows, word-export.js builds the document, so Node can test this module.
 
 export const COMMISSION_STAGE = "Commission recommendation";
@@ -103,10 +103,49 @@ export function weakAssessment(value) {
   return k === "limited progress" || k === "no progress";
 }
 
-/** briefing-<ISO>-<from>-<to>[-<topic>].docx */
-export function briefingFileName(country, from, to, topic) {
-  const t = topic ? `-${String(topic).replace(/[^a-z0-9-]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 60)}` : "";
-  return `briefing-${String(country).replace(/[^A-Z]/gi, "").toUpperCase()}-${from}-${to}${t}.docx`;
+/** Formats of an occasion (value -> label): the same list as the edge function's OCCASION_FORMATS. */
+export const OCCASION_FORMATS = { bilateral: "Bilateral meeting", panel: "Panel discussion", speech: "Speech",
+  mission: "Country mission", conference: "Conference", other: "Other" };
+export const OCCASION_MAX = { recipient: 120, title: 200, place: 120, context: 8000 };
+
+/** YYYY-MM-DD, a real day, year 2010-2100 (same rule as the edge function). */
+function validDay(s) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  const y = Number(s.slice(0, 4));
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s && y >= 2010 && y <= 2100;
+}
+
+const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+/** Form values -> the occasion sent to the AI and used by the document. */
+export function cleanOccasion(raw = {}) {
+  const line = (v) => String(v ?? "").replace(/\s+/g, " ").trim();
+  const format = line(raw.format);
+  return { recipient: line(raw.recipient), title: line(raw.title), date: line(raw.date), place: line(raw.place),
+    format: Object.hasOwn(OCCASION_FORMATS, format) ? format : "other", context: String(raw.context ?? "").replace(/\r\n?/g, "\n").trim() };
+}
+
+/** Field -> message for an invalid occasion (the edge function checks the same rules); {} when valid. */
+export function occasionErrors(o) {
+  const e = {};
+  const max = (k) => `At most ${OCCASION_MAX[k]} characters (${o[k].length} now).`;
+  if (!o.recipient) e.recipient = "Enter who the briefing is for.";
+  else if (o.recipient.length > OCCASION_MAX.recipient) e.recipient = max("recipient");
+  if (!o.title) e.title = "Describe the occasion in one line.";
+  else if (o.title.length > OCCASION_MAX.title) e.title = max("title");
+  if (o.place.length > OCCASION_MAX.place) e.place = max("place");
+  if (o.date && !validDay(o.date)) e.date = "Enter a valid date (2010 to 2100).";
+  if (o.context.length > OCCASION_MAX.context) e.context = max("context");
+  return e;
+}
+
+/** briefing-<ISO>-<occasion day or today>[-<occasion slug>].docx */
+export function briefingFileName(country, occasion = {}, today = new Date()) {
+  const day = validDay(String(occasion.date ?? "")) ? occasion.date : isoDay(today);
+  const slug = String(occasion.title ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "").slice(0, 60).replace(/-+$/, "");
+  return `briefing-${String(country).replace(/[^A-Z]/gi, "").toUpperCase()}-${day}${slug ? `-${slug}` : ""}.docx`;
 }
 
 /** Latest scored analysis per project (the latest one when none is scored). Rows must be sorted newest first. */
@@ -283,6 +322,20 @@ export function briefingModel(raw, opts) {
 }
 
 const pct = (a, b) => (b > 0 ? Math.round((100 * a) / b) : null);
+
+/** The background figures of the briefing, built from the model (not by the AI): label and text. */
+export function keyFigures(m) {
+  const progs = m.programmes.map((g) => [g, m.projects.filter((p) => p.programme === g).length]).filter(([, k]) => k);
+  const out = [{ label: "Projects in the period", value: `${m.projects.length}${progs.length ? ` (${progs.map(([g, k]) => `${g} ${k}`).join(", ")})` : ""}` }];
+  if (m.coverage.recs) {
+    out.push({ label: "Assessed recommendations supported by a project", value: `${m.coverage.supported} of ${m.coverage.recs} (${pct(m.coverage.supported, m.coverage.recs)}%)` });
+  }
+  if (m.impacts.length) {
+    out.push({ label: "Impact analyses (AI-generated)",
+      value: `${m.impacts.length}${m.impactMean === null ? "" : `, mean score ${(Math.round(m.impactMean * 10) / 10).toFixed(1)}/10`}` });
+  }
+  return out;
+}
 
 /** Compact digest of the model for the AI summary, under FACTS_TARGET characters (lists shortened step by step). */
 export function briefingFacts(m) {
