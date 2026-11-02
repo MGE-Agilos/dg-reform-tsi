@@ -7,7 +7,7 @@ import {
   canonicalDocId, docIdOf,
   HttpError, CHAT_SYSTEM, impactSystem, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
   withCacheBreakpoint, emptyStats, parseImpact, extractVerdict, extractProject, jwtSub, SAVE_TIMEOUT_MS,
-  validateBriefing, validateOccasion, OCCASION_FORMATS, parseBriefing, runBriefing, BRIEFING_SYSTEM, BRIEFING_SCHEMA, BRIEFING_FIELDS, briefingUserMessage, MAX_FACTS, MAX_TOKENS,
+  validateBriefing, validateOccasion, OCCASION_FORMATS, parseBriefing, runBriefing, BRIEFING_SYSTEM, BRIEFING_SCHEMA, BRIEFING_FIELDS, briefingUserMessage, numbersIn, unverifiedTexts, MAX_FACTS, MAX_TOKENS,
 } from "./index.ts";
 
 const ORIGIN = "https://mge-agilos.github.io";
@@ -948,4 +948,28 @@ test("runBriefing: the TSI key and model are used; missing key -> 500", async ()
   assert.equal(sent(f.modelCalls()[0]).model, "claude-test");
   await assert.rejects(runBriefing(validateBriefing(briefingBody), { SUPABASE_URL: ENV.SUPABASE_URL }, f.impl),
     (e: unknown) => e instanceof HttpError && e.status === 500);
+});
+
+test("numbersIn: thousands separators, leading zeros and trailing decimals normalised", () => {
+  assert.deepEqual(numbersIn("1,234 people, 07 days, 40.0% and 6.3/10 in 2021-2026"), ["1234", "7", "40", "6.3", "10", "2021", "2026"]);
+  assert.deepEqual(numbersIn("no figure"), []);
+});
+
+test("unverifiedTexts: numbers of FACTS, period, occasion and shares of two counts pass; invented numbers are flagged", () => {
+  const input = validateBriefing(briefingBody); // FACTS numbers: 4, 40, 2023, 2; period 2021-2026; date 2026-11-12
+  const b = {
+    ...BRIEFING_JSON,
+    scene_setter: "You will meet on 12 November 2026 in Zagreb; support since 2021.",
+    purpose: ["Discuss the 17 new projects.", "Half of them, 50% of the 4 projects, have results."],
+    background: "1,000 experts took part.",
+  };
+  assert.deepEqual(unverifiedTexts(b, input), ["Discuss the 17 new projects.", "1,000 experts took part."]);
+  assert.deepEqual(unverifiedTexts(BRIEFING_JSON, input), []);
+});
+
+test("briefing: an invented figure is returned in unverified, the briefing is still returned", async () => {
+  const withInvented = { ...BRIEFING_JSON, background: "Croatia received 99 missions." };
+  const res = await handle(post(briefingBody), ENV, fakeFetch({ model: [textReply(JSON.stringify(withInvented))] }).impl);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { briefing: withInvented, unverified: ["Croatia received 99 missions."], saved: false });
 });

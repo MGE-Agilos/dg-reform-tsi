@@ -1,8 +1,9 @@
 // Supabase Edge Function "tsi-assistant": serves the explorer's Chat and Impact tabs with Claude (Anthropic Messages API).
 // Same contract as haystack-proxy: POST {service: "chat"|"impact", messages} with the tester's session token -> {answer, saved}.
-// Service "briefing" (country briefing of the explorer): POST {service: "briefing", country, period: {from, to}, topic, facts}
-// -> {briefing: {key_messages, comments}, saved: false}; one model call without tools, written only from `facts` (a compact
-// digest built by the page, at most MAX_FACTS characters, else 413); nothing is saved.
+// Service "briefing" (briefing for an occasion): POST {service: "briefing", country, period: {from, to}, topic, facts, occasion:
+// {recipient, title, date, place, format, context}} -> {briefing: {scene_setter, purpose, role, speaking_points, defensives,
+// background}, unverified: [texts holding a number found neither in facts nor in the occasion], saved: false}; one model call
+// without tools; `facts` is a compact digest built by the page (at most MAX_FACTS characters, else 413); nothing is saved.
 // Claude's client tools query the Supabase tables through PostgREST WITH THE TESTER'S TOKEN (RLS applies); the impact
 // analysis also uses Anthropic's server web search tool.
 // Single self-contained file, no imports: paste it into Supabase (Edge Functions > Via Editor), keep "Verify JWT" on.
@@ -1091,6 +1092,36 @@ export async function runBriefing(input: BriefingInput, env: Env, fetchImpl: Fet
   return parseBriefing(answerText(res.content));
 }
 
+const NUMBER = /\d+(?:\.\d+)?/g;
+const SHARE_COUNTS = 400; // distinct counts of the FACTS combined two by two for the shares
+
+/** Numbers of a text as canonical strings ("1,234" -> "1234", "07" -> "7", "40.0" -> "40"). */
+export function numbersIn(text: string): string[] {
+  return (String(text ?? "").replace(/(\d),(?=\d{3}(?!\d))/g, "$1").match(NUMBER) || []).map((s) => String(Number(s)));
+}
+
+/** Numbers the briefing may use: those of the FACTS, the period and the occasion, and the rounded shares (%) of two counts of the FACTS. */
+export function allowedNumbers(input: BriefingInput): Set<string> {
+  const o = input.occasion;
+  const facts = JSON.stringify(input.facts);
+  const ok = new Set(numbersIn([facts, input.period.from, input.period.to, o.recipient, o.title, o.date, o.place, o.context].join(" ")));
+  const counts = [...new Set(numbersIn(facts).map(Number).filter((n) => Number.isInteger(n) && n > 0 && n <= 100000))].slice(0, SHARE_COUNTS);
+  for (const a of counts) for (const b of counts) if (a <= b) ok.add(String(Math.round((100 * a) / b)));
+  return ok;
+}
+
+function briefingTexts(b: Briefing): string[] {
+  return [b.scene_setter, ...b.purpose, b.role.summary, ...b.role.participants.flatMap((p) => [p.name, p.function]),
+    ...b.speaking_points.flatMap((s) => [s.question, ...s.points]), ...b.defensives.flatMap((d) => [d.question, d.answer]), b.background]
+    .filter(Boolean);
+}
+
+/** Texts of the briefing holding a number that neither the FACTS nor the OCCASION give: flagged in the document, not rejected. */
+export function unverifiedTexts(b: Briefing, input: BriefingInput): string[] {
+  const ok = allowedNumbers(input);
+  return [...new Set(briefingTexts(b).filter((t) => numbersIn(t).some((n) => !ok.has(n))))];
+}
+
 // ---------- HTTP handler (same contract and checks as haystack-proxy) ----------
 
 export function allowedOrigins(env: Env): string[] {
@@ -1185,7 +1216,7 @@ export async function handle(req: Request, env: Env, fetchImpl: FetchImpl, now: 
       const input = validateBriefing(body);
       const briefing = await runBriefing(input, env, fetchImpl, stats);
       status = 200;
-      return reply(200, { briefing, saved: false });
+      return reply(200, { briefing, unverified: unverifiedTexts(briefing, input), saved: false });
     }
     const valid = validate(body);
     service = valid.service;
