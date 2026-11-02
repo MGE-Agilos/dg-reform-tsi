@@ -1630,6 +1630,7 @@ function clearAiState() {
   if ($("briefing-dialog")?.open) $("briefing-dialog").close();
   try {
     sessionStorage.removeItem(CHAT_KEY);
+    sessionStorage.removeItem(BRIEFING_OCCASION_KEY);
     for (let i = sessionStorage.length - 1; i >= 0; i--) {
       const k = sessionStorage.key(i);
       if (k && k.startsWith(IMPACT_KEY)) sessionStorage.removeItem(k);
@@ -2683,7 +2684,7 @@ const GUIDE = [
     <ul><li><strong>Steps</strong>: collecting the data (a few seconds), writing the scene setter and speaking points (AI, about 20 to 40
       seconds), building the document. <em>Cancel</em> or Escape stops it; nothing is saved on the server. The occasion fields are kept in
       this browser tab until a briefing is downloaded.</li>
-    <li><strong>File</strong>: <code>briefing-&lt;country&gt;-&lt;date of the occasion&gt;-&lt;occasion&gt;.docx</code>, styled like the
+    <li><strong>File</strong>: <code>briefing-&lt;country&gt;-&lt;date of the occasion, or today&gt;-&lt;occasion&gt;.docx</code>, styled like the
       other Word exports.</li>
     <li><strong>Cost</strong>: the AI parts are one model call (a few cents); untick <em>Include AI parts</em> for a document with the
       header, a scene setter from the fields and the data annexes only.</li>
@@ -4767,7 +4768,7 @@ async function callBriefing(payload, signal) {
     body = await res.json().catch(() => ({}));
   } catch (e) {
     if (signal.aborted) throw e;
-    throw new Error(e?.name === "AbortError" ? "The AI summary took too long." : "The AI service could not be reached.");
+    throw new Error(e?.name === "AbortError" ? "The AI parts took too long." : "The AI service could not be reached.");
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", abort);
@@ -4789,7 +4790,7 @@ async function callBriefing(payload, signal) {
       unverified: strs(body.unverified),
     };
   }
-  if (res.status === 413) throw new Error("The figures were too large for the AI summary.");
+  if (res.status === 413) throw new Error("The figures were too large for the AI parts.");
   throw new Error(proxyMessage(res.status, body).replace("analysis service", "AI service"));
 }
 
@@ -4832,7 +4833,7 @@ function briefingFormHtml(country) {
   const err = (name) => `<span class="field-error note-error" id="briefing-err-${name}" hidden></span>`;
   const text = (name, label, placeholder, required = false, cls = "field") => `<label class="${cls}"><span>${esc(label)}${required ? " *" : ""}</span>`
     + `<input type="text" name="${name}" maxlength="${B.OCCASION_MAX[name]}" value="${esc(o[name] || "")}" placeholder="${esc(placeholder)}"`
-    + `${required ? " required" : ""} aria-describedby="briefing-err-${name}">${err(name)}</label>`;
+    + `${required ? " required" : ""}>${err(name)}</label>`;
   return `<form id="briefing-form" class="info-inner" novalidate>`
     + `<div class="info-head"><div class="title-row"><h2 id="briefing-title">Briefing</h2>${infoButton("briefing", "About the briefing")}</div></div>`
     + `<div class="info-body briefing-body">`
@@ -4841,11 +4842,11 @@ function briefingFormHtml(country) {
     + `<fieldset class="briefing-occasion"><legend>Occasion</legend><div class="briefing-fields">`
     + text("recipient", "Briefing for", "Director, DG REFORM", true)
     + text("title", "Occasion", "Meeting with the Minister of Finance", true)
-    + `<label class="field field-half"><span>Date</span><input type="date" name="date" value="${esc(o.date || "")}" aria-describedby="briefing-err-date">${err("date")}</label>`
+    + `<label class="field field-half"><span>Date</span><input type="date" name="date" value="${esc(o.date || "")}">${err("date")}</label>`
     + `<label class="field field-half"><span>Format</span><select name="format">${options(B.OCCASION_FORMATS, o.format || "other", null)}</select></label>`
     + text("place", "Place", "Vilnius")
     + `<label class="field"><span>Context (optional)</span><textarea name="context" rows="5" maxlength="${B.OCCASION_MAX.context}" `
-    + `placeholder="Paste the invitation, agenda, participants or announced questions" aria-describedby="briefing-err-context">${esc(o.context || "")}</textarea>${err("context")}</label>`
+    + `placeholder="Paste the invitation, agenda, participants or announced questions">${esc(o.context || "")}</textarea>${err("context")}</label>`
     + `</div></fieldset>`
     + `<div class="briefing-fields">${selectField("country", "Country", countries, country, null)}`
     + `${yearField("from", "From year", d.from)}${yearField("to", "To year", d.to)}`
@@ -4968,7 +4969,7 @@ async function generateBriefing() {
       briefingStatus("Writing the scene setter and speaking points (AI)… about 20 to 40 seconds.");
       try {
         const facts = B.briefingFacts(model);
-        if (JSON.stringify(facts).length > B.FACTS_MAX) throw new Error("The figures were too large for the AI summary.");
+        if (JSON.stringify(facts).length > B.FACTS_MAX) throw new Error("The figures were too large for the AI parts.");
         ({ ai, unverified } = await callBriefing({ country, period: { from, to }, topic: topic ? areaLabel(topic) : null, facts, occasion }, signal));
       } catch (e) {
         if (signal.aborted) throw e;
@@ -4986,7 +4987,7 @@ async function generateBriefing() {
     storageSet(BRIEFING_OCCASION_KEY, "");
     briefingStep(null);
     if (withAi && !ai) briefingStatus(`Briefing downloaded without the AI parts: ${aiError}`, { error: true });
-    else if (unverified.length) briefingStatus(`Briefing downloaded. ${unverified.length} AI text${unverified.length === 1 ? " holds" : "s hold"} a figure not found in the data (marked ⚠): check ${unverified.length === 1 ? "it" : "them"}.`);
+    else if (unverified.length) briefingStatus(`Briefing downloaded. Some AI texts hold a figure not found in the data (marked ⚠): check them.`);
     else briefingStatus("Briefing downloaded.");
   } catch (e) {
     if (epoch !== aiEpoch) return;

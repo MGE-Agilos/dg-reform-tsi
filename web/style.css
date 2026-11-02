@@ -621,7 +621,8 @@ div.title-row:has(> h2) { margin-bottom: 12px; }
 .briefing-occasion { border: 1px solid var(--border); border-radius: var(--radius); padding: 6px 12px 2px; margin: 10px 0 0; min-width: 0; }
 .briefing-occasion legend { font-weight: 600; padding: 0 4px; }
 .briefing-fields textarea { width: 100%; resize: vertical; font: inherit; }
-.field-error { font-size: 0.8rem; }
+.field > span.field-error { font-size: 0.8rem; font-weight: 400; color: var(--high); }
+.briefing-fields [aria-invalid="true"] { border-color: var(--high); }
 .briefing-ai-note { margin-top: 2px !important; }
 .briefing-steps { list-style: none; padding: 0 !important; margin: 12px 0 4px !important; display: grid; gap: 6px; }
 .briefing-steps li { position: relative; padding-left: 26px; color: var(--muted); margin: 0 !important; }

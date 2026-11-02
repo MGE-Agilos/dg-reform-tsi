@@ -827,7 +827,8 @@ export function buildBriefingDocument(D, { model: m, occasion, ai = null, unveri
     "Project–CSR links: assessed by an AI model from the project text, one CSR sub-part at a time (direct or partial); projects without a detail page are not linked yet.",
     "Impact analyses: AI-generated (Claude, Anthropic, with web search); latest analysis per project.",
     ...(m.related?.length ? ["Related past projects (latest recommendations): suggested by an AI model for each 2026 Commission recommendation (same country or other countries, high or medium relevance, with a rationale); leads, not assessed links."] : []),
-    "AI parts (scene setter, purpose, role, speaking points, defensives, background): written by Claude (Anthropic) from the occasion details given by the user and the figures of this document, without web search; general policy framing without figures may be added; texts holding a figure not found in the data are flagged ⚠. Verify before use.",
+    ai ? "AI parts (scene setter, purpose, role, speaking points, defensives, background): written by Claude (Anthropic) from the occasion details given by the user and the figures of this document, without web search; general policy framing without figures may be added; texts holding a figure not found in the data are flagged ⚠. Verify before use."
+      : `AI parts: not generated (${aiSkipped ? "not requested" : "AI service unavailable"}).`,
     ...(m.topicMatch ? [`Policy area filter: project policy area "${m.topicLabel}"; recommendations matched through the corresponding ECFIN labels (${m.topicMatch.labels.join("; ") || "none"}), through a supporting project of that area, or, when not yet classified, through key words of their text.`] : []),
   ]) children.push(bullet([new D.TextRun({ text: t, size: 19 })]));
 
