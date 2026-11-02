@@ -4678,13 +4678,15 @@ async function renderOverview(kind, p, seq) {
   ovSaveHash(kind);
 }
 
-// ---------- country briefing (Word document: data of one country and period, optional AI summary) ----------
+// ---------- briefing for an occasion (Word document: scene setter, speaking points by AI, data of one country in annexes) ----------
 
 const BRIEFING_PAGE = 1000; // PostgREST max rows per request
 const BRIEFING_IN = 100; // ids per in.() filter (URL length)
 const BRIEFING_AI_TIMEOUT_MS = 90000; // one model call without tools (the function allows 60 s)
 const BRIEFING_PROJECT_COLS = "project_id,title,programme,year,countries,policy_area,results,deliverables,url,detail_page";
-const BRIEFING_STEPS = [["data", "Collecting data…"], ["ai", "Writing the summary (AI)…"], ["doc", "Building the document…"]];
+const BRIEFING_STEPS = [["data", "Collecting data…"], ["ai", "Writing the scene setter and speaking points (AI)…"], ["doc", "Building the document…"]];
+const BRIEFING_OCCASION_KEY = "tsi-briefing-occasion"; // occasion fields kept (sessionStorage) until a briefing is downloaded
+const OCCASION_FIELDS = ["recipient", "title", "date", "place", "format", "context"];
 let briefingRun = null; // { controller } while a briefing is being generated
 let briefingOpener = null;
 
@@ -4743,7 +4745,7 @@ async function fetchBriefingData(country, from, to, signal) {
   return { projects, linked, docs, csrs, impacts, anomalies, related };
 }
 
-/** POST {service: "briefing", ...} to tsi-assistant; returns { key_messages, comments } or throws a readable Error. */
+/** POST {service: "briefing", ...} to tsi-assistant; returns { ai, unverified } or throws a readable Error. */
 async function callBriefing(payload, signal) {
   const { data } = await sb.auth.getSession();
   const token = data?.session?.access_token;
@@ -4770,10 +4772,21 @@ async function callBriefing(payload, signal) {
     signal.removeEventListener("abort", abort);
   }
   const b = body?.briefing;
-  if (res.ok && b && Array.isArray(b.key_messages)) {
-    const text = (v) => (typeof v === "string" ? v : "");
-    return { key_messages: b.key_messages.filter((x) => typeof x === "string" && x.trim()).slice(0, 7),
-      comments: Object.fromEntries(["figures", "csrs", "lineage", "results", "gaps"].map((k) => [k, text(b.comments?.[k])])) };
+  if (res.ok && b && typeof b.scene_setter === "string" && b.scene_setter.trim() && Array.isArray(b.speaking_points)) {
+    const list = (v) => (Array.isArray(v) ? v : []);
+    const str = (v) => (typeof v === "string" ? v : "");
+    const strs = (v) => list(v).filter((x) => typeof x === "string" && x.trim());
+    return {
+      ai: {
+        scene_setter: b.scene_setter, purpose: strs(b.purpose),
+        role: { summary: str(b.role?.summary), participants: list(b.role?.participants).filter((p) => p && typeof p.name === "string" && p.name)
+          .map((p) => ({ name: p.name, function: str(p.function) })) },
+        speaking_points: list(b.speaking_points).filter((s) => s && strs(s.points).length).map((s) => ({ question: str(s.question), points: strs(s.points) })),
+        defensives: list(b.defensives).filter((x) => x && typeof x.question === "string" && typeof x.answer === "string"),
+        background: str(b.background),
+      },
+      unverified: strs(body.unverified),
+    };
   }
   if (res.status === 413) throw new Error("The figures were too large for the AI summary.");
   throw new Error(proxyMessage(res.status, body).replace("analysis service", "AI service"));
@@ -4784,20 +4797,61 @@ function briefingDefaults() {
   return { from: y - 5, to: y };
 }
 
+function briefingSavedOccasion() {
+  try {
+    const o = JSON.parse(storageGet(BRIEFING_OCCASION_KEY) || "{}");
+    return o && typeof o === "object" ? o : {};
+  } catch {
+    return {};
+  }
+}
+
+function briefingFormOccasion(form) {
+  return B.cleanOccasion(Object.fromEntries(OCCASION_FIELDS.map((k) => [k, form.elements[k].value])));
+}
+
+/** Shows each field's message next to it (aria-invalid on the field); {} clears them. */
+function briefingFieldErrors(errors) {
+  const form = $("briefing-form");
+  for (const name of OCCASION_FIELDS) {
+    const el = $(`briefing-err-${name}`);
+    const input = form?.elements[name];
+    if (!el || !input) continue;
+    el.textContent = errors[name] || "";
+    el.hidden = !errors[name];
+    if (errors[name]) input.setAttribute("aria-invalid", "true"); else input.removeAttribute("aria-invalid");
+  }
+}
+
 function briefingFormHtml(country) {
   const d = briefingDefaults();
+  const o = briefingSavedOccasion();
   const countries = Object.fromEntries(Object.entries(COUNTRIES).sort((a, b) => a[1].localeCompare(b[1])).map(([code, name]) => [code, `${name} (${code})`]));
   const steps = BRIEFING_STEPS.map(([k, label]) => `<li data-step="${k}">${esc(label)}</li>`).join("");
+  const err = (name) => `<span class="field-error note-error" id="briefing-err-${name}" hidden></span>`;
+  const text = (name, label, placeholder, required = false, cls = "field") => `<label class="${cls}"><span>${esc(label)}${required ? " *" : ""}</span>`
+    + `<input type="text" name="${name}" maxlength="${B.OCCASION_MAX[name]}" value="${esc(o[name] || "")}" placeholder="${esc(placeholder)}"`
+    + `${required ? " required" : ""} aria-describedby="briefing-err-${name}">${err(name)}</label>`;
   return `<form id="briefing-form" class="info-inner" novalidate>`
-    + `<div class="info-head"><div class="title-row"><h2 id="briefing-title">Country briefing</h2>${infoButton("briefing", "About the country briefing")}</div></div>`
+    + `<div class="info-head"><div class="title-row"><h2 id="briefing-title">Briefing</h2>${infoButton("briefing", "About the briefing")}</div></div>`
     + `<div class="info-body briefing-body">`
-    + `<p class="muted" id="briefing-intro">A Word document on one country: key figures, country-specific recommendations, lineage, `
-    + `results and impact, gaps and data quality, with an optional AI summary.</p>`
+    + `<p class="muted" id="briefing-intro">A Word document to prepare an occasion with one country (a meeting, a panel, a mission…): `
+    + `scene setter, purpose, role, speaking points and defensives written by AI, with the country's data in annexes.</p>`
+    + `<fieldset class="briefing-occasion"><legend>Occasion</legend><div class="briefing-fields">`
+    + text("recipient", "Briefing for", "Director, DG REFORM", true)
+    + text("title", "Occasion", "Meeting with the Minister of Finance", true)
+    + `<label class="field field-half"><span>Date</span><input type="date" name="date" value="${esc(o.date || "")}" aria-describedby="briefing-err-date">${err("date")}</label>`
+    + `<label class="field field-half"><span>Format</span><select name="format">${options(B.OCCASION_FORMATS, o.format || "other", null)}</select></label>`
+    + text("place", "Place", "Vilnius")
+    + `<label class="field"><span>Context (optional)</span><textarea name="context" rows="5" maxlength="${B.OCCASION_MAX.context}" `
+    + `placeholder="Paste the invitation, agenda, participants or announced questions" aria-describedby="briefing-err-context">${esc(o.context || "")}</textarea>${err("context")}</label>`
+    + `</div></fieldset>`
     + `<div class="briefing-fields">${selectField("country", "Country", countries, country, null)}`
     + `${yearField("from", "From year", d.from)}${yearField("to", "To year", d.to)}`
     + `${selectField("topic", "Policy area (optional)", POLICY_AREAS, "", "All policy areas")}</div>`
-    + `${checkField("ai", "Include AI summary", true)}`
-    + `<p class="muted small briefing-ai-note">One call to Claude (Anthropic), written only from the figures of the document: about 10 to 30 seconds, with a small cost. AI-generated parts are marked in the document.</p>`
+    + `${checkField("ai", "Include AI parts (scene setter, speaking points…)", true)}`
+    + `<p class="muted small briefing-ai-note">One call to Claude (Anthropic), written from the occasion you describe and the country's data: `
+    + `about 20 to 40 seconds, with a small cost. AI-generated parts are marked; figures not found in the data are flagged ⚠.</p>`
     + `<ol class="briefing-steps" id="briefing-steps" hidden>${steps}</ol>`
     + `<p id="briefing-status" class="briefing-status" role="status" aria-live="polite"></p></div>`
     + `<div class="briefing-actions"><button type="button" class="btn btn-secondary" id="briefing-cancel">Close</button>`
@@ -4828,7 +4882,7 @@ function briefingStep(key) {
 function briefingBusy(busy) {
   const form = $("briefing-form");
   if (!form) return;
-  for (const el of form.querySelectorAll("select, input")) el.disabled = busy;
+  for (const el of form.querySelectorAll("select, input, textarea")) el.disabled = busy;
   $("briefing-generate").disabled = busy;
   $("briefing-cancel").textContent = busy ? "Cancel" : "Close";
 }
@@ -4842,9 +4896,11 @@ function openBriefing(country, opener) {
   dialog.innerHTML = briefingFormHtml(pick(country, COUNTRIES) || "");
   briefingOpener = opener || null;
   $("briefing-form").addEventListener("submit", (e) => { e.preventDefault(); generateBriefing(); });
+  const form = $("briefing-form");
+  form.addEventListener("input", () => storageSet(BRIEFING_OCCASION_KEY, JSON.stringify(briefingFormOccasion(form))));
   $("briefing-cancel").addEventListener("click", () => (briefingRun ? cancelBriefing() : dialog.close()));
   if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.setAttribute("open", "");
-  $("briefing-form").elements.country.focus();
+  $("briefing-form").elements.recipient.focus();
 }
 
 function cancelBriefing() {
@@ -4876,6 +4932,14 @@ async function generateBriefing() {
   let to = parseInt(form.elements.to.value, 10);
   const topic = pick(form.elements.topic.value, POLICY_AREAS);
   const withAi = form.elements.ai.checked;
+  const occasion = briefingFormOccasion(form);
+  const errors = B.occasionErrors(occasion);
+  briefingFieldErrors(errors);
+  const invalid = Object.keys(errors)[0];
+  if (invalid) {
+    form.elements[invalid].focus();
+    return briefingStatus("Check the occasion fields.", { error: true });
+  }
   if (!country) return briefingStatus("Choose a country.", { error: true });
   if (!(from >= 2010 && from <= 2100) || !(to >= 2010 && to <= 2100)) return briefingStatus("Enter the years of the period (for example 2021 and 2026).", { error: true });
   if (from > to) [from, to] = [to, from];
@@ -4897,13 +4961,14 @@ async function generateBriefing() {
     if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
     const model = B.briefingModel(raw, { country, countryName: countryName(country), from, to, topic, topicLabel: areaLabel(topic), areaLabel: ovPaName, date: new Date() });
     let ai = null;
+    let unverified = [];
     if (withAi) {
       briefingStep("ai");
-      briefingStatus("Writing the summary (AI)… about 10 to 30 seconds.");
+      briefingStatus("Writing the scene setter and speaking points (AI)… about 20 to 40 seconds.");
       try {
         const facts = B.briefingFacts(model);
         if (JSON.stringify(facts).length > B.FACTS_MAX) throw new Error("The figures were too large for the AI summary.");
-        ai = await callBriefing({ country, period: { from, to }, topic: topic ? areaLabel(topic) : null, facts }, signal);
+        ({ ai, unverified } = await callBriefing({ country, period: { from, to }, topic: topic ? areaLabel(topic) : null, facts, occasion }, signal));
       } catch (e) {
         if (signal.aborted) throw e;
         aiError = e?.message || String(e);
@@ -4911,14 +4976,17 @@ async function generateBriefing() {
     }
     briefingStep("doc");
     briefingStatus("Building the document…");
-    const doc = lib.W.buildBriefingDocument(lib.D, { model, ai, aiError, aiSkipped: !withAi, email: currentEmail, date: model.date,
+    const doc = lib.W.buildBriefingDocument(lib.D, { model, occasion, ai, unverified, aiError, aiSkipped: !withAi, email: currentEmail, date: model.date,
       labels: { anomaly: (t) => ANOMALY_TYPES[t] || t } });
     const blob = await lib.D.Packer.toBlob(doc);
     if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
     if (epoch !== aiEpoch) return;
-    saveBlob(B.briefingFileName(country, from, to, topic), blob);
+    saveBlob(B.briefingFileName(country, occasion, model.date), blob);
+    storageSet(BRIEFING_OCCASION_KEY, "");
     briefingStep(null);
-    briefingStatus(withAi && !ai ? `Briefing downloaded without the AI summary: ${aiError}` : "Briefing downloaded.", { error: withAi && !ai });
+    if (withAi && !ai) briefingStatus(`Briefing downloaded without the AI parts: ${aiError}`, { error: true });
+    else if (unverified.length) briefingStatus(`Briefing downloaded. ${unverified.length} AI text${unverified.length === 1 ? " holds" : "s hold"} a figure not found in the data (marked ⚠): check ${unverified.length === 1 ? "it" : "them"}.`);
+    else briefingStatus("Briefing downloaded.");
   } catch (e) {
     if (epoch !== aiEpoch) return;
     briefingStep(null);
@@ -4932,7 +5000,7 @@ async function generateBriefing() {
 
 function briefingButton(country) {
   return Object.hasOwn(COUNTRIES, country)
-    ? `<button type="button" class="btn btn-secondary" data-briefing="${esc(country)}" aria-haspopup="dialog">Country briefing</button>` : "";
+    ? `<button type="button" class="btn btn-secondary" data-briefing="${esc(country)}" aria-haspopup="dialog">Prepare a briefing</button>` : "";
 }
 
 // ---------- usage tracking (public.page_views, migration 007; logic in tracking.js) ----------
