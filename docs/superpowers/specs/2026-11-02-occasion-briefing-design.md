@@ -81,8 +81,10 @@ background:      string, 3–6 sentences
 ### Figure check
 
 After parsing, every number in the response text (integers, decimals, percentages, years) must appear in
-`JSON.stringify(facts)` or in the occasion fields (including the year of `date`), or be the rounded share of two
-counts present in FACTS. Failing strings are returned as `unverified: string[]` (the sentences or bullets that hold
+`JSON.stringify(facts)`, the period or the occasion fields (including the year of `date`). A number followed by "%"
+or "per cent" may also be the rounded share of two numeric values of FACTS (integers, years 1900-2100 excluded): a
+share alone is never accepted as a bare count. Common EU tokens (EU-27, COVID-19, Q1-Q4, G7, G20) are ignored. The
+pasted context cannot close its own block (runs of three or more < or > are neutralised). Failing strings are returned as `unverified: string[]` (the sentences or bullets that hold
 them); the response is still returned. Reply: `{ briefing, unverified, saved: false }`.
 
 ### Parsing
