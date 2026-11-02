@@ -2412,9 +2412,9 @@ const INFO = {
       <li><strong>Header</strong>: "Briefing for" the recipient, the occasion, the place and the date.</li>
       <li><strong>Scene setter</strong>: what, when, where, who organises it and why it matters (AI; without AI, one sentence from the fields).</li>
       <li><strong>Purpose</strong> and <strong>Role</strong>: objectives, what the recipient does, the participants named in the pasted context (AI).</li>
-      <li><strong>Speaking points</strong>: in the first person, one block per question announced in the context, in that order (AI).</li>
-      <li><strong>Defensives</strong>: sensitive questions visible in the data (weak assessments, recommendations without support, anomalies) with a cautious answer (AI).</li>
-      <li><strong>Background</strong>: the Commission's support to the country (AI) and key figures (from the data).</li>
+      <li><strong>Speaking points</strong>: what you say to the counterpart, in the first person, one block per question announced in the context, in that order: a key message, then a few supporting facts (AI).</li>
+      <li><strong>Defensives</strong>: difficult policy questions the counterpart may ask (weak assessments, recommendations without support, future priorities) with a cautious answer (AI).</li>
+      <li><strong>Background</strong>: the Commission's support to the country and the relationship you describe in the dialog (AI), key figures (from the data) and <em>Notes for the reader</em>: the caveats on the figures, for you only, never in the speaking points (AI).</li>
       <li><strong>Annexes A to G</strong>: key figures, country-specific recommendations, lineage, results and impact, gaps and related
         past projects, data quality, sources and method.</li></ol>
       <p>Figures in the AI parts must come from the data or the occasion: a text holding another figure is flagged ⚠ in the document.
@@ -2690,7 +2690,9 @@ const GUIDE = [
       header, a scene setter from the fields and the data annexes only.</li>
     <li><strong>Limits</strong>: the AI writes figures only from the data and names, dates and questions only from the occasion; a text holding
       a figure found in neither is flagged ⚠. It may add general policy framing without figures. Participants are listed only when the
-      pasted context names them. The data keep their usual caveats (AI-assessed links, projects known only by their title not linked).</li></ul>
+      pasted context names them. The speaking points and defensives never mention how the data were produced: those caveats (AI-assessed
+      links, projects known only by their title not linked, indicative impact analyses) go to <em>Notes for the reader</em>. The optional
+      <em>Background</em> field gives the AI what the data do not hold (grants, steering committees, previous meetings).</li></ul>
     ${infoHtml("briefing")}` },
   { id: "reporting", title: "Excel reporting", html: () => `
     <p><em>Export to Excel</em>, on the Projects tab and on <em>Links to review</em>, downloads a workbook built in your browser
@@ -4688,7 +4690,7 @@ const BRIEFING_AI_TIMEOUT_MS = 90000; // one model call without tools (the funct
 const BRIEFING_PROJECT_COLS = "project_id,title,programme,year,countries,policy_area,results,deliverables,url,detail_page";
 const BRIEFING_STEPS = [["data", "Collecting data…"], ["ai", "Writing the scene setter and speaking points (AI)…"], ["doc", "Building the document…"]];
 const BRIEFING_OCCASION_KEY = "tsi-briefing-occasion"; // occasion fields kept (sessionStorage) until a briefing is downloaded
-const OCCASION_FIELDS = ["recipient", "title", "date", "place", "format", "context"];
+const OCCASION_FIELDS = ["recipient", "title", "date", "place", "format", "context", "background"];
 let briefingRun = null; // { controller } while a briefing is being generated
 let briefingOpener = null;
 
@@ -4785,7 +4787,7 @@ async function callBriefing(payload, signal) {
           .map((p) => ({ name: p.name, function: str(p.function) })) },
         speaking_points: list(b.speaking_points).filter((s) => s && strs(s.points).length).map((s) => ({ question: str(s.question), points: strs(s.points) })),
         defensives: list(b.defensives).filter((x) => x && typeof x.question === "string" && typeof x.answer === "string"),
-        background: str(b.background),
+        background: str(b.background), reader_notes: strs(b.reader_notes),
       },
       unverified: strs(body.unverified),
     };
@@ -4847,6 +4849,8 @@ function briefingFormHtml(country) {
     + text("place", "Place", "Vilnius")
     + `<label class="field"><span>Context (optional)</span><textarea name="context" rows="5" maxlength="${B.OCCASION_MAX.context}" `
     + `placeholder="Paste the invitation, agenda, participants or announced questions">${esc(o.context || "")}</textarea>${err("context")}</label>`
+    + `<label class="field"><span>Background (optional)</span><textarea name="background" rows="3" maxlength="${B.OCCASION_MAX.background}" `
+    + `placeholder="What you know of the relationship: grants, steering committees, previous meetings or visits">${esc(o.background || "")}</textarea>${err("background")}</label>`
     + `</div></fieldset>`
     + `<div class="briefing-fields">${selectField("country", "Country", countries, country, null)}`
     + `${yearField("from", "From year", d.from)}${yearField("to", "To year", d.to)}`

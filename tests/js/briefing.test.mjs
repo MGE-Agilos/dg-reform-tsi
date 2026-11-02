@@ -4,19 +4,19 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { OCCASION_FORMATS, OCCASION_MAX, cleanOccasion, occasionErrors, briefingFileName, keyFigures } from "../../web/briefing.js";
 
-const VALID = { recipient: "Director X", title: "Meeting with the Minister of Finance", date: "2026-11-12", place: "Vilnius", format: "bilateral", context: "" };
+const VALID = { recipient: "Director X", title: "Meeting with the Minister of Finance", date: "2026-11-12", place: "Vilnius", format: "bilateral", context: "", background: "" };
 
 test("cleanOccasion: single-line fields squeezed, context keeps its lines, unknown format -> other", () => {
-  assert.deepEqual(cleanOccasion({ recipient: "  Director   X ", title: "A\nB", date: " 2026-11-12 ", place: null, format: "party", context: " a\r\nb " }),
-    { recipient: "Director X", title: "A B", date: "2026-11-12", place: "", format: "other", context: "a\nb" });
+  assert.deepEqual(cleanOccasion({ recipient: "  Director   X ", title: "A\nB", date: " 2026-11-12 ", place: null, format: "party", context: " a\r\nb ", background: " Grant\r\nsince 2024 " }),
+    { recipient: "Director X", title: "A B", date: "2026-11-12", place: "", format: "other", context: "a\nb", background: "Grant\nsince 2024" });
   assert.deepEqual(Object.keys(OCCASION_FORMATS), ["bilateral", "panel", "speech", "mission", "conference", "other"]);
 });
 
 test("occasionErrors: required fields, lengths and date, same rules as the edge function", () => {
   assert.deepEqual(occasionErrors(VALID), {});
   const e = occasionErrors({ ...VALID, recipient: "", title: "x".repeat(OCCASION_MAX.title + 1), date: "2026-02-30",
-    place: "x".repeat(121), context: "x".repeat(8001) });
-  assert.deepEqual(Object.keys(e), ["recipient", "title", "place", "date", "context"]);
+    place: "x".repeat(121), context: "x".repeat(8001), background: "x".repeat(2001) });
+  assert.deepEqual(Object.keys(e), ["recipient", "title", "place", "date", "context", "background"]);
   assert.deepEqual(occasionErrors({ ...VALID, date: "1999-05-01" }), { date: "Enter a valid date (2010 to 2100)." });
 });
 

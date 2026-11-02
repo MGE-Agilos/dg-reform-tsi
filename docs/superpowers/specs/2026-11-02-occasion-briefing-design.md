@@ -168,3 +168,17 @@ the occasion briefing; glossary entry updated.
 
 Several countries or Europe-wide events, saving briefings in the database, editing in the app before export,
 languages other than English.
+
+## Revision after a real run (2026-11-02)
+
+A real Lithuania briefing showed speaking points that read like data notes. Changes:
+
+- Two audiences in the prompt: speaking points and defensive answers are said to the counterpart and never mention AI,
+  the database, link or impact methods, results status, anomalies or data quality. Each block opens with a key message,
+  then supporting bullets with at most two figures. Defensives are policy questions only.
+- New response field `reader_notes` (2-5 bullets): the caveats on the figures, shown under Background as
+  "Notes for the reader", for the recipient only.
+- Participants: `name` is the person's name or, without one, the function; `function` is the organisation.
+- New optional occasion field `background` (≤ 2000 characters): the relationship with the counterpart (grants, steering
+  committees, previous meetings), used for the background; numbers it holds are allowed by the figure check.
+- Document: one "AI-generated section" note per section instead of an "AI ·" label and shading on every line.

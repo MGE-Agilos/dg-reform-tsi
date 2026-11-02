@@ -106,7 +106,7 @@ export function weakAssessment(value) {
 /** Formats of an occasion (value -> label): the same list as the edge function's OCCASION_FORMATS. */
 export const OCCASION_FORMATS = { bilateral: "Bilateral meeting", panel: "Panel discussion", speech: "Speech",
   mission: "Country mission", conference: "Conference", other: "Other" };
-export const OCCASION_MAX = { recipient: 120, title: 200, place: 120, context: 8000 };
+export const OCCASION_MAX = { recipient: 120, title: 200, place: 120, context: 8000, background: 2000 };
 
 /** YYYY-MM-DD, a real day, year 2010-2100 (same rule as the edge function). */
 function validDay(s) {
@@ -121,9 +121,10 @@ const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2,
 /** Form values -> the occasion sent to the AI and used by the document. */
 export function cleanOccasion(raw = {}) {
   const line = (v) => String(v ?? "").replace(/\s+/g, " ").trim();
+  const block = (v) => String(v ?? "").replace(/\r\n?/g, "\n").trim();
   const format = line(raw.format);
   return { recipient: line(raw.recipient), title: line(raw.title), date: line(raw.date), place: line(raw.place),
-    format: Object.hasOwn(OCCASION_FORMATS, format) ? format : "other", context: String(raw.context ?? "").replace(/\r\n?/g, "\n").trim() };
+    format: Object.hasOwn(OCCASION_FORMATS, format) ? format : "other", context: block(raw.context), background: block(raw.background) };
 }
 
 /** Field -> message for an invalid occasion (the edge function checks the same rules); {} when valid. */
@@ -137,6 +138,7 @@ export function occasionErrors(o) {
   if (o.place.length > OCCASION_MAX.place) e.place = max("place");
   if (o.date && !validDay(o.date)) e.date = "Enter a valid date (2010 to 2100).";
   if (o.context.length > OCCASION_MAX.context) e.context = max("context");
+  if (o.background.length > OCCASION_MAX.background) e.background = max("background");
   return e;
 }
 

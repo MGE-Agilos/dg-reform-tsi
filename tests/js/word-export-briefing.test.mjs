@@ -34,7 +34,7 @@ const model = briefingModel({
     csr_parts: [{ part_id: "1.1", policy_areas: [], project_csr_links: [{ project_id: "p1", level: "direct" }] }] }],
 }, { country: "LT", countryName: "Lithuania", from: 2021, to: 2026, topic: "", date: new Date(2026, 10, 2, 10) });
 
-const OCCASION = { recipient: "Director Judit Rozsa", title: "Meeting with the Minister of Finance", date: "2026-11-12", place: "Vilnius", format: "bilateral", context: "" };
+const OCCASION = { recipient: "Director Judit Rozsa", title: "Meeting with the Minister of Finance", date: "2026-11-12", place: "Vilnius", format: "bilateral", context: "", background: "" };
 const AI = {
   scene_setter: "You will meet the Minister of Finance in Vilnius.",
   purpose: ["Take stock of the pension reform support."],
@@ -42,6 +42,7 @@ const AI = {
   speaking_points: [{ question: "How did the TSI help?", points: ["We supported 1 project.", "We supported 17 projects."] }, { question: "", points: ["Reforms need capable administrations."] }],
   defensives: [{ question: "Why so little support?", answer: "Support is demand-driven." }],
   background: "Lithuania had 1 project in the period.",
+  reader_notes: ["Project-CSR links are assessed by AI from the project text."],
 };
 const ORDER = ["Scene setter", "Purpose", "Role", "Speaking points", "Defensives", "Background",
   "Annex A — Key figures", "Annex B — Country-specific recommendations", "Annex C — Lineage: recommendations and supporting projects",
@@ -61,6 +62,11 @@ test("with AI: header table, sections in the Commission order, questions and par
   assert.match(text, /Q: Why so little support\?/);
   assert.match(text, /Projects in the period: 1 \(TSI 1\)/);
   assert.ok(!text.includes("⚠ figure not found")); // the Method annex mentions the ⚠ mark itself
+  assert.ok(!text.includes("AI · ")); // one note per section, no label per line
+  assert.equal(text.split("AI-generated section: verify before use.").length - 1, 6); // scene setter, purpose, role, points, defensives, background
+  const notes = body(doc).findIndex((n) => n.o.heading === "HEADING_2" && textOf(n) === "Notes for the reader");
+  assert.ok(notes > body(doc).findIndex((n) => textOf(n) === "Background"));
+  assert.match(textOf(body(doc)[notes + 2]), /^Project-CSR links are assessed by AI/);
   assert.equal(doc.o.title, "Briefing for Director Judit Rozsa — Meeting with the Minister of Finance");
 });
 

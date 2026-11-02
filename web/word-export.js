@@ -500,10 +500,8 @@ export function buildImpactDocument(D, lexer, { project = {}, report, at, source
 
 // ---------- briefing for an occasion ----------
 
-export const BRIEFING_NOTICE = "Prepared with AI assistance from public European Commission sources; AI-generated parts are marked; verify before use.";
-const AI_FILL = "FFF8DB"; // pale accent: AI-generated paragraphs stand out from the data
-const AI_BORDER = "C9A227";
-const AI_LABEL = "7A5C00";
+export const BRIEFING_NOTICE = "Prepared with AI assistance from public European Commission sources; AI-generated sections are marked; verify before use.";
+const AI_NOTE = "AI-generated section: verify before use.";
 const WEAK = /limited|no progress/i;
 
 function fmtDay(value) {
@@ -514,17 +512,6 @@ function fmtDay(value) {
 function clipText(text, max) {
   const t = String(text ?? "").replace(/\s+/g, " ").trim();
   return t.length > max ? t.slice(0, max - 1).replace(/\s+\S*$/, "") + "…" : t;
-}
-
-/** A paragraph marked as AI-generated (label, shaded box with an accent border); `extra`: runs appended (warnings). */
-function aiPara(D, text, label = "AI", extra = []) {
-  return new D.Paragraph({
-    shading: { type: D.ShadingType.CLEAR, color: "auto", fill: AI_FILL },
-    border: { left: { style: D.BorderStyle.SINGLE, size: 18, color: AI_BORDER, space: 8 } },
-    spacing: { before: 80, after: 160 },
-    indent: { left: 160, right: 160 },
-    children: [new D.TextRun({ text: `${label} · `, bold: true, size: 18, color: AI_LABEL }), new D.TextRun({ text: String(text) }), ...extra],
-  });
 }
 
 function noteLine(D, text, { italics = true } = {}) {
@@ -588,7 +575,7 @@ export function fallbackSceneSetter(o) {
 /** Briefing for an occasion: front part for the reader (scene setter, purpose, role, speaking points, defensives,
  * background), then the country's data in Annexes A–G. Built from briefing.js's model, the occasion (cleanOccasion) and
  * the AI parts (optional).
- * opts: { model, occasion, ai ({ scene_setter, purpose, role, speaking_points, defensives, background } or null),
+ * opts: { model, occasion, ai ({ scene_setter, purpose, role, speaking_points, defensives, background, reader_notes } or null),
  *         unverified (AI texts holding a figure not found in the data), aiError (text), aiSkipped (AI turned off),
  *         email, date, labels: { anomaly(type) -> label } } */
 export function buildBriefingDocument(D, { model: m, occasion, ai = null, unverified = [], aiError = "", aiSkipped = false, email = "", date = new Date(), labels = {} }) {
@@ -600,10 +587,11 @@ export function buildBriefingDocument(D, { model: m, occasion, ai = null, unveri
   const n = (v) => Number(v || 0).toLocaleString("en");
   const share = (a, b) => (b > 0 ? `${Math.round((100 * a) / b)}%` : "—");
   const flagged = new Set(unverified);
-  const warn = (t) => (flagged.has(t) ? [new D.TextRun({ text: "  ⚠ figure not found in the data", bold: true, color: "B42318", size: 18 })] : []);
-  const aiBlock = (t) => aiPara(D, t, "AI", warn(t));
-  const aiBullet = (t, keys = [t]) => bullet([new D.TextRun({ text: "AI · ", bold: true, size: 18, color: AI_LABEL }), new D.TextRun(String(t)), ...warn(keys.find((k) => flagged.has(k)))],
-    { shading: { type: D.ShadingType.CLEAR, color: "auto", fill: AI_FILL }, spacing: { after: 80 } });
+  const warn = (keys) => (keys.some((k) => k && flagged.has(k)) ? [new D.TextRun({ text: "  ⚠ figure not found in the data", bold: true, color: "B42318", size: 18 })] : []);
+  // AI texts are plain (one AI note per section); `keys`: the texts checked server side (a participant: name and function).
+  const para = (t, keys = [t]) => new D.Paragraph({ children: [new D.TextRun(String(t)), ...warn(keys)] });
+  const item = (t, keys = [t]) => bullet([new D.TextRun(String(t)), ...warn(keys)]);
+  const aiNote = () => noteLine(D, AI_NOTE);
   const notGenerated = () => noteLine(D, aiSkipped ? "Not generated (AI summary not requested)."
     : `Not generated (AI summary unavailable${aiError ? `: ${aiError.replace(/\.\s*$/, "")}` : ""}).`);
   const children = [];
@@ -612,7 +600,10 @@ export function buildBriefingDocument(D, { model: m, occasion, ai = null, unveri
     children.push(headingPara(D, 1, [new D.TextRun(title)]));
     if (!ai) children.push(notGenerated());
     else if (!items.length) children.push(noteLine(D, empty));
-    else items.forEach((x, i) => children.push(...render(x, i)));
+    else {
+      children.push(aiNote());
+      items.forEach((x, i) => children.push(...render(x, i)));
+    }
   };
 
   // Header
@@ -632,38 +623,45 @@ export function buildBriefingDocument(D, { model: m, occasion, ai = null, unveri
 
   // Scene setter
   children.push(headingPara(D, 1, [new D.TextRun("Scene setter")]));
-  children.push(ai ? aiBlock(ai.scene_setter) : new D.Paragraph({ children: [new D.TextRun(fallbackSceneSetter(occasion))] }));
+  if (ai) children.push(aiNote(), para(ai.scene_setter));
+  else children.push(new D.Paragraph({ children: [new D.TextRun(fallbackSceneSetter(occasion))] }));
 
-  section("Purpose", ai?.purpose || [], (t) => [aiBullet(t)], "No objective stated.");
+  section("Purpose", ai?.purpose || [], (t) => [item(t)], "No objective stated.");
 
   // Role
   children.push(headingPara(D, 1, [new D.TextRun("Role")]));
   if (!ai) children.push(notGenerated());
+  else if (!ai.role.summary && !ai.role.participants.length) children.push(noteLine(D, "No role stated."));
   else {
-    if (ai.role.summary) children.push(aiBlock(ai.role.summary));
+    children.push(aiNote());
+    if (ai.role.summary) children.push(para(ai.role.summary));
     if (ai.role.participants.length) {
       children.push(new D.Paragraph({ keepNext: true, spacing: { before: 120, after: 60 }, children: [new D.TextRun({ text: "You will be joined by:", bold: true })] }));
-      for (const p of ai.role.participants) children.push(aiBullet(`${p.name}${p.function ? `, ${p.function}` : ""}`, [p.name, p.function]));
+      for (const p of ai.role.participants) children.push(item(`${p.name}${p.function ? `, ${p.function}` : ""}`, [p.name, p.function]));
     }
-    if (!ai.role.summary && !ai.role.participants.length) children.push(noteLine(D, "No role stated."));
   }
 
   section("Speaking points", ai?.speaking_points || [], (s, i) => [
-    headingPara(D, 2, [new D.TextRun(s.question ? `Question ${i + 1}: ${s.question}` : `Points ${i + 1}`), ...warn(s.question)]),
-    ...s.points.map((t) => aiBullet(t)),
+    headingPara(D, 2, [new D.TextRun(s.question ? `Question ${i + 1}: ${s.question}` : `Points ${i + 1}`), ...warn([s.question])]),
+    ...s.points.map((t) => item(t)),
   ], "No speaking point.");
 
   section("Defensives", ai?.defensives || [], (d) => [
-    new D.Paragraph({ keepNext: true, spacing: { before: 120, after: 40 }, children: [new D.TextRun({ text: `Q: ${d.question}`, bold: true }), ...warn(d.question)] }),
-    aiBlock(d.answer),
+    new D.Paragraph({ keepNext: true, spacing: { before: 120, after: 40 }, children: [new D.TextRun({ text: `Q: ${d.question}`, bold: true }), ...warn([d.question])] }),
+    para(d.answer),
   ], "No sensitive point found in the data.");
 
-  // Background
+  // Background: AI text, key figures from the data, then the notes meant for the reader only
   children.push(headingPara(D, 1, [new D.TextRun("Background")]));
-  if (ai?.background) children.push(aiBlock(ai.background));
+  if (ai?.background) children.push(aiNote(), para(ai.background));
   for (const f of keyFigures(m)) children.push(bullet([new D.TextRun({ text: `${f.label}: `, bold: true }), new D.TextRun(f.value)]));
   children.push(noteLine(D, "Details in the annexes: A key figures, B country-specific recommendations, C lineage, D results and impact, "
     + "E gaps and related past projects, F data quality, G sources and method."));
+  if (ai?.reader_notes?.length) {
+    children.push(headingPara(D, 2, [new D.TextRun("Notes for the reader")]));
+    children.push(noteLine(D, "AI-generated, for you only: caveats on the figures above, not to be said to the counterpart."));
+    for (const t of ai.reader_notes) children.push(item(t));
+  }
 
   children.push(new D.Paragraph({ children: [new D.PageBreak()] }));
 
@@ -827,7 +825,7 @@ export function buildBriefingDocument(D, { model: m, occasion, ai = null, unveri
     "Project–CSR links: assessed by an AI model from the project text, one CSR sub-part at a time (direct or partial); projects without a detail page are not linked yet.",
     "Impact analyses: AI-generated (Claude, Anthropic, with web search); latest analysis per project.",
     ...(m.related?.length ? ["Related past projects (latest recommendations): suggested by an AI model for each 2026 Commission recommendation (same country or other countries, high or medium relevance, with a rationale); leads, not assessed links."] : []),
-    ai ? "AI parts (scene setter, purpose, role, speaking points, defensives, background): written by Claude (Anthropic) from the occasion details given by the user and the figures of this document, without web search; general policy framing without figures may be added; texts holding a figure not found in the data are flagged ⚠. Verify before use."
+    ai ? "AI parts (scene setter, purpose, role, speaking points, defensives, background, notes for the reader): written by Claude (Anthropic) from the occasion details and background given by the user and the figures of this document, without web search; general policy framing without figures may be added; texts holding a figure not found in the data are flagged ⚠. Verify before use."
       : `AI parts: not generated (${aiSkipped ? "not requested" : "AI service unavailable"}).`,
     ...(m.topicMatch ? [`Policy area filter: project policy area "${m.topicLabel}"; recommendations matched through the corresponding ECFIN labels (${m.topicMatch.labels.join("; ") || "none"}), through a supporting project of that area, or, when not yet classified, through key words of their text.`] : []),
   ]) children.push(bullet([new D.TextRun({ text: t, size: 19 })]));
