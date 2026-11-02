@@ -38,8 +38,8 @@ New "Occasion" block, above them:
 | Context | textarea | optional, ≤ 8 000 characters; hint "Paste the invitation, agenda, participants or announced questions" |
 
 - Browser validation shows the message next to the field; the generation does not start.
-- The occasion fields are kept in `sessionStorage` (try/catch) until the dialog is closed, so a failed generation
-  does not lose the pasted context.
+- The occasion fields are kept in `sessionStorage` (try/catch) and restored when the dialog is opened again, so a
+  failed generation does not lose the pasted context; they are cleared after a successful download.
 - Labels: dialog title "Briefing", button "Prepare a briefing".
 
 ## 2. AI contract (`supabase/functions/tsi-assistant/index.ts`)
@@ -57,7 +57,7 @@ New "Occasion" block, above them:
 scene_setter:    string, 3–6 sentences
 purpose:         string[], 2–5 bullets
 role:            { summary: string, participants: [{ name, function }] }
-speaking_points: [{ question: string | null, points: string[] (3–6) }]  (2–5 blocks)
+speaking_points: [{ question: string ("" when none), points: string[] (3–6) }]  (2–5 blocks)
 defensives:      [{ question, answer }]  (0–4)
 background:      string, 3–6 sentences
 ```
@@ -69,7 +69,7 @@ background:      string, 3–6 sentences
 - General policy framing is allowed (role of public administration in competitiveness, value of demand-driven
   support…), with no number and no named fact, consistent with EU policy.
 - Speaking points: first person, short, sayable aloud. If the context announces questions, one block per question,
-  in that order, with the question text; otherwise 2–3 blocks with `question: null`.
+  in that order, with the question text; otherwise 2–3 blocks with `question: ""`.
 - Defensives: sensitive points visible in FACTS (limited/no progress assessments, recommendations without support,
   high-severity anomalies), each with a cautious suggested answer. Empty when there are none.
 - Background: Commission technical support to the country, from FACTS.
@@ -131,7 +131,7 @@ The policy-area filter note stays, at the top of Annex A.
 ### File name
 
 `briefing-<ISO>-<occasion date or today, YYYY-MM-DD>-<occasion slug ≤ 60>.docx`
-(e.g. `briefing-LT-2026-11-12-meeting-lithuanian-minister-finance.docx`). `briefingFileName` changes accordingly.
+(e.g. `briefing-LT-2026-11-12-meeting-with-the-lithuanian-minister-of-finance.docx`). `briefingFileName` changes accordingly.
 
 ## 4. Facts (`web/briefing.js`)
 
