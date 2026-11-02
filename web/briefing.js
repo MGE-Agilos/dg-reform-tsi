@@ -143,7 +143,7 @@ export function occasionErrors(o) {
 /** briefing-<ISO>-<occasion day or today>[-<occasion slug>].docx */
 export function briefingFileName(country, occasion = {}, today = new Date()) {
   const day = validDay(String(occasion.date ?? "")) ? occasion.date : isoDay(today);
-  const slug = String(occasion.title ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase()
+  const slug = String(occasion.title ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
     .replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "").slice(0, 60).replace(/-+$/, "");
   return `briefing-${String(country).replace(/[^A-Z]/gi, "").toUpperCase()}-${day}${slug ? `-${slug}` : ""}.docx`;
 }
