@@ -8,6 +8,7 @@ import * as A from "./admin.js";
 import * as T from "./tracking.js";
 import * as PG from "./progress.js";
 import * as S from "./scope.js";
+import * as CM from "./compare.js";
 
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
 const MARKED_JS = "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
@@ -5769,6 +5770,83 @@ async function isTester(session) {
   return testerCache;
 }
 
+// ---------- Compare: one measure across countries x policy areas, or policy areas x years (heatmap) ----------
+
+const COMPARE_MODES = { countries: "Countries × policy areas", years: "Policy areas × years" };
+
+/** One cell of the heatmap: a link to the matching list (projects) or to CSR progress, with its tooltip. */
+function compareCellHtml(m, rowKey, colKey, rowLabel, colLabel, scope, level) {
+  const metric = CM.METRICS[m.metric];
+  const c = m.cell(rowKey, colKey);
+  const bin = CM.heatBin(c, m.max, metric.kind);
+  const display = c.value === null ? "–" : metric.kind === "count" ? fmtN(c.value)
+    : metric.kind === "share" ? `${c.value}%` : `${c.value > 0 ? "+" : ""}${c.value}`;
+  const years = m.mode === "years"
+    ? (colKey === "all" ? { from: scope.from, to: scope.to } : { from: colKey, to: colKey }) : { from: scope.from, to: scope.to };
+  const countries = m.mode === "years" ? scope.countries : [rowKey];
+  const topics = m.mode === "years" ? [rowKey] : (colKey === "all" ? scope.topics : [colKey]);
+  const href = m.metric === "projects" && countries.length <= 1 && topics.length <= 1
+    ? hrefFor("projects", { country: countries[0] || "", area: topics[0] || "", ...years })
+    : hrefFor("progress", { ...S.scopeParams({ countries, topics, ...years }), level: level === "direct" ? "direct" : "" });
+  const details = metric.kind === "count" ? ""
+    : c.n ? `${fmtN(c.rated)} assessed · ${fmtN(c.supported)} supported · ${fmtN(c.progressing)} progressing${c.few ? " · few: not compared" : ""}` : "no assessed recommendation";
+  const cls = `heat-cell ${metric.kind === "diverging" ? `heat-d${bin < 0 ? "n" : "p"}${Math.abs(bin)}` : `heat-b${bin}`}${c.few ? " heat-few" : ""}${colKey === "all" ? " heat-all" : ""}`;
+  return `<td class="${cls}"><a href="${esc(href)}"${tipAttrs({ label: `${rowLabel} · ${colLabel}`, value: `${metric.label}: ${display}`, share: details })}>`
+    + `${esc(display)}</a></td>`;
+}
+
+async function renderCompare(p, seq) {
+  let data;
+  try { data = await fetchProgressData(); } catch (error) {
+    if (stale(seq)) return;
+    return showError(error, "Could not load the data to compare");
+  }
+  if (stale(seq)) return;
+  const thisYear = new Date().getFullYear();
+  const scope = S.parseScope(p, { topics: Object.keys(POLICY_AREAS) });
+  scope.from = scope.from ?? thisYear - 5;
+  scope.to = scope.to ?? thisYear;
+  const metric = pick(p.get("metric") || "", CM.METRICS) || "projects";
+  const mode = pick(p.get("mode") || "", COMPARE_MODES) || "countries";
+  const level = p.get("level") === "direct" ? "direct" : "all";
+  const m = CM.compareMatrix(data, { ...scope, metric, mode, level, topicKeys: Object.keys(POLICY_AREAS), labelsOf: B.TOPIC_CSR_AREAS });
+  const metricMap = Object.fromEntries(Object.entries(CM.METRICS).map(([k, v]) => [k, v.label]));
+  const form = filterForm("compare",
+    scopePickerHtml({ countries: scope.countries, topics: scope.topics })
+    + yearField("from", "From year", scope.from) + yearField("to", "To year", scope.to)
+    + selectField("metric", "Measure", metricMap, metric, null)
+    + selectField("mode", "Rows and columns", COMPARE_MODES, mode, null)
+    + selectField("level", "Project links", PROGRESS_LEVELS, level, null));
+  const def = CM.METRICS[metric];
+  const rowLabel = (k) => (mode === "years" ? areaLabel(k) : countryName(k));
+  const colLabel = (k) => (k === "all" ? (mode === "years" ? "All years" : (scope.topics.length ? "Selected areas" : "All areas")) : mode === "years" ? String(k) : areaLabel(k));
+  const head = `<tr><th scope="col">${mode === "years" ? "Policy area" : "Country"}</th>`
+    + m.cols.map((c) => `<th scope="col" class="${c.key === "all" ? "heat-all" : ""}">${esc(colLabel(c.key))}</th>`).join("") + `</tr>`;
+  const rowHref = (k) => (mode === "years" ? hrefFor("compare", { ...S.scopeParams({ ...scope, topics: [k] }), metric, mode: "countries", level: level === "direct" ? "direct" : "" })
+    : hrefFor("lineage", { view: "country", country: k }));
+  const bodyRows = m.rows.map((r) => `<tr><th scope="row"><a href="${esc(rowHref(r.key))}">${esc(rowLabel(r.key))}</a></th>`
+    + m.cols.map((c) => compareCellHtml(m, r.key, c.key, rowLabel(r.key), colLabel(c.key), scope, level)).join("") + `</tr>`).join("");
+  const steps = def.kind === "diverging"
+    ? [["heat-dn2", "much lower"], ["heat-dn1", "lower"], ["heat-dp0", "about the same (under 5 pts)"], ["heat-dp1", "higher"], ["heat-dp2", "much higher"]]
+    : [1, 2, 3, 4, 5].map((b) => [`heat-b${b}`, b === 1 ? "low" : b === 5 ? `high (max ${def.kind === "share" ? `${m.max}%` : fmtN(m.max)})` : ""]);
+  const legendHtml = `<ul class="heat-legend" aria-label="Colour scale">${steps.map(([cls, label]) => `<li><span class="heat-swatch ${cls}" aria-hidden="true"></span>${esc(label)}</li>`).join("")}`
+    + (def.kind === "count" ? "" : `<li><span class="heat-swatch heat-b0 heat-few" aria-hidden="true"></span>fewer than ${CM.FEW_CELL} assessed recommendations</li>`) + `</ul>`;
+  const label = S.scopeLabel(scope, { names: COUNTRIES, areas: POLICY_AREAS });
+  const briefingScope = { ...scope, countries: scope.countries.length ? scope.countries : m.rows.length && mode === "countries" ? m.rows.map((r) => r.key) : [] };
+  view(`<div class="title-row title-row-actions">${heading("Compare")}<span class="title-actions">`
+    + `<button type="button" class="btn btn-secondary" data-briefing-scope="${esc(JSON.stringify(briefingScope))}" aria-haspopup="dialog">Prepare a briefing</button></span></div>`
+    + `<p class="muted">Cross the data: choose countries (or a group) and policy areas, then a measure. Each cell opens the matching projects or the `
+    + `CSR progress of that country and area; <em>Prepare a briefing</em> turns the selection into a comparison briefing.</p>`
+    + form
+    + `<section class="card heat-card" id="heat"><h3 class="viz-title">${esc(def.label)} · ${esc(label || "all countries")} · ${scope.from}–${scope.to}</h3>`
+    + `<p class="viz-sub">${esc(def.sub)} Recommendations match a policy area through its ECFIN labels; links are AI-assessed.</p>${legendHtml}`
+    + (m.rows.length ? `<div class="heat-wrap"><table class="heat heat-${def.kind}"><caption class="sr-only">${esc(def.label)}</caption><thead>${head}</thead><tbody>${bodyRows}</tbody></table></div>`
+      : `<p class="empty">No data for this selection.</p>`)
+    + `<div id="dash-tip" class="viz-tip" role="tooltip" hidden></div></section>`);
+  bindFilters();
+  bindDashTips($("heat"));
+}
+
 // ---------- CSR progress ----------
 // Implementation of the recommendations (Commission assessment, ECFIN database): supported by a project or not.
 
@@ -5776,7 +5854,7 @@ const PROGRESS_TABLES = [ // [table, columns, stable order for the pagination]
   ["csrs", "csr_id,country,year,assessment,assessment_year,policy_areas", ["csr_id"]],
   ["csr_parts", "part_id,csr_id", ["part_id"]],
   ["project_csr_links", "project_id,part_id,level", ["project_id", "part_id"]],
-  ["projects", "project_id,year", ["project_id"]],
+  ["projects", "project_id,year,countries,policy_area", ["project_id"]], // countries and area: the Compare page
 ];
 const PROGRESS_LEVELS = { all: "All links", direct: "Direct links only" };
 let progressCache = null; // { uid, data } for the session; cleared on sign-out and by the dashboard Refresh
@@ -5924,7 +6002,7 @@ async function route(seq) {
   }
   assistantContext = null;
   const viewKey = ["project", "csr", "csrdoc", "impact"].includes(r) && id ? `${r}/${id}`
-    : (["dashboard", "lineage", "progress", "csrs", "anomalies", "impact", "guide", "reviews"].includes(r) ? r
+    : (["dashboard", "lineage", "progress", "compare", "csrs", "anomalies", "impact", "guide", "reviews"].includes(r) ? r
       : r === "admin" ? (id === "usage" ? "admin/usage" : "admin") : "projects");
   setActiveTab(r);
   trackRoute();
@@ -5936,6 +6014,7 @@ async function route(seq) {
     else if (r === "dashboard") await renderDashboard(seq);
     else if (r === "lineage") await renderLineage(p, seq);
     else if (r === "progress") await renderProgress(p, seq);
+    else if (r === "compare") await renderCompare(p, seq);
     else if (r === "csrs") await renderCsrs(p, seq);
     else if (r === "anomalies") await renderAnomalies(p, seq);
     else if (r === "reviews") await renderReviews(p, seq);

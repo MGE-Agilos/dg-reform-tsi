@@ -52,12 +52,17 @@
   --ov-on-cnode: #ffffff;
   --ov-pa0: #4e79a7; --ov-pa1: #59a14f; --ov-pa2: #9c755f; --ov-pa3: #f28e2b; --ov-pa4: #b07aa1; --ov-pa5: #e15759;
   --ov-pa6: #76b7b2; --ov-pa7: #c9a227; --ov-pa8: #ff9da7; --ov-pa9: #79706e; --ov-pa10: #b3aca8; --ov-pa11: #8cd17d;
+  /* Compare heatmap: ink on each step of the blue ramp (low steps near the surface take the body ink). */
+  --heat-ink-1: #1b1f24; --heat-ink-2: #1b1f24; --heat-ink-3: #ffffff; --heat-ink-4: #ffffff; --heat-ink-5: #ffffff;
+  --heat-ink-dp1: #0b1220; --heat-ink-dp2: #ffffff;
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0f141a;
+    --heat-ink-1: #ffffff; --heat-ink-2: #ffffff; --heat-ink-3: #0b1220; --heat-ink-4: #0b1220; --heat-ink-5: #0b1220;
+    --heat-ink-dp1: #ffffff; --heat-ink-dp2: #0b1220;
     --fg: #e6e9ed;
     --muted: #9aa4b2;
     --accent: #6ea8ff;
@@ -893,3 +898,31 @@ td.adm-email { min-width: 14em; overflow-wrap: anywhere; }
 .progress-explain .explain-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 20px; margin-top: 10px; }
 .progress-explain h3 { font-size: 0.95rem; margin: 0 0 4px; }
 .progress-explain p { margin: 0; font-size: 0.9rem; }
+
+/* Compare heatmap (sequential: the validated blue ramp, low = near the surface; diverging: orange <- grey -> blue) */
+.heat-card { margin-top: 16px; position: relative; }
+.heat-wrap { overflow-x: auto; margin-top: 8px; }
+.heat { border-collapse: separate; border-spacing: 2px; font-size: 0.86rem; min-width: 100%; }
+.heat th { font-weight: 600; color: var(--muted); text-align: left; padding: 4px 6px; vertical-align: bottom; }
+.heat thead th { max-width: 120px; font-size: 0.78rem; line-height: 1.25; }
+.heat tbody th { white-space: nowrap; color: var(--fg); }
+.heat td { padding: 0; min-width: 64px; border-radius: 4px; text-align: center; }
+.heat td a { display: block; padding: 8px 6px; color: inherit; text-decoration: none; font-variant-numeric: tabular-nums; border-radius: 4px; }
+.heat td a:hover, .heat td a:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+.heat-b0 { background: var(--row-alt, var(--bg)); color: var(--muted); }
+.heat-b1 { background: var(--viz-o5); color: var(--heat-ink-1); }
+.heat-b2 { background: var(--viz-o4); color: var(--heat-ink-2); }
+.heat-b3 { background: var(--viz-o3); color: var(--heat-ink-3); }
+.heat-b4 { background: var(--viz-o2); color: var(--heat-ink-4); }
+.heat-b5 { background: var(--viz-o1); color: var(--heat-ink-5); }
+.heat-dn2 { background: var(--viz-s2); color: #1b1f24; }
+.heat-dn1 { background: color-mix(in oklab, var(--viz-s2) 45%, var(--card)); color: var(--fg); }
+.heat-dp0, .heat-dn0 { background: var(--viz-faint); color: var(--fg); }
+.heat-dp1 { background: var(--viz-o4); color: var(--heat-ink-dp1); }
+.heat-dp2 { background: var(--viz-o2); color: var(--heat-ink-dp2); }
+.heat-few { background-image: repeating-linear-gradient(45deg, transparent 0 5px, color-mix(in oklab, var(--muted) 25%, transparent) 5px 6px); color: var(--muted); }
+.heat td.heat-few { background-color: var(--row-alt, var(--bg)); }
+.heat .heat-all { border-left: 2px solid var(--border); font-weight: 700; }
+.heat-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; list-style: none; padding: 0; margin: 8px 0 0; font-size: 0.82rem; color: var(--muted); }
+.heat-legend li { display: flex; align-items: center; gap: 6px; }
+.heat-swatch { width: 22px; height: 14px; border-radius: 3px; display: inline-block; }
