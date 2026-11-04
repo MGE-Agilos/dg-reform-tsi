@@ -1,8 +1,8 @@
 // Supabase Edge Function "tsi-assistant": serves the explorer's Chat and Impact tabs with Claude (Anthropic Messages API).
 // Same contract as haystack-proxy: POST {service: "chat"|"impact", messages} with the tester's session token -> {answer, saved}.
-// Service "briefing" (briefing for an occasion): POST {service: "briefing", country, period: {from, to}, topic, facts, occasion:
+// Service "briefing" (briefing for an occasion): POST {service: "briefing", country (or countries: up to 27 codes), period: {from, to}, topic (or topics: up to 4), facts, occasion:
 // {recipient, title, date, place, format, context, background}} -> {briefing: {scene_setter, purpose, role, speaking_points,
-// defensives, background, reader_notes}, unverified: [texts holding a number found neither in facts nor in the occasion], saved: false}; one model call
+// defensives, background, reader_notes, cross_insights}, unverified: [texts holding a number found neither in facts nor in the occasion], saved: false}; one model call
 // without tools; `facts` is a compact digest built by the page (at most MAX_FACTS characters, else 413); nothing is saved.
 // Claude's client tools query the Supabase tables through PostgREST WITH THE TESTER'S TOKEN (RLS applies); the impact
 // analysis also uses Anthropic's server web search tool.

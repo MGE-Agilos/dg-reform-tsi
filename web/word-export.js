@@ -578,14 +578,11 @@ export function fallbackSceneSetter(o) {
  * opts: { model, occasion, ai ({ scene_setter, purpose, role, speaking_points, defensives, background, reader_notes } or null),
  *         unverified (AI texts holding a figure not found in the data), aiError (text), aiSkipped (AI turned off),
  *         email, date, labels: { anomaly(type) -> label } } */
-export function buildBriefingDocument(D, { model: m, occasion, ai = null, unverified = [], aiError = "", aiSkipped = false, email = "", date = new Date(), labels = {} }) {
-  const ctx = newContext();
-  const anomalyLabel = labels.anomaly || ((t) => t);
+/** Front part of a briefing (header, scene setter, purpose, role, speaking points, defensives, [cross-country insights],
+ * background with the key figures, notes for the reader): shared by the country and the comparison documents. */
+function briefingFront(D, { occasion, ai, unverified = [], aiError = "", aiSkipped = false, email = "", date = new Date(), meta = [], figures = [],
+  annexNote = "", insights = false }) {
   const bullet = (runs, extra = {}) => new D.Paragraph({ numbering: { reference: "tsi-bullets", level: 0 }, spacing: { after: 60 }, ...extra, children: runs });
-  const small = { size: 18 };
-  const period = m.from === m.to ? String(m.from) : `${m.from}–${m.to}`;
-  const n = (v) => Number(v || 0).toLocaleString("en");
-  const share = (a, b) => (b > 0 ? `${Math.round((100 * a) / b)}%` : "—");
   const flagged = new Set(unverified);
   const warn = (keys) => (keys.some((k) => k && flagged.has(k)) ? [new D.TextRun({ text: "  ⚠ figure not found in the data", bold: true, color: "B42318", size: 18 })] : []);
   // AI texts are plain (one AI note per section); `keys`: the texts checked server side (a participant: name and function).
@@ -609,7 +606,7 @@ export function buildBriefingDocument(D, { model: m, occasion, ai = null, unveri
   // Header
   children.push(briefingHeader(D, occasion));
   children.push(new D.Paragraph({ style: "TsiMeta", spacing: { before: 120, after: 40 }, children: [new D.TextRun(
-    [m.countryName, period, m.topicLabel, `generated ${fmtDateTime(date)}${email ? ` by ${email}` : ""}`].filter(Boolean).join(" · "))] }));
+    [...meta, `generated ${fmtDateTime(date)}${email ? ` by ${email}` : ""}`].filter(Boolean).join(" · "))] }));
   children.push(noteLine(D, BRIEFING_NOTICE));
   if (!ai && !aiSkipped) {
     children.push(new D.Paragraph({
@@ -651,17 +648,33 @@ export function buildBriefingDocument(D, { model: m, occasion, ai = null, unveri
     para(d.answer),
   ], "No sensitive point found in the data.");
 
+  if (insights) section("Cross-country insights", ai?.cross_insights || [], (t) => [item(t)], "No pattern across the countries and policy areas.");
+
   // Background: AI text, key figures from the data, then the notes meant for the reader only
   children.push(headingPara(D, 1, [new D.TextRun("Background")]));
   if (ai?.background) children.push(aiNote(), para(ai.background));
-  for (const f of keyFigures(m)) children.push(bullet([new D.TextRun({ text: `${f.label}: `, bold: true }), new D.TextRun(f.value)]));
-  children.push(noteLine(D, "Details in the annexes: A key figures, B country-specific recommendations, C lineage, D results and impact, "
-    + "E gaps and related past projects, F data quality, G sources and method."));
+  for (const f of figures) children.push(bullet([new D.TextRun({ text: `${f.label}: `, bold: true }), new D.TextRun(f.value)]));
+  children.push(noteLine(D, annexNote));
   if (ai?.reader_notes?.length) {
     children.push(headingPara(D, 2, [new D.TextRun("Notes for the reader")]));
     children.push(noteLine(D, "AI-generated, for you only: caveats on the figures above, not to be said to the counterpart."));
     for (const t of ai.reader_notes) children.push(item(t));
   }
+
+  return children;
+}
+
+export function buildBriefingDocument(D, { model: m, occasion, ai = null, unverified = [], aiError = "", aiSkipped = false, email = "", date = new Date(), labels = {} }) {
+  const ctx = newContext();
+  const anomalyLabel = labels.anomaly || ((t) => t);
+  const bullet = (runs, extra = {}) => new D.Paragraph({ numbering: { reference: "tsi-bullets", level: 0 }, spacing: { after: 60 }, ...extra, children: runs });
+  const small = { size: 18 };
+  const period = m.from === m.to ? String(m.from) : `${m.from}–${m.to}`;
+  const n = (v) => Number(v || 0).toLocaleString("en");
+  const share = (a, b) => (b > 0 ? `${Math.round((100 * a) / b)}%` : "—");
+  const children = briefingFront(D, { occasion, ai, unverified, aiError, aiSkipped, email, date, meta: [m.countryName, period, m.topicLabel], figures: keyFigures(m),
+    annexNote: "Details in the annexes: A key figures, B country-specific recommendations, C lineage, D results and impact, "
+      + "E gaps and related past projects, F data quality, G sources and method." });
 
   children.push(new D.Paragraph({ children: [new D.PageBreak()] }));
 
@@ -832,4 +845,117 @@ export function buildBriefingDocument(D, { model: m, occasion, ai = null, unveri
 
   return makeDocument(D, { title: `Briefing for ${occasion.recipient} — ${occasion.title}`,
     description: `Briefing: ${m.countryName}, ${period}; speaking points (AI-generated) and data annexes`, children, ctx });
+}
+
+/** Key figures of a comparison (group totals over the "all" column). */
+export function compareFigures(cmp) {
+  const t = cmp.totals.all;
+  const pctText = (a, b) => (b > 0 ? ` (${Math.round((100 * a) / b)}%)` : "");
+  const names = cmp.rows.map((r) => r.name);
+  const out = [{ label: "Countries", value: `${names.length}${names.length <= 8 ? ` (${names.join(", ")})` : ""}` },
+    { label: "Projects in the period", value: String(t.projects) }];
+  if (t.assessed) out.push({ label: "Assessed recommendations supported by a project", value: `${t.supported} of ${t.assessed}${pctText(t.supported, t.assessed)}` });
+  if (t.rated) out.push({ label: "Assessed recommendations progressing (some progress or better)", value: `${t.progressing} of ${t.rated}${pctText(t.progressing, t.rated)}` });
+  if (t.weakUnsupported) out.push({ label: "Limited or No progress without a supporting project", value: String(t.weakUnsupported) });
+  return out;
+}
+
+/** Briefing on several countries and/or policy areas: front part, comparison annex, short notes per country, method. */
+export function buildCompareDocument(D, { cmp, occasion, ai = null, unverified = [], aiError = "", aiSkipped = false, email = "", date = new Date() }) {
+  const ctx = newContext();
+  const bullet = (runs, extra = {}) => new D.Paragraph({ numbering: { reference: "tsi-bullets", level: 0 }, spacing: { after: 60 }, ...extra, children: runs });
+  const small = { size: 18 };
+  const period = cmp.from === cmp.to ? String(cmp.from) : `${cmp.from}–${cmp.to}`;
+  const pct = (a, b) => (b > 0 ? `${Math.round((100 * a) / b)}%` : "—");
+  const children = briefingFront(D, { occasion, ai, unverified, aiError, aiSkipped, email, date, meta: [cmp.label, period], figures: compareFigures(cmp),
+    annexNote: "Details in the annexes: A comparison by country and policy area, B notes on each country, C sources and method.", insights: true });
+  children.push(new D.Paragraph({ children: [new D.PageBreak()] }));
+
+  // Annex A: the matrix, one table per measure
+  children.push(headingPara(D, 1, [new D.TextRun("Annex A — Comparison by country and policy area")]));
+  children.push(noteLine(D, `Projects: those of each country whose year is in the period (${period}) and whose policy area is selected. `
+    + "Recommendations: those of the period matching a selected policy area (ECFIN labels, a supporting project of that area, or key words when not "
+    + "yet classified); assessed: adopted by the Council and assessed by the Commission (ECFIN database)."));
+  const k = cmp.columns.length + 1;
+  const widths = cols(2.2, ...cmp.columns.map(() => 1.4));
+  const align = Array.from({ length: k }, (_, i) => (i ? "right" : undefined));
+  const matrix = (title, value, note) => {
+    children.push(headingPara(D, 2, [new D.TextRun(title)]));
+    const header = [headOf(D, "Country"), ...cmp.columns.map((c) => headOf(D, c.label))];
+    const rows = cmp.rows.map((r) => [cellOf(D, r.name), ...cmp.columns.map((c) => cellOf(D, value(r.cells[c.key]), small))]);
+    const total = [cellOf(D, "All countries", { bold: true }), ...cmp.columns.map((c) => cellOf(D, value(cmp.totals[c.key]), { ...small, bold: true }))];
+    children.push(makeTable(D, [header, ...rows, total], { widths, alignments: align }), spacer(D));
+    if (note) children.push(noteLine(D, note));
+  };
+  matrix("Projects", (c) => String(c.projects));
+  matrix("Recommendations supported by a project", (c) => (c.assessed ? `${c.supported} / ${c.assessed}` : "—"),
+    "Assessed recommendations with at least one supporting project (AI-assessed links) / assessed recommendations.");
+  matrix("Recommendations progressing", (c) => (c.rated ? `${pct(c.progressing, c.rated)} (of ${c.rated})` : "—"),
+    "Share with some progress, substantial progress or full implementation in the latest assessment.");
+  matrix("Limited or No progress without a supporting project", (c) => String(c.weakUnsupported),
+    "Candidates for future support requests: no linked project does not prove no support (projects known only by their title are not linked).");
+  children.push(headingPara(D, 2, [new D.TextRun("Largest differences between countries")]));
+  if (cmp.highlights.length) {
+    for (const h of cmp.highlights) {
+      const measure = h.kind === "supported" ? "Share of assessed recommendations supported" : "Share progressing";
+      children.push(bullet([new D.TextRun({ text: `${measure}, ${h.topicLabel}: `, bold: true }),
+        new D.TextRun(`${h.high.name} ${h.high.pct}% (of ${h.high.n}) and ${h.low.name} ${h.low.pct}% (of ${h.low.n})`)]));
+    }
+    children.push(noteLine(D, "Only cells with at least 5 assessed recommendations are compared. A difference reflects context and demand for support, not merit."));
+  } else children.push(noteLine(D, "Too few assessed recommendations per country and policy area to compare (at least 5 needed)."));
+  if (cmp.sharedGaps.length) {
+    children.push(headingPara(D, 2, [new D.TextRun("Shared gaps")]));
+    for (const g of cmp.sharedGaps) {
+      children.push(bullet([new D.TextRun({ text: `${g.topicLabel}: `, bold: true }),
+        new D.TextRun(g.countries.map((c) => `${c.name} ${c.n}`).join(", "))]));
+    }
+    children.push(noteLine(D, "Recommendations assessed Limited or No progress without a supporting project, in two countries or more."));
+  }
+
+  // Annex B: one short note per country
+  children.push(headingPara(D, 1, [new D.TextRun("Annex B — Country notes")]));
+  const detailed = cmp.models.length <= 3;
+  for (const m of cmp.models) {
+    children.push(headingPara(D, 2, [new D.TextRun(m.countryName)]));
+    for (const f of keyFigures(m)) children.push(bullet([new D.TextRun({ text: `${f.label}: `, bold: true, ...small }), new D.TextRun({ text: f.value, ...small })]));
+    if (m.latest) {
+      const d = m.latest;
+      children.push(new D.Paragraph({ style: "TsiMeta", spacing: { before: 120 }, children: [new D.TextRun({ text: `Latest document: ${d.title}`, bold: true, color: TEXT }),
+        new D.TextRun(` · ${d.stage}${d.commission ? " — not yet adopted nor assessed" : ""}`)] }));
+      children.push(makeTable(D, [[headOf(D, "Recommendation (first sentence)"), headOf(D, d.commission ? "Stage" : "Latest assessment"), headOf(D, "Projects")],
+        ...d.recs.slice(0, detailed ? 8 : 4).map((r) => [cellOf(D, `${r.number}. ${r.summary}`, small),
+          cellOf(D, d.commission ? "not yet assessed" : assessText(r), small), cellOf(D, r.supporters.length, small)])],
+      { widths: cols(6.2, 2, 0.9), alignments: [undefined, undefined, "right"] }), spacer(D));
+    }
+    const gaps = m.gaps.slice(0, detailed ? 8 : 3);
+    if (gaps.length) {
+      children.push(new D.Paragraph({ keepNext: true, spacing: { before: 80, after: 40 }, children: [new D.TextRun({ text: `Assessed recommendations without a supporting project (${m.gaps.length}${m.gaps.length > gaps.length ? `, ${gaps.length} shown` : ""})`, bold: true, ...small })] }));
+      for (const r of gaps) {
+        const w = WEAK.test(r.assessment || "");
+        children.push(bullet([new D.TextRun({ text: `${r.id} `, bold: w, ...small }), new D.TextRun({ text: `${clipText(r.summary, 140)} — ${assessText(r)}`, ...small })]));
+      }
+    }
+    if (detailed && m.lineage.length) {
+      children.push(new D.Paragraph({ keepNext: true, spacing: { before: 80, after: 40 }, children: [new D.TextRun({ text: "Supported recommendations and projects", bold: true, ...small })] }));
+      for (const l of m.lineage.slice(0, 8)) {
+        children.push(bullet([new D.TextRun({ text: `${l.rec.id}: `, bold: true, ...small }),
+          new D.TextRun({ text: l.projects.slice(0, 4).map((p) => `${clipText(p.title, 70)} (${p.year}, ${p.level})`).join("; "), ...small })]));
+      }
+    }
+  }
+
+  // Annex C: method
+  children.push(headingPara(D, 1, [new D.TextRun("Annex C — Sources and method")]));
+  for (const t of [
+    "Projects: DG REFORM technical support projects (TSI, SRSP, SRSS) published on reforms-investments.ec.europa.eu, with the country among their beneficiaries, a year in the period and a selected policy area.",
+    "CSRs: country-specific recommendations of the European Semester; assessments from the ECFIN CSR database. 2026: Commission recommendations, not yet adopted by the Council nor assessed.",
+    "Project–CSR links: assessed by an AI model from the project text, one CSR sub-part at a time; projects without a detail page are not linked yet.",
+    "Policy areas: projects by their TSI policy area; recommendations through the corresponding ECFIN labels, a supporting project of that area, or, when not yet classified, key words of their text. A recommendation can count in several areas; the last column counts it once.",
+    "Comparison: shares compare countries only where at least 5 assessed recommendations exist; an association, not proof of impact.",
+    ai ? "AI parts (scene setter, purpose, role, speaking points, defensives, cross-country insights, background, notes for the reader): written by Claude (Anthropic) from the occasion details and the figures of this document, without web search; texts holding a figure not found in the data are flagged ⚠. Verify before use."
+      : `AI parts: not generated (${aiSkipped ? "not requested" : "AI service unavailable"}).`,
+  ]) children.push(bullet([new D.TextRun({ text: t, size: 19 })]));
+
+  return makeDocument(D, { title: `Briefing for ${occasion.recipient} — ${occasion.title}`,
+    description: `Briefing: ${cmp.label}, ${period}; speaking points (AI-generated) and comparison annexes`, children, ctx });
 }

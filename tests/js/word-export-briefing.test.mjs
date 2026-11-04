@@ -114,3 +114,44 @@ test("AI with empty purpose and defensives: the empty-section notes", () => {
   assert.match(text, /No objective stated\./);
   assert.match(text, /No sensitive point found in the data\./);
 });
+
+// ---------- comparison of several countries and themes ----------
+import { buildCompareDocument } from "../../web/word-export.js";
+import { compareModel } from "../../web/briefing.js";
+
+const LAB = "labour-market-and-social-protection";
+const lvModel = briefingModel({
+  projects: [{ project_id: "p2", title: "Labour reform", programme: "TSI", year: 2022, countries: ["LV"], policy_area: LAB, results: "expected", deliverables: 0, url: "https://reform.example/p2", detail_page: true }],
+  linked: [], docs: [], impacts: [], anomalies: [],
+  csrs: [{ csr_id: "csr-LV-2023-1", year: 2023, number: "1", text: "Strengthen the social safety net. More.", assessment: "No Progress", assessment_year: 2024,
+    csr_parts: [{ part_id: "1.1", policy_areas: ["Poverty reduction & social inclusion"], project_csr_links: [] }] }],
+}, { country: "LV", countryName: "Latvia", from: 2021, to: 2026, topics: [LAB], date: new Date(2026, 10, 4, 10) });
+const ltModel = briefingModel({
+  projects: [{ project_id: "p1", title: "Pension reform", programme: "TSI", year: 2023, countries: ["LT"], policy_area: LAB, results: "achieved", deliverables: 2, url: "https://reform.example/p1", detail_page: true }],
+  linked: [], docs: [], impacts: [], anomalies: [],
+  csrs: [{ csr_id: "csr-LT-2023-1", year: 2023, number: "1", text: "Improve the pension system. More.", assessment: "Limited Progress", assessment_year: 2024,
+    csr_parts: [{ part_id: "1.1", policy_areas: ["Pension systems and active ageing"], project_csr_links: [{ project_id: "p1", level: "direct" }] }] }],
+}, { country: "LT", countryName: "Lithuania", from: 2021, to: 2026, topics: [LAB], date: new Date(2026, 10, 4, 10) });
+const CMP = compareModel([lvModel, ltModel], { topics: [LAB], topicLabels: { [LAB]: "Labour market" } });
+const CMP_AI = { ...AI, cross_insights: ["Both countries face pension and social inclusion challenges."] };
+
+test("comparison document: front part with cross-country insights, comparison annex, one section per country, method", () => {
+  const doc = buildCompareDocument(D, { cmp: CMP, occasion: OCCASION, ai: CMP_AI, unverified: [], email: "a@b.eu", date: CMP.date });
+  assert.deepEqual(headings(doc), ["Scene setter", "Purpose", "Role", "Speaking points", "Defensives", "Cross-country insights", "Background",
+    "Annex A — Comparison by country and policy area", "Annex B — Country notes", "Annex C — Sources and method"]);
+  const text = allText(doc);
+  assert.match(text, /Latvia and Lithuania · Labour market · 2021–2026/);
+  assert.match(text, /Both countries face pension/);
+  assert.match(text, /Countries: 2 \(Latvia, Lithuania\)/);
+  assert.match(text, /Assessed recommendations supported by a project: 1 of 2 \(50%\)/);
+  const h2 = body(doc).filter((n) => n.o.heading === "HEADING_2").map(textOf);
+  assert.ok(h2.includes("Latvia") && h2.includes("Lithuania"));
+  assert.ok(h2.includes("Limited or No progress without a supporting project"));
+  assert.equal(doc.o.title, "Briefing for Director Judit Rozsa — Meeting with the Minister of Finance");
+});
+
+test("comparison document without AI: insights not generated, the data annexes are there", () => {
+  const doc = buildCompareDocument(D, { cmp: CMP, occasion: OCCASION, ai: null, aiSkipped: true, date: CMP.date });
+  assert.ok(headings(doc).includes("Annex A — Comparison by country and policy area"));
+  assert.match(allText(doc), /Cross-country insights\s*Not generated \(AI summary not requested\)\./);
+});

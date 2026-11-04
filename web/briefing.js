@@ -449,7 +449,7 @@ function matrixCell(m, key, commission) {
  *      label, from, to, date, models }
  */
 export function compareModel(models, { topics = [], topicLabels = {} } = {}) {
-  const list = arr(models).slice().sort((a, b) => String(a.country).localeCompare(String(b.country)));
+  const list = arr(models).slice().sort((a, b) => String(a.countryName || a.country).localeCompare(String(b.countryName || b.country)));
   const labelOf = (t) => topicLabels[t] || t;
   const columns = [...topics.map((t) => ({ key: t, label: labelOf(t) })), { key: "all", label: topics.length ? "All selected areas" : "All policy areas" }];
   const rows = list.map((m) => {
