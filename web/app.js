@@ -2511,7 +2511,7 @@ const INFO = {
   }),
   briefing: () => ({
     title: "Briefing",
-    html: `<p>A Word document (.docx) to prepare an occasion with one country (a bilateral meeting, a panel, a speech, a mission or a
+    html: `<p>A Word document (.docx) to prepare an occasion with one country or several (a bilateral meeting, a panel, a speech, a mission or a
       conference), in the layout of a Commission briefing, built in your browser from the explorer's data and the occasion you describe,
       with optional parts written by AI.</p>
       <h3>Contents</h3><ol>
@@ -2522,7 +2522,10 @@ const INFO = {
       <li><strong>Defensives</strong>: difficult policy questions the counterpart may ask (weak assessments, recommendations without support, future priorities) with a cautious answer (AI).</li>
       <li><strong>Background</strong>: the Commission's support to the country and the relationship you describe in the dialog (AI), key figures (from the data) and <em>Notes for the reader</em>: the caveats on the figures, for you only, never in the speaking points (AI).</li>
       <li><strong>Annexes A to G</strong>: key figures, country-specific recommendations, lineage, results and impact, gaps and related
-        past projects, data quality, sources and method.</li></ol>
+        past projects, data quality, sources and method.</li>
+      <li><strong>Several countries or policy areas</strong>: the same front part written for the group, plus <em>Cross-country insights</em>
+        (AI); annexes: A the comparison by country and policy area (with the largest differences and the shared gaps), B a note per
+        country, C sources and method.</li></ol>
       <p>Figures in the AI parts must come from the data or the occasion: a text holding another figure is flagged ⚠ in the document.
       General policy framing, without figures, may be added by the AI. Verify before use.</p>
       <h3>Limits</h3><ul>
@@ -2772,6 +2775,19 @@ const GUIDE = [
       briefing.</li>
     <li><strong>Limits</strong>: an association, not proof of impact; links are AI-assessed; the 2026 recommendations are not assessed yet.</li></ul>
     ${infoHtml("progress")}` },
+  { id: "compare", title: "Compare", html: () => `
+    <p><a href="#compare">Compare</a> crosses the data in one table: choose countries (one by one or a group), policy areas and years, then a
+      <strong>measure</strong>, and how to cross them: <em>countries × policy areas</em>, or <em>policy areas × years</em> for the selected countries
+      together. The last column sums each row.</p>
+    <ul><li><strong>Measures</strong>: projects; recommendations; share of assessed recommendations supported by a project; share progressing
+      (some progress or better); progress gap (share progressing of the supported minus the others, in points); recommendations stalling
+      without support (Limited or No progress, no linked project).</li>
+    <li><strong>Reading</strong>: darker blue = higher. For the gap, blue = supported recommendations progress more, orange = less, grey = about
+      the same. Hatched cells have fewer than 5 assessed recommendations: too few to compare.</li>
+    <li><strong>Click through</strong>: a cell opens the matching projects or the CSR progress of that country and policy area; a country opens
+      its lineage; <em>Prepare a briefing</em> turns the selection into a comparison briefing.</li>
+    <li><strong>Limits</strong>: recommendations match a policy area through their ECFIN labels (the 2026 recommendations are not classified
+      yet); links are AI-assessed; an association, not proof of impact.</li></ul>` },
   { id: "anomalies", title: "Anomalies", html: () => `
     <p>The Anomalies tab lists them with filters (type, severity, programme, years, country) and a CSV export. By default only high
       and medium severities are shown.</p>${infoHtml("anomalies")}` },
@@ -2783,7 +2799,10 @@ const GUIDE = [
     <li><strong>Data it uses</strong>: project records, AI summaries, CSRs and their sub-parts, AI-assessed links.
       <strong>Deliverable full texts are not searched</strong> by the assistant.</li>
     <li><strong>On a project or CSR page</strong>, <em>Ask about this project</em> (or CSR) pre-fills the question; you still press Send.</li>
-    <li><strong>Export to Word</strong> downloads the conversation as a .docx document.</li></ul>
+    <li><strong>Export to Word</strong> downloads the conversation as a .docx document.</li>
+    <li><strong>Briefing</strong> opens the briefing dialog with the countries, groups, policy areas and years named in your questions
+      (completed by the filters of the page on screen) and your questions in the occasion's context. Check the scope, describe the occasion
+      and generate: the briefing's figures come from the database, not from the assistant's answers.</li></ul>
     <h4>Examples</h4><ul>${CHAT_EXAMPLES.map((q) => `<li>${esc(q)}</li>`).join("")}</ul>
     <p>Answers are generated by AI (Claude, Anthropic) and can take up to 2 minutes: verify the cited sources.</p>` },
   { id: "impact", title: "Impact analysis", html: () => `
@@ -2796,11 +2815,19 @@ const GUIDE = [
     <li><strong>Export to Word</strong>: a report (new or saved) can be downloaded as a .docx document.</li></ul>
     ${infoHtml("impact")}` },
   { id: "briefing", title: "Briefing", html: () => `
-    <p><em>Prepare a briefing</em> (in <a href="#lineage?view=country">Lineage › By country</a>, and on the CSRs tab once a country is
-      chosen) downloads a Word document to prepare an occasion with one country. In the dialog describe the occasion: who the briefing is
+    <p><em>Prepare a briefing</em> (in <a href="#lineage?view=country">Lineage › By country</a>, on the CSRs tab once a country is
+      chosen, on <a href="#compare">Compare</a> and <a href="#progress">CSR progress</a> for their selection, and <em>Briefing</em> in the
+      assistant) downloads a Word document to prepare an occasion. In the dialog describe the occasion: who the briefing is
       for and the occasion (required), the date, the format and the place, and optionally paste the invitation, the agenda, the participants
-      or the questions announced by the moderator. Then choose the country, the period (by default the last five years and the current one),
-      optionally a policy area, and whether to include the AI parts, then <em>Generate</em>.</p>
+      or the questions announced by the moderator. Then choose the <strong>scope</strong>: one or several countries (or a group: EU-27, euro
+      area, cohesion countries, Baltic States, Nordic countries, Benelux, Visegrád Four, Southern Europe), up to four policy areas, and the
+      period (by default the last five years and the current one), and whether to include the AI parts, then <em>Generate</em>.</p>
+    <ul><li><strong>One country, at most one policy area</strong>: the country briefing (annexes A to G on that country).</li>
+    <li><strong>Several countries or policy areas</strong>: the comparison briefing. The front part speaks of the group, with
+      <em>Cross-country insights</em>; Annex A crosses countries and policy areas (projects, recommendations supported, progressing, stalling
+      without support), lists the largest differences between countries (only where 5 assessed recommendations or more exist) and the gaps
+      several countries share; Annex B has a short note per country. Up to 3 countries the AI reads each country's details, up to 8 a summary,
+      above that the comparison table only. The AI never ranks Member States.</li></ul>
     <ul><li><strong>Steps</strong>: collecting the data (a few seconds), writing the scene setter and speaking points (AI, about 20 to 40
       seconds), building the document. <em>Cancel</em> or Escape stops it; nothing is saved on the server. The occasion fields are kept in
       this browser tab until a briefing is downloaded.</li>
@@ -2895,7 +2922,7 @@ const GUIDE_IDS = GUIDE.map((s) => s.id);
 const GUIDE_PROJECT = "technical-support-transforming-existing-fully-state-administered-funded-pension-scheme-lithuania";
 const GUIDE_SHOT_DATE = "23 October 2026";
 const GUIDE_ESSENTIALS = [
-  { icon: "▦", title: "Tabs", text: "Dashboard, Projects, CSRs, Lineage, CSR progress, Anomalies, Impact and Guide. The ? button in the header brings you back here; the menu under your e-mail address holds Change password, Sign out (and Admin for administrators)." },
+  { icon: "▦", title: "Tabs", text: "Dashboard, Projects, CSRs, Lineage, CSR progress, Compare, Anomalies, Impact and Guide. The ? button in the header brings you back here; the menu under your e-mail address holds Change password, Sign out (and Admin for administrators)." },
   { icon: "⚲", title: "Filters", text: "Each list has its filters (country, programme, years, text search…). The address of the page keeps them: bookmark or share it." },
   { icon: "⇄", title: "Click through", text: "Bars, ribbons, cards and names open the matching view: a country's projects, a CSR document, a project page, a lineage view." },
   { icon: "⋔", title: "Lineage", text: "Sankey, Network and Sunburst show all countries at once; By country follows one country from its CSR documents to the projects and their outcome." },
