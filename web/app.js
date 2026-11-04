@@ -4918,10 +4918,9 @@ function briefingFieldErrors(errors) {
   }
 }
 
-function briefingFormHtml(country) {
+function briefingFormHtml(scope, { notice = "" } = {}) {
   const d = briefingDefaults();
   const o = briefingSavedOccasion();
-  const countries = Object.fromEntries(Object.entries(COUNTRIES).sort((a, b) => a[1].localeCompare(b[1])).map(([code, name]) => [code, `${name} (${code})`]));
   const steps = BRIEFING_STEPS.map(([k, label]) => `<li data-step="${k}">${esc(label)}</li>`).join("");
   const err = (name) => `<span class="field-error note-error" id="briefing-err-${name}" hidden></span>`;
   const text = (name, label, placeholder, required = false, cls = "field") => `<label class="${cls}"><span>${esc(label)}${required ? " *" : ""}</span>`
@@ -4930,8 +4929,10 @@ function briefingFormHtml(country) {
   return `<form id="briefing-form" class="info-inner" novalidate>`
     + `<div class="info-head"><div class="title-row"><h2 id="briefing-title">Briefing</h2>${infoButton("briefing", "About the briefing")}</div></div>`
     + `<div class="info-body briefing-body">`
-    + `<p class="muted" id="briefing-intro">A Word document to prepare an occasion with one country (a meeting, a panel, a mission…): `
-    + `scene setter, purpose, role, speaking points and defensives written by AI, with the country's data in annexes.</p>`
+    + (notice ? `<p class="scope-notice" role="note">${esc(notice)}</p>` : "")
+    + `<p class="muted" id="briefing-intro">A Word document to prepare an occasion (a meeting, a panel, a mission…) with one country or several: `
+    + `scene setter, purpose, role, speaking points and defensives written by AI, with the data in annexes. With several countries or policy areas, `
+    + `the document crosses them: a country × policy area comparison, the largest differences and the gaps they share.</p>`
     + `<fieldset class="briefing-occasion"><legend>Occasion</legend><div class="briefing-fields">`
     + text("recipient", "Briefing for", "Director, DG REFORM", true)
     + text("title", "Occasion", "Meeting with the Minister of Finance", true)
@@ -4943,12 +4944,15 @@ function briefingFormHtml(country) {
     + `<label class="field"><span>Background (optional)</span><textarea name="background" rows="3" maxlength="${B.OCCASION_MAX.background}" `
     + `placeholder="What you know of the relationship: grants, steering committees, previous meetings or visits">${esc(o.background || "")}</textarea>${err("background")}</label>`
     + `</div></fieldset>`
-    + `<div class="briefing-fields">${selectField("country", "Country", countries, country, null)}`
-    + `${yearField("from", "From year", d.from)}${yearField("to", "To year", d.to)}`
-    + `${selectField("topic", "Policy area (optional)", POLICY_AREAS, "", "All policy areas")}</div>`
+    + `<fieldset class="briefing-occasion"><legend>Scope</legend><div class="briefing-fields briefing-scope">`
+    + scopePickerHtml({ countries: scope.countries, topics: scope.topics }, { required: true })
+    + `<span class="field-error note-error" id="briefing-err-countries" hidden></span>`
+    + `${yearField("from", "From year", scope.from ?? d.from)}${yearField("to", "To year", scope.to ?? d.to)}</div>`
+    + `<p class="muted small">One country and at most one policy area: the country briefing. Several countries (or a group) or policy areas: `
+    + `the comparison briefing; above 3 countries the AI works from summary figures, above 8 from the comparison table only.</p></fieldset>`
     + `${checkField("ai", "Include AI parts (scene setter, speaking points…)", true)}`
-    + `<p class="muted small briefing-ai-note">One call to Claude (Anthropic), written from the occasion you describe and the country's data: `
-    + `about 20 to 40 seconds, with a small cost. AI-generated parts are marked; figures not found in the data are flagged ⚠.</p>`
+    + `<p class="muted small briefing-ai-note">One call to Claude (Anthropic), written from the occasion you describe and the data: `
+    + `about 20 to 60 seconds, with a small cost. AI-generated parts are marked; figures not found in the data are flagged ⚠.</p>`
     + `<ol class="briefing-steps" id="briefing-steps" hidden>${steps}</ol>`
     + `<p id="briefing-status" class="briefing-status" role="status" aria-live="polite"></p></div>`
     + `<div class="briefing-actions"><button type="button" class="btn btn-secondary" id="briefing-cancel">Close</button>`
@@ -4980,24 +4984,40 @@ function briefingBusy(busy) {
   const form = $("briefing-form");
   if (!form) return;
   for (const el of form.querySelectorAll("select, input, textarea")) el.disabled = busy;
+  // Back to idle: the scope pickers disable again the policy areas over the limit.
+  if (!busy) form.querySelectorAll(".scope-pick").forEach((d) => d.dispatchEvent(new Event("change")));
   $("briefing-generate").disabled = busy;
   $("briefing-cancel").textContent = busy ? "Cancel" : "Close";
 }
 
-function openBriefing(country, opener) {
+/**
+ * Opens the briefing dialog. target: a country code (the country buttons) or a scope { countries, topics, from, to }
+ * (CSR progress, Compare, the assistant). prefill: { title, context, notice } put in the occasion fields (the assistant).
+ */
+function openBriefing(target, opener, prefill = {}) {
   const dialog = $("briefing-dialog");
   if (!dialog || briefingRun) {
     if (dialog && !dialog.open) dialog.showModal();
     return;
   }
-  dialog.innerHTML = briefingFormHtml(pick(country, COUNTRIES) || "");
+  const scope = typeof target === "string"
+    ? { countries: pick(target, COUNTRIES) ? [target] : [], topics: [], from: null, to: null }
+    : S.cleanScope(target || {}, { topics: Object.keys(POLICY_AREAS) });
+  if (prefill.title || prefill.context) {
+    const o = briefingSavedOccasion();
+    if (prefill.title && !o.title) o.title = prefill.title.slice(0, B.OCCASION_MAX.title);
+    if (prefill.context) o.context = [prefill.context, o.context].filter(Boolean).join("\n\n").slice(0, B.OCCASION_MAX.context);
+    storageSet(BRIEFING_OCCASION_KEY, JSON.stringify(o));
+  }
+  dialog.innerHTML = briefingFormHtml(scope, { notice: prefill.notice || "" });
   briefingOpener = opener || null;
-  $("briefing-form").addEventListener("submit", (e) => { e.preventDefault(); generateBriefing(); });
   const form = $("briefing-form");
+  form.addEventListener("submit", (e) => { e.preventDefault(); generateBriefing(); });
   form.addEventListener("input", () => storageSet(BRIEFING_OCCASION_KEY, JSON.stringify(briefingFormOccasion(form))));
+  bindScopePickers(form);
   $("briefing-cancel").addEventListener("click", () => (briefingRun ? cancelBriefing() : dialog.close()));
   if (typeof dialog.showModal === "function") dialog.showModal(); else dialog.setAttribute("open", "");
-  $("briefing-form").elements.recipient.focus();
+  form.elements.recipient.focus();
 }
 
 function cancelBriefing() {
@@ -5008,8 +5028,13 @@ function bindBriefing() {
   const dialog = $("briefing-dialog");
   if (!dialog) return;
   document.addEventListener("click", (e) => {
-    const button = e.target instanceof Element ? e.target.closest("[data-briefing]") : null;
-    if (button) openBriefing(button.dataset.briefing, button);
+    const button = e.target instanceof Element ? e.target.closest("[data-briefing], [data-briefing-scope]") : null;
+    if (!button) return;
+    if (button.dataset.briefingScope) {
+      let scope = {};
+      try { scope = JSON.parse(button.dataset.briefingScope); } catch { /* an empty scope */ }
+      openBriefing(scope, button);
+    } else openBriefing(button.dataset.briefing, button);
   });
   dialog.addEventListener("cancel", (e) => { // Escape: cancels a running generation first
     if (briefingRun) { e.preventDefault(); cancelBriefing(); }
@@ -5021,25 +5046,45 @@ function bindBriefing() {
   window.addEventListener("hashchange", () => { if (!briefingRun && dialog.open) dialog.close(); });
 }
 
+/** fn over items, at most `limit` at a time, results in order. */
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
 async function generateBriefing() {
   if (briefingRun) return;
   const form = $("briefing-form");
-  const country = pick(form.elements.country.value, COUNTRIES);
+  const scope = S.cleanScope(scopeOfForm(form), { topics: Object.keys(POLICY_AREAS) });
+  const { countries, topics } = scope;
   let from = parseInt(form.elements.from.value, 10);
   let to = parseInt(form.elements.to.value, 10);
-  const topic = pick(form.elements.topic.value, POLICY_AREAS);
   const withAi = form.elements.ai.checked;
   const occasion = briefingFormOccasion(form);
   const errors = B.occasionErrors(occasion);
   briefingFieldErrors(errors);
   const invalid = Object.keys(errors)[0];
+  const countryErr = $("briefing-err-countries");
+  if (countryErr) { countryErr.textContent = countries.length ? "" : "Choose at least one country (or a group)."; countryErr.hidden = !!countries.length; }
   if (invalid) {
     form.elements[invalid].focus();
     return briefingStatus("Check the occasion fields.", { error: true });
   }
-  if (!country) return briefingStatus("Choose a country.", { error: true });
+  if (!countries.length) {
+    form.querySelector('.scope-pick[data-scope="countries"]')?.setAttribute("open", "");
+    return briefingStatus("Choose at least one country.", { error: true });
+  }
   if (!(from >= 2010 && from <= 2100) || !(to >= 2010 && to <= 2100)) return briefingStatus("Enter the years of the period (for example 2021 and 2026).", { error: true });
   if (from > to) [from, to] = [to, from];
+  const single = countries.length === 1 && topics.length <= 1;
   const epoch = aiEpoch;
   const controller = new AbortController();
   const signal = controller.signal;
@@ -5048,24 +5093,38 @@ async function generateBriefing() {
   const aiStep = $("briefing-steps")?.querySelector('[data-step="ai"]');
   if (aiStep) aiStep.hidden = !withAi;
   let aiError = "";
+  const label = S.scopeLabel(scope, { names: COUNTRIES, areas: POLICY_AREAS });
   try {
     briefingStep("data");
-    briefingStatus(`Collecting data for ${countryName(country)}, ${from}–${to}…`);
-    const [raw, lib] = await Promise.all([
-      fetchBriefingData(country, from, to, signal),
+    briefingStatus(`Collecting data for ${label}, ${from}–${to}…`);
+    let done = 0;
+    const [raws, lib] = await Promise.all([
+      mapLimit(countries, 4, async (c) => {
+        const raw = await fetchBriefingData(c, from, to, signal).catch((e) => {
+          if (signal.aborted) throw e;
+          throw new Error(`${countryName(c)}: ${e?.message || e}`);
+        });
+        done++;
+        if (countries.length > 1) briefingStatus(`Collecting data (${done} of ${countries.length} countries)…`);
+        return raw;
+      }),
       loadWord().catch((e) => { throw new Error(`could not load the Word library (${e?.message || "network error"}). Check your connection and try again.`); }),
     ]);
     if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
-    const model = B.briefingModel(raw, { country, countryName: countryName(country), from, to, topic, topicLabel: areaLabel(topic), areaLabel: ovPaName, date: new Date() });
+    const models = countries.map((c, i) => B.briefingModel(raws[i], { country: c, countryName: countryName(c), from, to, topics,
+      topicLabel: topics.length ? S.joinNames(topics.map(areaLabel)) : "", areaLabel: ovPaName, date: new Date() }));
+    const cmp = single ? null : B.compareModel(models, { topics, topicLabels: POLICY_AREAS });
     let ai = null;
     let unverified = [];
     if (withAi) {
       briefingStep("ai");
-      briefingStatus("Writing the scene setter and speaking points (AI)… about 20 to 40 seconds.");
+      briefingStatus(`Writing the scene setter and speaking points (AI)… about ${single ? "20 to 40" : "30 to 60"} seconds.`);
       try {
-        const facts = B.briefingFacts(model);
+        const facts = single ? B.briefingFacts(models[0]) : B.compareFacts(cmp);
         if (JSON.stringify(facts).length > B.FACTS_MAX) throw new Error("The figures were too large for the AI parts.");
-        ({ ai, unverified } = await callBriefing({ country, period: { from, to }, topic: topic ? areaLabel(topic) : null, facts, occasion }, signal));
+        const topicLabels = topics.map(areaLabel);
+        ({ ai, unverified } = await callBriefing({ country: countries[0], countries, period: { from, to },
+          topic: topicLabels.length ? topicLabels.join("; ") : null, topics: topicLabels, facts, occasion }, signal));
       } catch (e) {
         if (signal.aborted) throw e;
         aiError = e?.message || String(e);
@@ -5073,12 +5132,14 @@ async function generateBriefing() {
     }
     briefingStep("doc");
     briefingStatus("Building the document…");
-    const doc = lib.W.buildBriefingDocument(lib.D, { model, occasion, ai, unverified, aiError, aiSkipped: !withAi, email: currentEmail, date: model.date,
-      labels: { anomaly: (t) => ANOMALY_TYPES[t] || t } });
+    const common = { occasion, ai, unverified, aiError, aiSkipped: !withAi, email: currentEmail, date: models[0].date };
+    const doc = single
+      ? lib.W.buildBriefingDocument(lib.D, { model: models[0], ...common, labels: { anomaly: (t) => ANOMALY_TYPES[t] || t } })
+      : lib.W.buildCompareDocument(lib.D, { cmp, ...common });
     const blob = await lib.D.Packer.toBlob(doc);
     if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
     if (epoch !== aiEpoch) return;
-    saveBlob(B.briefingFileName(country, occasion, model.date), blob);
+    saveBlob(single ? B.briefingFileName(countries[0], occasion, models[0].date) : B.compareFileName(countries, occasion, models[0].date), blob);
     storageSet(BRIEFING_OCCASION_KEY, "");
     briefingStep(null);
     if (withAi && !ai) briefingStatus(`Briefing downloaded without the AI parts: ${aiError}`, { error: true });
