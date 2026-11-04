@@ -48,10 +48,13 @@ export function gapPoints(s, u) {
  * data: { csrs: [{ csr_id, country, year, assessment, assessment_year, policy_areas }], parts: [{ part_id, csr_id }],
  *         links: [{ project_id, part_id, level }], projects: [{ project_id, year }] }
  * opts: { from, to (CSR years, inclusive), level: "all" | "direct", before: only projects whose year is at most the
- *         assessment year (projects without a year then do not count) }
+ *         assessment year (projects without a year then do not count), countries: ISO codes (empty = all),
+ *         areaLabels: ECFIN policy-area labels, a recommendation is kept when it has one of them (empty = all) }
  * A recommendation is supported when one of its sub-part links (at the selected level) leads to a counted project.
  */
-export function progressModel({ csrs, parts, links, projects }, { from = -Infinity, to = Infinity, level = "all", before = false } = {}) {
+export function progressModel({ csrs, parts, links, projects }, { from = -Infinity, to = Infinity, level = "all", before = false, countries = [], areaLabels = [] } = {}) {
+  const inCountries = countries?.length ? new Set(countries) : null;
+  const inAreas = areaLabels?.length ? new Set(areaLabels) : null;
   const partCsr = new Map(parts.map((p) => [p.part_id, p.csr_id]));
   const projYear = new Map(projects.map((p) => [p.project_id, Number.isFinite(+p.year) && p.year !== null ? +p.year : null]));
   const support = new Map(); // csr_id -> Set of project ids (level filter applied, timing checked later)
@@ -75,6 +78,8 @@ export function progressModel({ csrs, parts, links, projects }, { from = -Infini
   for (const c of csrs) {
     const year = +c.year;
     if (!(year >= from && year <= to)) continue;
+    if (inCountries && !inCountries.has(c.country)) continue;
+    if (inAreas && !(Array.isArray(c.policy_areas) ? c.policy_areas : []).some((a) => inAreas.has(a))) continue;
     const rank = progressRank(c.assessment);
     if (rank === null) { unassessed++; continue; }
     const ay = Number.isFinite(+c.assessment_year) && c.assessment_year !== null ? +c.assessment_year : null;

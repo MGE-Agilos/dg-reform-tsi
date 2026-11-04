@@ -87,3 +87,16 @@ test("lastSupportedYear: last CSR year with a supported recommendation", () => {
   assert.equal(lastSupportedYear(progressModel(data)), 2020);
   assert.equal(lastSupportedYear(progressModel(data, { from: 2019, to: 2019, level: "direct", before: true })), 2019);
 });
+
+test("progressModel: country and policy-area label filters (empty = no filter)", () => {
+  const lt = progressModel(data, { countries: ["LT"] });
+  assert.equal(lt.s.n + lt.u.n, 2);
+  assert.deepEqual(lt.byCountry.map((r) => r.key), ["LT"]);
+  const health = progressModel(data, { areaLabels: ["Health"] });
+  assert.equal(health.s.n + health.u.n, 2);
+  const pensionsHr = progressModel(data, { countries: ["HR"], areaLabels: ["Pensions"] });
+  assert.equal(pensionsHr.s.n + pensionsHr.u.n, 0);
+  assert.equal(pensionsHr.unassessed, 0);
+  const all = progressModel(data, { countries: [], areaLabels: [] });
+  assert.equal(all.s.n + all.u.n, 4);
+});

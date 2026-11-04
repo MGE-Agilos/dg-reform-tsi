@@ -7,6 +7,7 @@ import * as R from "./reporting.js";
 import * as A from "./admin.js";
 import * as T from "./tracking.js";
 import * as PG from "./progress.js";
+import * as S from "./scope.js";
 
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
 const MARKED_JS = "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
@@ -278,6 +279,77 @@ function checkField(name, label, checked) {
   return `<label class="check"><input type="checkbox" name="${name}" value="1"${checked ? " checked" : ""}> ${esc(label)}</label>`;
 }
 
+// ---------- scope picker (several countries or a group, several themes): filters, briefing, Compare ----------
+
+/** Summary line of a picker: "All countries", "Baltic States", "Greece and Portugal", "5 countries". */
+function scopeSummary(kind, values) {
+  if (kind === "countries") return values.length ? S.countriesLabel(values, COUNTRIES) : "All countries";
+  return values.length ? (values.length <= 2 ? S.joinNames(values.map(areaLabel)) : `${values.length} policy areas`) : "All policy areas";
+}
+
+/**
+ * Countries (with a Group shortcut) and, when `topics` is not null, policy areas, as two drop-down checkbox lists.
+ * The checkboxes carry name="countries" / name="topics" (repeated: read with scopeOfForm) and never apply a filter on
+ * their own (data-noauto): Apply submits. `required`: the label marks the countries as required.
+ */
+function scopePickerHtml({ countries = [], topics = null } = {}, { required = false, maxTopics = S.MAX_TOPICS, countryLabel = "Countries" } = {}) {
+  const box = (name, value, label, checked) => `<label class="check scope-item"><input type="checkbox" name="${name}" value="${esc(value)}" data-noauto`
+    + `${checked ? " checked" : ""}> ${esc(label)}</label>`;
+  const groups = Object.entries(S.COUNTRY_GROUPS).map(([k, g]) => `<option value="${k}">${esc(g.label)} (${g.countries.length})</option>`).join("");
+  const sorted = Object.entries(COUNTRIES).sort((a, b) => a[1].localeCompare(b[1]));
+  const cHtml = `<div class="field scope-field"><span>${esc(countryLabel)}${required ? " *" : ""}</span>`
+    + `<details class="scope-pick" data-scope="countries"><summary class="scope-summary">${esc(scopeSummary("countries", countries))}</summary>`
+    + `<div class="scope-pop"><label class="field"><span>Group</span><select data-scope-group data-noauto aria-label="Select a group of countries">`
+    + `<option value="">Choose a group…</option>${groups}<option value="none">Clear the selection</option></select></label>`
+    + `<div class="scope-list" role="group" aria-label="${esc(countryLabel)}">${sorted.map(([c, n]) => box("countries", c, n, countries.includes(c))).join("")}</div>`
+    + `</div></details></div>`;
+  if (topics === null) return cHtml;
+  const tHtml = `<div class="field scope-field"><span>Policy areas (up to ${maxTopics})</span>`
+    + `<details class="scope-pick" data-scope="topics" data-max="${maxTopics}"><summary class="scope-summary">${esc(scopeSummary("topics", topics))}</summary>`
+    + `<div class="scope-pop"><div class="scope-list" role="group" aria-label="Policy areas">`
+    + Object.entries(POLICY_AREAS).map(([k, label]) => box("topics", k, label, topics.includes(k))).join("")
+    + `</div></div></details></div>`;
+  return cHtml + tHtml;
+}
+
+/** Selected countries and topics of a form holding a scope picker. */
+function scopeOfForm(form) {
+  const all = (name) => [...form.querySelectorAll(`input[name="${name}"]:checked`)].map((x) => x.value);
+  return { countries: all("countries"), topics: all("topics") };
+}
+
+/** Group shortcut, live summaries, the limit on the number of themes; a click outside closes an open list. */
+function bindScopePickers(root) {
+  if (!root) return;
+  root.querySelectorAll(".scope-pick").forEach((d) => {
+    const kind = d.dataset.scope;
+    const boxes = () => [...d.querySelectorAll(`input[name="${kind}"]`)];
+    const refresh = () => {
+      const on = boxes().filter((b) => b.checked).map((b) => b.value);
+      d.querySelector(".scope-summary").textContent = scopeSummary(kind, on);
+      const max = Number(d.dataset.max) || 0;
+      if (max) boxes().forEach((b) => { b.disabled = !b.checked && on.length >= max; });
+    };
+    d.addEventListener("change", (e) => {
+      const g = e.target.closest?.("[data-scope-group]");
+      if (g) {
+        const list = g.value === "none" ? [] : (S.COUNTRY_GROUPS[g.value]?.countries || null);
+        if (list) boxes().forEach((b) => { b.checked = list.includes(b.value); });
+        g.value = "";
+      }
+      refresh();
+    });
+    refresh();
+  });
+  if (!scopeOutsideBound) {
+    scopeOutsideBound = true;
+    document.addEventListener("click", (e) => {
+      document.querySelectorAll(".scope-pick[open]").forEach((d) => { if (!d.contains(e.target)) d.open = false; });
+    });
+  }
+}
+let scopeOutsideBound = false;
+
 function filterForm(route, fieldsHtml) {
   return `<form class="card filters" id="filters" data-route="${route}" role="search">${fieldsHtml}`
     + `<div class="filter-actions"><button type="submit" class="btn">Apply</button>`
@@ -290,12 +362,17 @@ function bindFilters() {
   if (!form) return;
   const apply = (control) => {
     const values = {};
-    for (const [k, v] of new FormData(form)) values[k] = typeof v === "string" ? v.trim() : v;
+    // Repeated names (the scope picker's checkboxes) are joined with commas: countries=EE,LV.
+    for (const [k, v] of new FormData(form)) {
+      const t = typeof v === "string" ? v.trim() : v;
+      values[k] = Object.hasOwn(values, k) && t ? `${values[k]},${t}` : (values[k] || t);
+    }
     pendingFocus = control?.name || null;
     setParams(form.dataset.route, values);
   };
   form.addEventListener("submit", (e) => { e.preventDefault(); apply(document.activeElement); });
-  form.querySelectorAll("select, input[type=checkbox]").forEach((el) => el.addEventListener("change", () => apply(el)));
+  form.querySelectorAll("select:not([data-noauto]), input[type=checkbox]:not([data-noauto])").forEach((el) => el.addEventListener("change", () => apply(el)));
+  bindScopePickers(form);
 }
 
 function view(html) {
@@ -2652,6 +2729,20 @@ const GUIDE = [
     <p><strong>Click-through</strong>: a bar opens the matching filtered list (a country's projects, a year's CSRs, the lineage
       network of a country, the anomalies of a type and severity). Hover or focus a bar for its value and share; every chart
       has a <em>Table</em> view. The ${INFO_GLYPH} buttons explain how a figure is defined.</p>` },
+  { id: "progress", title: "CSR progress", html: () => `
+    <p>The <a href="#progress">CSR progress</a> tab answers one question: <strong>do recommendations supported by a TSI or SRSP project
+      progress more than the others?</strong> It reads the Commission's latest assessment of each country-specific recommendation (ECFIN
+      CSR database) and splits the assessed recommendations into those with at least one linked project and those without.</p>
+    <ul><li><strong>Tiles</strong>: share progressing (some progress, substantial progress or full implementation) among the supported
+      and the other recommendations, and the gap in percentage points, also within the same CSR year.</li>
+    <li><strong>Filters</strong>: countries (one by one, or a group such as the Baltic States or the cohesion countries), policy areas
+      (TSI areas, matched to the ECFIN labels of the recommendations), CSR years, link level, and only projects started by the assessment year.</li>
+    <li><strong>Breakdowns</strong>: by CSR year, by policy area and by country; greyed rows have too few recommendations to compare.</li>
+    <li><strong>Added value</strong>: where technical support meets the reforms asked by the Council, and which recommendations stall
+      without support (candidates for future support requests). <em>Prepare a briefing for this selection</em> turns the selection into a
+      briefing.</li>
+    <li><strong>Limits</strong>: an association, not proof of impact; links are AI-assessed; the 2026 recommendations are not assessed yet.</li></ul>
+    ${infoHtml("progress")}` },
   { id: "anomalies", title: "Anomalies", html: () => `
     <p>The Anomalies tab lists them with filters (type, severity, programme, years, country) and a CSV export. By default only high
       and medium severities are shown.</p>${infoHtml("anomalies")}` },
@@ -2775,7 +2866,7 @@ const GUIDE_IDS = GUIDE.map((s) => s.id);
 const GUIDE_PROJECT = "technical-support-transforming-existing-fully-state-administered-funded-pension-scheme-lithuania";
 const GUIDE_SHOT_DATE = "23 October 2026";
 const GUIDE_ESSENTIALS = [
-  { icon: "▦", title: "Tabs", text: "Dashboard, Projects, CSRs, Lineage, Anomalies, Impact and Guide. The ? button in the header brings you back here; the menu under your e-mail address holds Change password, Sign out (and Admin for administrators)." },
+  { icon: "▦", title: "Tabs", text: "Dashboard, Projects, CSRs, Lineage, CSR progress, Anomalies, Impact and Guide. The ? button in the header brings you back here; the menu under your e-mail address holds Change password, Sign out (and Admin for administrators)." },
   { icon: "⚲", title: "Filters", text: "Each list has its filters (country, programme, years, text search…). The address of the page keeps them: bookmark or share it." },
   { icon: "⇄", title: "Click through", text: "Bars, ribbons, cards and names open the matching view: a country's projects, a CSR document, a project page, a lineage view." },
   { icon: "⋔", title: "Lineage", text: "Sankey, Network and Sunburst show all countries at once; By country follows one country from its CSR documents to the projects and their outcome." },
@@ -5603,7 +5694,6 @@ function showSession(session) {
   $("session").hidden = !session;
   currentEmail = session?.user?.email || "";
   $("session-email").textContent = currentEmail;
-  paintProgressTab();
 }
 
 async function isTester(session) {
@@ -5628,29 +5718,9 @@ const PROGRESS_TABLES = [ // [table, columns, stable order for the pagination]
   ["projects", "project_id,year", ["project_id"]],
 ];
 const PROGRESS_LEVELS = { all: "All links", direct: "Direct links only" };
-// Exploratory page, shown to its owner only: SHA-256 of the lower-case e-mail (the address stays out of the public code).
-// Not access control: the tables it reads are open to every tester.
-const PROGRESS_OWNER_SHA256 = "8307da8b528207b828488888edf8ee976f8e120df08d7313d7d193d6d1999d6a";
-let progressOwnerCheck = { email: null, promise: Promise.resolve(false) };
 let progressCache = null; // { uid, data } for the session; cleared on sign-out and by the dashboard Refresh
 let progressView = null; // { model, width } of the page on screen (repaint on resize)
-
-/** Whether the signed-in user is the owner of the CSR progress page (checked once per e-mail). */
-function isProgressOwner() {
-  if (progressOwnerCheck.email !== currentEmail) {
-    const email = currentEmail.trim().toLowerCase();
-    const promise = email ? crypto.subtle.digest("SHA-256", new TextEncoder().encode(email))
-      .then((d) => [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("") === PROGRESS_OWNER_SHA256, () => false)
-      : Promise.resolve(false);
-    progressOwnerCheck = { email: currentEmail, promise };
-  }
-  return progressOwnerCheck.promise;
-}
-
-function paintProgressTab() {
-  const email = currentEmail;
-  isProgressOwner().then((ok) => { const tab = $("progress-tab"); if (tab && email === currentEmail) tab.hidden = !ok; });
-}
+const PROGRESS_EXPLAIN_KEY = "tsi-progress-explain"; // "closed" once the reader closed the explanation
 
 async function fetchProgressData() {
   const uid = currentUid;
@@ -5686,6 +5756,29 @@ function progressTable(rows, head, labelHtml) {
   return table([head, "Supported", "Progressing", "Not supported", "Progressing", "Gap"], body, "No assessed recommendation.");
 }
 
+/** "How it works · Why it matters · Read with care": open until the reader closes it (remembered in this browser). */
+function progressExplainHtml() {
+  const closed = storageGet(PROGRESS_EXPLAIN_KEY) === "closed";
+  return `<details class="card progress-explain" id="progress-explain"${closed ? "" : " open"}><summary>What this page shows and why it matters</summary>`
+    + `<div class="explain-grid">`
+    + `<div><h3>How it works</h3><p>Every year the Commission assesses how far each country-specific recommendation (CSR) has been implemented: `
+    + `no progress, limited, some, substantial progress or full implementation (ECFIN CSR database, latest assessment). The page splits the assessed `
+    + `recommendations into those supported by at least one TSI or SRSP project (project–CSR links assessed by AI) and the others, and compares the `
+    + `share <strong>progressing</strong> (some progress or better). The <strong>gap</strong> is the difference in percentage points.</p></div>`
+    + `<div><h3>Why it matters</h3><p>It shows where technical support meets the reforms the Council asked for, which reforms advance with support and `
+    + `which without, and which recommendations stall <em>without</em> any support: candidates for future technical support requests. Filter by countries `
+    + `(or a group such as the Baltic States) and policy areas to compare groups, then prepare a briefing on the selection.</p></div>`
+    + `<div><h3>Read with care</h3><p>An association, not proof of impact: countries committed to a reform may also ask for more support, and older `
+    + `recommendations had more time both to progress and to be supported (the <em>same-year gap</em> corrects for that). Links are AI-assessed; `
+    + `groups of fewer than ${PG.FEW} recommendations are greyed. ${infoButton("progress", "More on the method")}</p></div>`
+    + `</div></details>`;
+}
+
+function bindProgressExplain() {
+  const d = $("progress-explain");
+  d?.addEventListener("toggle", () => storageSet(PROGRESS_EXPLAIN_KEY, d.open ? "" : "closed"));
+}
+
 async function renderProgress(p, seq) {
   let data;
   try { data = await fetchProgressData(); } catch (error) {
@@ -5699,17 +5792,24 @@ async function renderProgress(p, seq) {
   const clamp = (y) => Math.min(years[years.length - 1], Math.max(years[0], y));
   const level = p.get("level") === "direct" ? "direct" : "all";
   const before = p.get("before") === "1";
+  const scope = S.parseScope(p, { topics: Object.keys(POLICY_AREAS) });
+  // TSI policy areas -> ECFIN labels of the recommendations (the same mapping as the briefing).
+  const areaLabels = [...new Set(scope.topics.flatMap((t) => B.TOPIC_CSR_AREAS[t] || []))];
+  const filter = { level, before, countries: scope.countries, areaLabels: scope.topics.length ? (areaLabels.length ? areaLabels : ["(no ECFIN label)"]) : [] };
   // Default end: the last CSR year with a supported recommendation (later ones have no linked project yet).
-  const lastYear = PG.lastSupportedYear(PG.progressModel(data, { level, before })) ?? years[years.length - 1];
+  const lastYear = PG.lastSupportedYear(PG.progressModel(data, filter)) ?? years[years.length - 1];
   let from = clamp(yearOf(p, "from") ?? years[0]);
   let to = clamp(yearOf(p, "to") ?? lastYear);
   if (from > to) [from, to] = [to, from];
-  const m = PG.progressModel(data, { from, to, level, before });
+  const m = PG.progressModel(data, { ...filter, from, to });
   const yearMap = Object.fromEntries(years.map((y) => [String(y), String(y)]));
   const form = filterForm("progress",
-    selectField("from", "CSR years from", yearMap, String(from), null) + selectField("to", "to", yearMap, String(to), null)
+    scopePickerHtml({ countries: scope.countries, topics: scope.topics })
+    + selectField("from", "CSR years from", yearMap, String(from), null) + selectField("to", "to", yearMap, String(to), null)
     + selectField("level", "Project links", PROGRESS_LEVELS, level, null)
     + checkField("before", "Only projects started by the assessment year", before));
+  const scopeText = S.scopeLabel(scope, { names: COUNTRIES, areas: POLICY_AREAS });
+  const briefingScope = { ...scope, from, to };
   const tiles = `<div class="kpis">`
     + tile("Supported recommendations", pctOf(PG.okShare(m.s)), `progressing · ${fmtN(m.s.n)} recommendations, ${fmtN(m.projects)} projects`, "progress")
     + tile("Not supported", pctOf(PG.okShare(m.u)), `progressing · ${fmtN(m.u.n)} recommendations`)
@@ -5724,10 +5824,9 @@ async function renderProgress(p, seq) {
   const section = (id, h, sub, html) => `<section class="dash-section" aria-labelledby="${id}"><h3 id="${id}">${h}</h3><p class="muted small">${sub}</p>`
     + `${html}</section>`;
   const greyed = `Greyed rows have fewer than ${PG.FEW} recommendations on one side: too few to compare.`;
-  view(`${title}<p class="muted">Does a recommendation progress more when a TSI or SRSP project supports it? The Commission assesses
-      every year how far each country-specific recommendation has been implemented (ECFIN database, latest assessment). This page compares
-      the recommendations with at least one linked project and those without. A correlation, not proof of impact: countries committed to
-      a reform may also ask for more support. Links assessed by AI: verify before use.</p>`
+  view(`${title}${progressExplainHtml()}`
+    + (scope.countries.length || scope.topics.length ? `<p class="muted small">Selection: ${esc(scopeText)}. `
+      + `<button type="button" class="btn btn-secondary btn-small" data-briefing-scope="${esc(JSON.stringify(briefingScope))}" aria-haspopup="dialog">Prepare a briefing for this selection</button></p>` : "")
     + form + `<div id="prog" class="dash">${tiles}${few}`
     + `<section class="dash-section"><div class="dash-grid">${split}</div></section>`
     + section("prog-year", "By CSR year", greyed, progressTable(m.byYear, "CSR year", (y) => esc(y)))
@@ -5738,6 +5837,7 @@ async function renderProgress(p, seq) {
     + `(marked not assessed, or not yet assessed) are left out.</p>`
     + `<div id="dash-tip" class="viz-tip" role="tooltip" hidden></div></div>`);
   bindFilters();
+  bindProgressExplain();
   progressView = { model: m, width: 0 };
   paintProgressCharts();
   bindDashTips($("prog"));
@@ -5774,7 +5874,7 @@ async function route(seq) {
     else if (r === "csrdoc" && id) await renderCsrDoc(id, seq);
     else if (r === "dashboard") await renderDashboard(seq);
     else if (r === "lineage") await renderLineage(p, seq);
-    else if (r === "progress" && (await isProgressOwner())) await renderProgress(p, seq);
+    else if (r === "progress") await renderProgress(p, seq);
     else if (r === "csrs") await renderCsrs(p, seq);
     else if (r === "anomalies") await renderAnomalies(p, seq);
     else if (r === "reviews") await renderReviews(p, seq);
