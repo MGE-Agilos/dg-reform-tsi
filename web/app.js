@@ -1898,6 +1898,7 @@ function paintChat({ scroll = false, status = "" } = {}) {
   $("chat-send").disabled = chatPending;
   $("chat-new").disabled = chatPending || (!history.length && !chatError);
   $("chat-word").disabled = chatPending || !history.length;
+  $("chat-briefing").disabled = chatPending || !history.some((m) => m.role === "assistant");
   log.querySelectorAll("[data-example]").forEach((b) => b.addEventListener("click", () => sendChat(CHAT_EXAMPLES[b.dataset.example])));
   $("chat-retry")?.addEventListener("click", () => sendChat(null));
   if (scroll) log.lastElementChild?.scrollIntoView({ block: "start", behavior: "smooth" });
@@ -1970,7 +1971,9 @@ function mountChat() {
     + `placeholder="e.g. Which projects support pension reforms in Portugal?"></textarea>`
     + `<button type="submit" class="btn" id="chat-send">Send</button></div>`
     + `<div class="chat-actions"><span class="muted small">Enter to send · Shift+Enter for a new line</span>`
-    + `<span class="toolbar-actions"><button type="button" class="btn btn-secondary" id="chat-word" `
+    + `<span class="toolbar-actions"><button type="button" class="btn btn-secondary" id="chat-briefing" aria-haspopup="dialog" `
+    + `title="A Word briefing on the countries and policy areas of this conversation">Briefing</button>`
+    + `<button type="button" class="btn btn-secondary" id="chat-word" `
     + `aria-label="Export this conversation to Word">Export to Word</button>`
     + `<button type="button" class="btn btn-secondary" id="chat-new">New conversation</button></span></div></form>`;
   const input = $("chat-input");
@@ -1987,6 +1990,7 @@ function mountChat() {
     const date = new Date();
     return { doc: W.buildChatDocument(D, lexer, { messages: getChat(), email: currentEmail, date }), name: W.chatFileName(date) };
   }));
+  $("chat-briefing").addEventListener("click", () => briefingFromChat($("chat-briefing")));
   $("chat-new").addEventListener("click", () => {
     setChat([]);
     chatError = "";
@@ -1997,6 +2001,30 @@ function mountChat() {
   paintAssistantContext();
   // Markdown libraries arrive later: repaint the answers once they are there.
   if (!markdown) loadMarkdown().then((lib) => { if (lib && assistantMounted) paintChat(); });
+}
+
+/** Scope of the page on screen (countries, policy areas and years of its filters), for the briefing from the chat. */
+function currentPageScope() {
+  const { route: r, params: p } = params();
+  if (!["projects", "csrs", "lineage", "progress", "compare", "anomalies"].includes(r)) return { countries: [], topics: [], from: null, to: null };
+  return S.parseScope(p, { topics: Object.keys(POLICY_AREAS) });
+}
+
+/**
+ * "Briefing" in the assistant: the briefing dialog with the scope named in the questions (countries, groups, policy areas,
+ * years), completed by the page's filters, and the questions in the occasion's context. No AI call: everything is editable.
+ */
+function briefingFromChat(opener) {
+  const questions = getChat().filter((m) => m.role === "user").map((m) => m.content.trim()).filter(Boolean);
+  const named = S.scopeFromText(questions.join("\n"), { names: COUNTRIES, areas: POLICY_AREAS, keywords: B.TOPIC_KEYWORDS });
+  const scope = S.mergeScope(currentPageScope(), named);
+  const last = questions.slice(-5);
+  const context = last.length ? `Questions raised with the assistant:\n${last.map((q) => `- ${q.replace(/\s+/g, " ").slice(0, 600)}`).join("\n")}` : "";
+  const label = S.scopeLabel(scope, { names: COUNTRIES, areas: POLICY_AREAS });
+  const notice = label
+    ? `Scope read from the conversation${currentPageScope().countries.length || currentPageScope().topics.length ? " and the page filters" : ""}: ${label}. Check it, then describe the occasion.`
+    : "No country found in the conversation: choose the countries (or a group), then describe the occasion.";
+  openBriefing(scope, opener, { title: questions[0] ? questions[0].replace(/\s+/g, " ").slice(0, 200) : "", context, notice });
 }
 
 /** Drops the chat markup (sign-out or another user): rebuilt on the next opening. */
@@ -5007,7 +5035,9 @@ function openBriefing(target, opener, prefill = {}) {
   if (prefill.title || prefill.context) {
     const o = briefingSavedOccasion();
     if (prefill.title && !o.title) o.title = prefill.title.slice(0, B.OCCASION_MAX.title);
-    if (prefill.context) o.context = [prefill.context, o.context].filter(Boolean).join("\n\n").slice(0, B.OCCASION_MAX.context);
+    if (prefill.context && !String(o.context || "").includes(prefill.context)) {
+      o.context = [prefill.context, o.context].filter(Boolean).join("\n\n").slice(0, B.OCCASION_MAX.context);
+    }
     storageSet(BRIEFING_OCCASION_KEY, JSON.stringify(o));
   }
   dialog.innerHTML = briefingFormHtml(scope, { notice: prefill.notice || "" });
