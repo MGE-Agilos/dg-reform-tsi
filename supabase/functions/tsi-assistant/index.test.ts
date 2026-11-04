@@ -800,6 +800,7 @@ const BRIEFING_JSON = {
   defensives: [{ question: "Why so few projects?", answer: "Support is demand-driven." }],
   background: "Croatia had 4 projects in the period.",
   reader_notes: ["Project-CSR links are assessed by AI from the project text."],
+  cross_insights: [],
 };
 
 test("briefing: one model call without tools, structured JSON output, effort low, facts in the user message; {briefing, saved: false}", async () => {
@@ -813,7 +814,7 @@ test("briefing: one model call without tools, structured JSON output, effort low
   const body = sent(f.modelCalls()[0]);
   assert.equal(body.tools, undefined);
   assert.equal(body.max_tokens, MAX_TOKENS.briefing);
-  assert.ok(MAX_TOKENS.briefing >= 1500 && MAX_TOKENS.briefing <= 4000);
+  assert.ok(MAX_TOKENS.briefing >= 1500 && MAX_TOKENS.briefing <= 5000);
   assert.equal(body.model, DEFAULT_MODEL);
   assert.equal(body.system, BRIEFING_SYSTEM);
   assert.deepEqual(body.output_config, { effort: "low", format: { type: "json_schema", schema: BRIEFING_SCHEMA } });
@@ -842,7 +843,7 @@ test("briefing prompt: facts and occasion only, framing without figures, questio
   assert.match(BRIEFING_SYSTEM, /in that order/);
   assert.match(BRIEFING_SYSTEM, /assessed by AI/);
   assert.match(BRIEFING_SYSTEM, /JSON object only/);
-  assert.deepEqual(BRIEFING_FIELDS, ["scene_setter", "purpose", "role", "speaking_points", "defensives", "background", "reader_notes"]);
+  assert.deepEqual(BRIEFING_FIELDS, ["scene_setter", "purpose", "role", "speaking_points", "defensives", "background", "reader_notes", "cross_insights"]);
   assert.deepEqual(BRIEFING_SCHEMA.required, [...BRIEFING_FIELDS]);
   assert.deepEqual(BRIEFING_SCHEMA.properties.role.required, ["summary", "participants"]);
   assert.deepEqual(BRIEFING_SCHEMA.properties.speaking_points.items.required, ["question", "points"]);
@@ -875,7 +876,7 @@ test("briefing validation: country, period, topic and facts; 400 or 413 without 
     assert.equal(f.modelCalls().length, 0);
   }
   assert.deepEqual(validateBriefing({ ...briefingBody, country: " hr ", topic: "  " }),
-    { country: "HR", period: { from: 2021, to: 2026 }, topic: null, facts: FACTS, occasion: OCCASION });
+    { country: "HR", countries: ["HR"], period: { from: 2021, to: 2026 }, topic: null, topics: [], facts: FACTS, occasion: OCCASION });
   assert.equal(MAX_FACTS, 25000);
 });
 
@@ -1002,4 +1003,48 @@ test("briefing: an invented figure is returned in unverified, the briefing is st
   const res = await handle(post(briefingBody), ENV, fakeFetch({ model: [textReply(JSON.stringify(withInvented))] }).impl);
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), { briefing: withInvented, unverified: ["Croatia received 99 missions."], saved: false });
+});
+
+// ---------- several countries and themes ----------
+
+test("briefing validation: countries (1-27 EU codes, unique, sorted) and topics (up to 4) win over country and topic", async () => {
+  const input = validateBriefing({ ...briefingBody, countries: ["lv", "EE", "EE", " lt "], topics: ["Digital transition", " Skills, education and training "] });
+  assert.deepEqual(input.countries, ["EE", "LT", "LV"]);
+  assert.equal(input.country, "EE");
+  assert.deepEqual(input.topics, ["Digital transition", "Skills, education and training"]);
+  assert.equal(input.topic, "Digital transition; Skills, education and training");
+  const legacy = validateBriefing(briefingBody);
+  assert.deepEqual([legacy.countries, legacy.topics], [["HR"], ["Health and long-term care"]]);
+  const bad: unknown[] = [
+    { ...briefingBody, countries: [] }, { ...briefingBody, countries: ["EE", "XX"] }, { ...briefingBody, countries: "EE" },
+    { ...briefingBody, countries: [5] }, { ...briefingBody, topics: ["a", "b", "c", "d", "e"] }, { ...briefingBody, topics: [3] },
+    { ...briefingBody, topics: ["x".repeat(121)] }, { ...briefingBody, topics: "a" },
+  ];
+  for (const body of bad) {
+    const f = fakeFetch();
+    assert.equal((await handle(post(body), ENV, f.impl)).status, 400, JSON.stringify(body).slice(0, 120));
+    assert.equal(f.modelCalls().length, 0);
+  }
+});
+
+test("briefingUserMessage: several countries and themes are listed; the prompt has the comparison rules", () => {
+  const text = briefingUserMessage(validateBriefing({ ...briefingBody, countries: ["EE", "LV", "LT"], topics: ["Digital transition", "Green transition"] }));
+  assert.ok(text.includes("\nCountries: EE, LT, LV\n"));
+  assert.ok(text.includes("\nPolicy areas: Digital transition; Green transition\n"));
+  const one = briefingUserMessage(validateBriefing(briefingBody));
+  assert.ok(one.includes("\nCountry: HR\n"));
+  assert.ok(one.includes("\nPolicy area: Health and long-term care\n"));
+  assert.match(BRIEFING_SYSTEM, /SEVERAL COUNTRIES OR POLICY AREAS/);
+  assert.match(BRIEFING_SYSTEM, /never rank/i);
+  assert.match(BRIEFING_SYSTEM, /cross_insights/);
+  assert.equal(BRIEFING_SCHEMA.properties.cross_insights.type, "array");
+});
+
+test("parseBriefing: cross_insights cleaned and capped at 5, [] when missing; checked for figures", () => {
+  const p = parseBriefing(JSON.stringify({ ...BRIEFING_JSON, cross_insights: [" A  1 ", "", "B", "C", "D", "E", "F"] }));
+  assert.deepEqual(p.cross_insights, ["A 1", "B", "C", "D", "E"]);
+  assert.deepEqual(parseBriefing(JSON.stringify(BRIEFING_JSON)).cross_insights, []);
+  const input = validateBriefing(briefingBody);
+  const flagged = unverifiedTexts({ ...parseBriefing(JSON.stringify(BRIEFING_JSON)), cross_insights: ["Croatia has 977 projects."] }, input);
+  assert.ok(flagged.includes("Croatia has 977 projects."));
 });

@@ -37,7 +37,7 @@ export const MAX_TOTAL = 40000; // all messages together
 export const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 export const ANTHROPIC_VERSION = "2023-06-01";
 export const DEFAULT_MODEL = "claude-sonnet-5-5";
-export const MAX_TOKENS: Record<ServiceName, number> = { chat: 16000, impact: 16000, briefing: 4000 };
+export const MAX_TOKENS: Record<ServiceName, number> = { chat: 16000, impact: 16000, briefing: 5000 };
 export const EFFORT: Record<ServiceName, string> = { chat: "low", impact: "medium", briefing: "low" };
 export const MAX_FACTS = 25000; // characters of JSON.stringify(facts) (briefing)
 export const MAX_STEPS = 8; // tool rounds; then one last call without tools
@@ -899,7 +899,7 @@ async function saveImpact(answer: string, messages: Message[], env: Env, fetchIm
 
 // ---------- country briefing (single call, no tools, nothing saved) ----------
 
-export const BRIEFING_FIELDS = ["scene_setter", "purpose", "role", "speaking_points", "defensives", "background", "reader_notes"] as const;
+export const BRIEFING_FIELDS = ["scene_setter", "purpose", "role", "speaking_points", "defensives", "background", "reader_notes", "cross_insights"] as const;
 /** question: "" when the block answers no announced question; reader_notes: caveats for the official only, never said aloud. */
 export type Briefing = {
   scene_setter: string;
@@ -909,13 +909,17 @@ export type Briefing = {
   defensives: { question: string; answer: string }[];
   background: string;
   reader_notes: string[];
+  cross_insights: string[];
 };
-const BRIEFING_LIMITS = { paragraph: 1500, bullet: 400, answer: 800, name: 120, purpose: 5, participants: 12, blocks: 5, points: 6, defensives: 4, notes: 5 };
+const BRIEFING_LIMITS = { paragraph: 1500, bullet: 400, answer: 800, name: 120, purpose: 5, participants: 12, blocks: 5, points: 6, defensives: 4, notes: 5, insights: 5 };
 export const OCCASION_FORMATS: Record<string, string> = { bilateral: "Bilateral meeting", panel: "Panel discussion",
   speech: "Speech", mission: "Country mission", conference: "Conference", other: "Other" };
 export const OCCASION_MAX = { recipient: 120, title: 200, place: 120, context: 8000, background: 2000 } as const;
 export type Occasion = { recipient: string; title: string; date: string; place: string; format: string; context: string; background: string };
-export type BriefingInput = { country: string; period: { from: number; to: number }; topic: string | null; facts: Record<string, unknown>; occasion: Occasion };
+/** country / topic: the first country and the themes joined (single-country wording); countries / topics: the whole scope. */
+export type BriefingInput = { country: string; countries: string[]; period: { from: number; to: number }; topic: string | null; topics: string[];
+  facts: Record<string, unknown>; occasion: Occasion };
+export const MAX_BRIEFING_TOPICS = 4;
 export const BRIEFING_SYSTEM = `You write the AI-generated parts of a briefing prepared for a European Commission official (DG REFORM)
 before an occasion about one Member State: a meeting, a panel, a speech, a country mission or a conference. The briefing
 follows the Commission's usual layout: scene setter, purpose, role, speaking points, defensives, background. The user
@@ -967,6 +971,18 @@ Fields:
   results status comes from the project pages and is not an assessment of success; the latest Commission-stage
   recommendations are not yet adopted nor assessed; projects known only by their title are not linked yet; related past
   projects are AI-suggested leads. Only the notes relevant to what the briefing says.
+- cross_insights: an empty list for one country and at most one policy area. Otherwise 2 to 5 short bullets on what
+  crossing the countries and policy areas shows, from the FACTS only (matrix, highlights, shared gaps): shared challenges,
+  clear differences, areas where support and progress diverge. For the recipient, not said aloud.
+
+SEVERAL COUNTRIES OR POLICY AREAS. When the user message lists several countries or policy areas, FACTS hold a
+"matrix" (one row per country, one cell per policy area plus a total; the meaning of each number of a cell is given in
+"cell_fields"), "totals", "highlights", "shared_gaps" and, for a few countries, "countries_detail". Then:
+- Write for the group: the scene setter and background speak of the countries together; the speaking points carry
+  messages on shared challenges, on what technical support brings across them and on clear differences.
+- Compare factually and never rank Member States: no "best", "worst", "lagging" or "leader"; name a country with a
+  figure or a fact from the FACTS only. Differences are explained by context and demand, not by merit.
+- Defensives may include why one country or area gets less support than another (support is demand-driven).
 - Answer with the JSON object only.`;
 
 const S = { type: "string" };
@@ -983,6 +999,7 @@ export const BRIEFING_SCHEMA = {
     defensives: { type: "array", items: object({ question: S, answer: S }) },
     background: S,
     reader_notes: strings,
+    cross_insights: strings,
   },
   required: [...BRIEFING_FIELDS],
   additionalProperties: false,
@@ -1021,9 +1038,25 @@ export function validateOccasion(value: unknown): Occasion {
 /** Validates the briefing request; facts above MAX_FACTS characters (as JSON) -> 413. */
 export function validateBriefing(body: unknown): BriefingInput {
   if (!body || typeof body !== "object") throw new HttpError(400, "Invalid request body");
-  const { country, period, topic, facts, occasion } = body as { country?: unknown; period?: unknown; topic?: unknown; facts?: unknown; occasion?: unknown };
-  const code = typeof country === "string" ? country.trim().toUpperCase() : "";
-  if (!COUNTRIES.includes(code)) throw new HttpError(400, "country must be an EU ISO code");
+  const { country, countries, period, topic, topics, facts, occasion } = body as { country?: unknown; countries?: unknown; period?: unknown;
+    topic?: unknown; topics?: unknown; facts?: unknown; occasion?: unknown };
+  let codes: string[];
+  if (countries !== undefined && countries !== null) {
+    if (!Array.isArray(countries) || !countries.length || countries.some((c) => typeof c !== "string")) throw new HttpError(400, "countries must be a list of EU ISO codes");
+    codes = [...new Set((countries as string[]).map((c) => c.trim().toUpperCase()))].sort();
+    if (codes.some((c) => !COUNTRIES.includes(c))) throw new HttpError(400, "countries must be EU ISO codes");
+  } else {
+    const code = typeof country === "string" ? country.trim().toUpperCase() : "";
+    if (!COUNTRIES.includes(code)) throw new HttpError(400, "country must be an EU ISO code");
+    codes = [code];
+  }
+  let themes: string[] = [];
+  if (topics !== undefined && topics !== null) {
+    if (!Array.isArray(topics) || topics.length > MAX_BRIEFING_TOPICS || topics.some((t) => typeof t !== "string" || t.length > 120)) {
+      throw new HttpError(400, `topics must be a list of at most ${MAX_BRIEFING_TOPICS} short strings`);
+    }
+    themes = [...new Set((topics as string[]).map((t) => t.replace(/\s+/g, " ").trim()).filter(Boolean))];
+  }
   const { from, to } = (period && typeof period === "object" ? period : {}) as { from?: unknown; to?: unknown };
   const year = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v >= 2010 && v <= 2100;
   if (!year(from) || !year(to) || (from as number) > (to as number)) throw new HttpError(400, "period must be {from, to} years with from <= to");
@@ -1037,7 +1070,9 @@ export function validateBriefing(body: unknown): BriefingInput {
     throw new HttpError(400, "facts must be JSON");
   }
   if (size > MAX_FACTS) throw new HttpError(413, `facts exceed ${MAX_FACTS} characters`);
-  return { country: code, period: { from: from as number, to: to as number }, topic: typeof topic === "string" && topic.trim() ? topic.trim() : null, facts: facts as Record<string, unknown>, occasion: occ };
+  if (!themes.length && typeof topic === "string" && topic.trim()) themes = [topic.trim()];
+  return { country: codes[0], countries: codes, period: { from: from as number, to: to as number }, topic: themes.length ? themes.join("; ") : null,
+    topics: themes, facts: facts as Record<string, unknown>, occasion: occ };
 }
 
 const cleanText = (v: unknown, max: number) => {
@@ -1078,6 +1113,7 @@ export function parseBriefing(text: string): Briefing {
       .filter((d) => d.question && d.answer).slice(0, L.defensives),
     background: cleanText(obj.background, L.paragraph),
     reader_notes: texts(obj.reader_notes, L.bullet, L.notes),
+    cross_insights: texts(obj.cross_insights, L.bullet, L.insights),
   };
   if (!briefing.scene_setter || !briefing.speaking_points.length) throw new HttpError(502, "The model did not return a valid briefing");
   return briefing;
@@ -1093,7 +1129,9 @@ export function briefingUserMessage(input: BriefingInput): string {
   return `OCCASION\nRecipient: ${o.recipient}\nOccasion: ${o.title}\nDate: ${o.date || "not given"}\nPlace: ${o.place || "not given"}\n`
     + `Format: ${OCCASION_FORMATS[o.format]}\n`
     + userBlock("CONTEXT", o.context) + userBlock("BACKGROUND", o.background)
-    + `\nCountry: ${input.country}\nPeriod: ${input.period.from}-${input.period.to}\nPolicy area: ${input.topic ?? "all"}\n`
+    + (input.countries.length > 1 ? `\nCountries: ${input.countries.join(", ")}` : `\nCountry: ${input.country}`)
+    + `\nPeriod: ${input.period.from}-${input.period.to}\n`
+    + (input.topics.length > 1 ? `Policy areas: ${input.topics.join("; ")}\n` : `Policy area: ${input.topic ?? "all"}\n`)
     + `FACTS (JSON):\n${JSON.stringify(input.facts)}`;
 }
 
@@ -1145,7 +1183,7 @@ export function allowedNumbers(input: BriefingInput): { plain: Set<string>; shar
 
 function briefingTexts(b: Briefing): string[] {
   return [b.scene_setter, ...b.purpose, b.role.summary, ...b.role.participants.flatMap((p) => [p.name, p.function]),
-    ...b.speaking_points.flatMap((s) => [s.question, ...s.points]), ...b.defensives.flatMap((d) => [d.question, d.answer]), b.background, ...b.reader_notes]
+    ...b.speaking_points.flatMap((s) => [s.question, ...s.points]), ...b.defensives.flatMap((d) => [d.question, d.answer]), b.background, ...b.reader_notes, ...(b.cross_insights || [])]
     .filter(Boolean);
 }
 
