@@ -1,6 +1,10 @@
 // Briefing for an occasion: pure model of the data of one country and period (optionally one policy area), the occasion
 // helpers and the compact "facts" digest sent to the AI (tsi-assistant, service "briefing"). No DOM, no network: app.js fetches the
 // rows, word-export.js builds the document, so Node can test this module.
+// Several countries and themes: one model per country (briefingModel with `topics`), crossed by compareModel.
+
+import { progressRank, PROGRESS_FROM } from "./progress.js";
+import { groupOf, countriesLabel, joinNames } from "./scope.js";
 
 export const COMMISSION_STAGE = "Commission recommendation";
 export const FACTS_MAX = 25000; // characters of JSON.stringify(facts), checked again by the edge function (413)
@@ -142,12 +146,24 @@ export function occasionErrors(o) {
   return e;
 }
 
+function fileName(subject, occasion = {}, today = new Date()) {
+  const day = validDay(String(occasion?.date ?? "")) ? occasion.date : isoDay(today);
+  const slug = String(occasion?.title ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "").slice(0, 60).replace(/-+$/, "");
+  return `briefing-${subject}-${day}${slug ? `-${slug}` : ""}.docx`;
+}
+
 /** briefing-<ISO>-<occasion day or today>[-<occasion slug>].docx */
 export function briefingFileName(country, occasion = {}, today = new Date()) {
-  const day = validDay(String(occasion.date ?? "")) ? occasion.date : isoDay(today);
-  const slug = String(occasion.title ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "").slice(0, 60).replace(/-+$/, "");
-  return `briefing-${String(country).replace(/[^A-Z]/gi, "").toUpperCase()}-${day}${slug ? `-${slug}` : ""}.docx`;
+  return fileName(String(country).replace(/[^A-Z]/gi, "").toUpperCase(), occasion, today);
+}
+
+/** briefing-<group key, or up to 5 ISO codes and "n-more">-<day>[-<slug>].docx */
+export function compareFileName(countries, occasion = {}, today = new Date()) {
+  const codes = [...new Set(countries)].map((c) => String(c).replace(/[^A-Z]/gi, "").toUpperCase()).filter(Boolean).sort();
+  const g = groupOf(codes);
+  const subject = g && codes.length > 1 ? g : `${codes.slice(0, 5).join("-")}${codes.length > 5 ? `-${codes.length - 5}-more` : ""}`;
+  return fileName(subject, occasion, today);
 }
 
 /** Latest scored analysis per project (the latest one when none is scored). Rows must be sorted newest first. */
@@ -167,25 +183,27 @@ export function latestImpacts(rows) {
  * (csr_documents of the country), csrs (with csr_parts(part_id, policy_areas, project_csr_links(project_id, level, basis))),
  * impacts (impact_reports rows, newest first), anomalies (rows of the country), related (optional: csr_related_projects rows of the
  * country's recommendations with projects(title, programme, year, countries), sorted same country and high relevance first) }
- * opts: { country, countryName, from, to, topic (slug or ""), topicLabel, areaLabel(slug), date }
+ * opts: { country, countryName, from, to, topics (slugs; [] = all) or topic (one slug or ""), topicLabel, areaLabel(slug), date }
+ * A project matches when its policy area is one of the topics; a recommendation when it matches one of them (rec.topics).
  */
 export function briefingModel(raw, opts) {
   const { country, from, to } = opts;
-  const topic = opts.topic || "";
+  const topics = [...new Set(Array.isArray(opts.topics) && opts.topics.length ? opts.topics : (opts.topic ? [opts.topic] : []))];
+  const topic = topics.length === 1 ? topics[0] : ""; // one theme: the single-country document names it
   const areaLabel = opts.areaLabel || ((s) => s || "");
   const inPeriod = (y) => num(y) >= from && num(y) <= to;
   const byId = new Map();
   for (const p of [...arr(raw.linked), ...arr(raw.projects)]) if (p?.project_id) byId.set(p.project_id, p);
   const countryProjects = arr(raw.projects).filter((p) => p && arr(p.countries).includes(country) && inPeriod(p.year));
-  const projects = countryProjects.filter((p) => !topic || p.policy_area === topic)
+  const projects = countryProjects.filter((p) => !topics.length || topics.includes(p.policy_area))
     .sort((a, b) => num(b.year) - num(a.year) || String(a.title).localeCompare(String(b.title)));
   const topicProjectIds = new Set(projects.map((p) => p.project_id));
   const impacts = latestImpacts(raw.impacts);
 
   // Documents of the period (csr_documents, or rebuilt from the recommendations).
   const docsById = new Map(arr(raw.docs).filter((d) => d && inPeriod(d.year)).map((d) => [d.doc_id, d]));
-  const labels = new Set(TOPIC_CSR_AREAS[topic] || []);
-  const keyword = TOPIC_KEYWORDS[topic] || null;
+  const labelsOf = Object.fromEntries(topics.map((t) => [t, new Set(TOPIC_CSR_AREAS[t] || [])]));
+  const labels = new Set(topics.flatMap((t) => TOPIC_CSR_AREAS[t] || []));
   const recs = [];
   for (const c of arr(raw.csrs)) {
     if (!c || !c.csr_id || !inPeriod(c.year)) continue;
@@ -205,16 +223,18 @@ export function briefingModel(raw, opts) {
       had.parts.push(l.part_id);
       pairs.set(l.project_id, had);
     }
-    let match = "all";
-    if (topic) {
-      if (areas.some((a) => labels.has(a))) match = "areas";
-      else if ([...pairs.keys()].some((pid) => byId.get(pid)?.policy_area === topic)) match = "projects";
-      else if (!areas.length && keyword?.test(String(c.text ?? ""))) match = "text";
-      else match = null;
-    }
+    // Per theme: its ECFIN labels, else a supporting project of that area, else (not classified) key words of the text.
+    const kinds = topics.map((t) => {
+      if (areas.some((a) => labelsOf[t].has(a))) return "areas";
+      if ([...pairs.keys()].some((pid) => byId.get(pid)?.policy_area === t)) return "projects";
+      if (!areas.length && TOPIC_KEYWORDS[t]?.test(String(c.text ?? ""))) return "text";
+      return null;
+    });
+    const recTopics = topics.filter((_, i) => kinds[i]);
+    const match = !topics.length ? "all" : (["areas", "projects", "text"].find((k) => kinds.includes(k)) || null);
     recs.push({
       id: c.csr_id, year: num(c.year), number: c.number ?? "", docId, text: String(c.text ?? ""), summary: firstSentence(c.text),
-      areas, assessment: assessmentLabel(c.assessment), assessmentYear: c.assessment_year ?? null, match,
+      areas, assessment: assessmentLabel(c.assessment), assessmentYear: c.assessment_year ?? null, match, topics: recTopics,
       subLinks: links.length,
       supporters: [...pairs.entries()].map(([pid, v]) => ({ id: pid, level: v.level, parts: [...new Set(v.parts)].sort() })),
     });
@@ -268,7 +288,7 @@ export function briefingModel(raw, opts) {
   const scored = impactList.filter((p) => Number.isFinite(p.impact.score));
 
   const anomalies = arr(raw.anomalies).filter((a) => a && String(a.countries ?? "").split(/\s*,\s*/).includes(country)
-    && (a.year === null || a.year === undefined || inPeriod(a.year)) && (!topic || topicProjectIds.has(a.project_id)));
+    && (a.year === null || a.year === undefined || inPeriod(a.year)) && (!topics.length || topicProjectIds.has(a.project_id)));
   const sevRank = { high: 0, medium: 1, low: 2, info: 3 };
   anomalies.sort((a, b) => (sevRank[a.severity] ?? 9) - (sevRank[b.severity] ?? 9) || num(b.year) - num(a.year) || String(a.title).localeCompare(String(b.title)));
 
@@ -303,7 +323,8 @@ export function briefingModel(raw, opts) {
   }
 
   return {
-    country, countryName: opts.countryName || country, from, to, topic, topicLabel: topic ? (opts.topicLabel || areaLabel(topic)) : "",
+    country, countryName: opts.countryName || country, from, to, topic, topics,
+    topicLabel: topics.length ? (opts.topicLabel || joinNames(topics.map(areaLabel))) : "",
     date: opts.date || new Date(),
     projects: infos, byYear, programmes,
     byArea: count(infos, (p) => p.policyArea || "none").map(([k, n]) => ({ key: k, label: k === "none" ? "Not classified" : areaLabel(k), n })),
@@ -318,7 +339,7 @@ export function briefingModel(raw, opts) {
     anomalies, anomalyCounts: count(anomalies, (a) => a.severity || "none").map(([k, n]) => ({ key: k, n }))
       .sort((a, b) => (sevRank[a.key] ?? 9) - (sevRank[b.key] ?? 9)),
     gaps, related, sources: [...sources.entries()].map(([url, label]) => ({ url, label })),
-    topicMatch: topic ? { areas: shownRecs.filter((r) => r.match === "areas").length, projects: shownRecs.filter((r) => r.match === "projects").length,
+    topicMatch: topics.length ? { areas: shownRecs.filter((r) => r.match === "areas").length, projects: shownRecs.filter((r) => r.match === "projects").length,
       text: shownRecs.filter((r) => r.match === "text").length, excluded: recs.length - shownRecs.length, labels: [...labels] } : null,
   };
 }
@@ -342,7 +363,7 @@ export function keyFigures(m) {
 }
 
 /** Compact digest of the model for the AI summary, under FACTS_TARGET characters (lists shortened step by step). */
-export function briefingFacts(m) {
+export function briefingFacts(m, target = FACTS_TARGET) {
   const build = (lim) => ({
     country: { code: m.country, name: m.countryName },
     period: { from: m.from, to: m.to },
@@ -390,8 +411,121 @@ export function briefingFacts(m) {
   let facts;
   for (const lim of steps) {
     facts = build(lim);
-    if (JSON.stringify(facts).length <= FACTS_TARGET) return facts;
+    if (JSON.stringify(facts).length <= target) return facts;
   }
+  return facts;
+}
+
+// ---------- several countries and themes: the comparison ----------
+
+/** Fields of a matrix cell, in the order sent to the AI (one array per cell, this legend once). */
+export const CELL_FIELDS = ["projects", "recs", "assessed", "supported", "rated", "progressing", "weakUnsupported"];
+const CELL_LEGEND = ["projects", "recommendations", "assessed recommendations (Council)", "assessed and supported by a project",
+  "with a progress assessment", "progressing (some progress or better)", "Limited or No progress and no supporting project"];
+export const HIGHLIGHT_MIN = 5; // assessed recommendations a cell needs to enter a highlight
+
+const emptyCell = () => Object.fromEntries(CELL_FIELDS.map((k) => [k, 0]));
+
+/** One cell: a country's projects and recommendations for one theme ("all": every theme of the scope). */
+function matrixCell(m, key, commission) {
+  const projects = m.projects.filter((p) => key === "all" || p.policyArea === key);
+  const recs = m.recs.filter((r) => key === "all" || arr(r.topics).includes(key));
+  const assessed = recs.filter((r) => !commission.has(r.docId));
+  const ranks = assessed.map((r) => progressRank(r.assessment));
+  return {
+    projects: projects.length, recs: recs.length, assessed: assessed.length,
+    supported: assessed.filter((r) => r.supporters.length).length,
+    rated: ranks.filter((x) => x !== null).length,
+    progressing: ranks.filter((x) => x !== null && x >= PROGRESS_FROM).length,
+    weakUnsupported: assessed.filter((r) => weakAssessment(r.assessment) && !r.supporters.length).length,
+  };
+}
+
+/**
+ * Countries x themes. models: one briefingModel per country, built with the same topics and period.
+ * opts: { topics (slugs, [] = all), topicLabels (slug -> label) }
+ * -> { countries, names, topics, columns [{ key, label }], rows [{ country, name, cells: { key: cell } }], totals { key: cell },
+ *      highlights (largest differences between countries), sharedGaps (themes with weak unsupported recommendations in 2+ countries),
+ *      label, from, to, date, models }
+ */
+export function compareModel(models, { topics = [], topicLabels = {} } = {}) {
+  const list = arr(models).slice().sort((a, b) => String(a.country).localeCompare(String(b.country)));
+  const labelOf = (t) => topicLabels[t] || t;
+  const columns = [...topics.map((t) => ({ key: t, label: labelOf(t) })), { key: "all", label: topics.length ? "All selected areas" : "All policy areas" }];
+  const rows = list.map((m) => {
+    const commission = new Set(m.docs.filter((d) => d.commission).map((d) => d.id));
+    return { country: m.country, name: m.countryName, cells: Object.fromEntries(columns.map((c) => [c.key, matrixCell(m, c.key, commission)])) };
+  });
+  const totals = Object.fromEntries(columns.map((c) => {
+    const t = emptyCell();
+    for (const r of rows) for (const k of CELL_FIELDS) t[k] += r.cells[c.key][k];
+    return [c.key, t];
+  }));
+  const share = (a, b) => Math.round((100 * a) / b);
+  const highlights = [];
+  for (const c of topics.length ? columns.filter((x) => x.key !== "all") : columns) {
+    for (const [kind, part, whole] of [["supported", "supported", "assessed"], ["progressing", "progressing", "rated"]]) {
+      const shares = rows.filter((r) => r.cells[c.key][whole] >= HIGHLIGHT_MIN)
+        .map((r) => ({ country: r.country, name: r.name, pct: share(r.cells[c.key][part], r.cells[c.key][whole]), n: r.cells[c.key][whole] }))
+        .sort((a, b) => b.pct - a.pct || a.country.localeCompare(b.country));
+      if (shares.length < 2 || shares[0].pct === shares[shares.length - 1].pct) continue;
+      highlights.push({ kind, topic: c.key, topicLabel: c.label, high: shares[0], low: shares[shares.length - 1],
+        spread: shares[0].pct - shares[shares.length - 1].pct });
+    }
+  }
+  highlights.sort((a, b) => b.spread - a.spread || a.topic.localeCompare(b.topic));
+  const sharedGaps = columns.filter((c) => c.key !== "all" || !topics.length).map((c) => ({ topic: c.key, topicLabel: c.label,
+    countries: rows.filter((r) => r.cells[c.key].weakUnsupported > 0).map((r) => ({ country: r.country, name: r.name, n: r.cells[c.key].weakUnsupported })) }))
+    .filter((g) => g.countries.length >= 2);
+  const names = Object.fromEntries(list.map((m) => [m.country, m.countryName]));
+  const countries = list.map((m) => m.country);
+  const label = [countriesLabel(countries, names), joinNames(topics.map(labelOf))].filter(Boolean).join(" · ");
+  return { countries, names, topics, columns, rows, totals, highlights: highlights.slice(0, 5), sharedGaps, label,
+    from: list[0]?.from ?? null, to: list[0]?.to ?? null, date: list[0]?.date || new Date(), models: list };
+}
+
+/**
+ * Digest of the comparison for the AI, under FACTS_TARGET characters. Mode by number of countries, coarser when too large:
+ * "detail" (up to 3: the matrix and each country's digest), "summary" (up to 8: the matrix and each country's 3 main gaps
+ * and projects), "matrix" (the matrix, totals and highlights only).
+ */
+export function compareFacts(cmp) {
+  const cells = (c) => CELL_FIELDS.map((k) => c[k]);
+  const base = (lim) => ({
+    countries: cmp.rows.map((r) => ({ code: r.country, name: r.name })),
+    group: groupOf(cmp.countries),
+    period: { from: cmp.from, to: cmp.to },
+    topics: cmp.topics.length ? cmp.columns.filter((c) => c.key !== "all").map((c) => c.label) : null,
+    cell_fields: CELL_LEGEND,
+    columns: cmp.columns.map((c) => c.label),
+    matrix: cmp.rows.map((r) => ({ country: r.country, cells: cmp.columns.map((c) => cells(r.cells[c.key])) })),
+    totals: cmp.columns.map((c) => cells(cmp.totals[c.key])),
+    highlights: cmp.highlights.map((h) => ({ measure: h.kind === "supported" ? "share of assessed recommendations supported" : "share progressing",
+      area: h.topicLabel, highest: `${h.high.name} ${h.high.pct}% (of ${h.high.n})`, lowest: `${h.low.name} ${h.low.pct}% (of ${h.low.n})` })),
+    shared_gaps: cmp.sharedGaps.slice(0, lim.gaps).map((g) => ({ area: g.topicLabel, countries: g.countries.map((c) => `${c.name} ${c.n}`) })),
+    note: "Links between projects and recommendations are AI-assessed; 2026 recommendations are Commission-stage, not yet assessed.",
+  });
+  const summary = (m) => ({ country: m.country, projects: m.projects.length,
+    coverage: { assessed: m.coverage.recs, supported: m.coverage.supported },
+    gaps: m.gaps.slice(0, 3).map((r) => ({ id: r.id, summary: clip(r.summary, 90), assessment: r.assessment })),
+    top_projects: m.projects.filter((p) => p.results !== "none" || p.impact).slice(0, 3).map((p) => ({ title: clip(p.title, 90), year: p.year, results: p.results })),
+    latest_document: m.latest ? { id: m.latest.id, year: m.latest.year, stage: m.latest.stage,
+      recommendations: m.latest.recs.slice(0, 6).map((r) => ({ n: r.number, summary: clip(r.summary, 80) })) } : null });
+  const n = cmp.rows.length;
+  const modes = ["detail", "summary", "matrix"].slice(n <= 3 ? 0 : n <= 8 ? 1 : 2);
+  let facts;
+  for (const mode of modes) {
+    for (const lim of [{ gaps: 10 }, { gaps: 4 }]) {
+      facts = { mode, ...base(lim) };
+      const room = FACTS_TARGET - JSON.stringify(facts).length;
+      if (mode === "detail") facts.countries_detail = cmp.models.map((m) => briefingFacts(m, Math.max(2000, Math.floor(room / n) - 200)));
+      if (mode === "summary") facts.countries_detail = cmp.models.map(summary);
+      if (JSON.stringify(facts).length <= FACTS_TARGET) return facts;
+    }
+  }
+  // Still too large (27 countries with long names): fewer highlights, then no shared gaps.
+  facts.highlights = facts.highlights.slice(0, 2);
+  if (JSON.stringify(facts).length > FACTS_TARGET) facts.shared_gaps = [];
   return facts;
 }
 

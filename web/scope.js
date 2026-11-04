@@ -61,7 +61,7 @@ const ALIASES = {
   SK: ["slovakia", "slovak", "slovaquie", "slowakei", "eslovaquia", "slovacchia"],
 };
 
-const plain = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+const plain = (s) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const int = (v) => { const n = parseInt(v, 10); return Number.isInteger(n) ? n : null; };
 
