@@ -21,6 +21,13 @@ def test_title_key_and_slug_from_url():
 def test_clean_text_and_hash():
     assert clean_text("  a\n  b\t c ") == "a b c"
     assert sha256_text("a").startswith("sha256:") and sha256_text("a") != sha256_text("b")
+    assert clean_text("\u200b\u200bPACE - \u200bX\ufeff") == "PACE - X"
+
+
+def test_invisible_characters_do_not_split_a_project():
+    # same project listed by two factsheets, one with zero-width spaces before "PACE"
+    a = title_key("TSI", 2026, "\u200b\u200bPACE - Cross-Regional Wildfire Prevention Exchange\u200b")
+    assert a == title_key("TSI", 2026, "PACE - Cross-Regional Wildfire Prevention Exchange")
 
 
 def test_countries_lookup():

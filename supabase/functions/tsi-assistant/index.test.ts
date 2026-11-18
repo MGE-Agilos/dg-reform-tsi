@@ -8,6 +8,7 @@ import {
   HttpError, CHAT_SYSTEM, impactSystem, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
   withCacheBreakpoint, emptyStats, parseImpact, extractVerdict, extractProject, jwtSub, SAVE_TIMEOUT_MS,
   validateBriefing, validateOccasion, OCCASION_FORMATS, parseBriefing, runBriefing, BRIEFING_SYSTEM, BRIEFING_SCHEMA, BRIEFING_FIELDS, briefingUserMessage, numbersIn, unverifiedTexts, MAX_FACTS, MAX_TOKENS,
+  validateExpand, cleanTerms, EXPAND_MODEL, EXPAND_MAX_QUERY, EXPAND_SCHEMA,
 } from "./index.ts";
 
 const ORIGIN = "https://mge-agilos.github.io";
@@ -1047,4 +1048,45 @@ test("parseBriefing: cross_insights cleaned and capped at 5, [] when missing; ch
   const input = validateBriefing(briefingBody);
   const flagged = unverifiedTexts({ ...parseBriefing(JSON.stringify(BRIEFING_JSON)), cross_insights: ["Croatia has 977 projects."] }, input);
   assert.ok(flagged.includes("Croatia has 977 projects."));
+});
+
+// ---------- expand (related search terms) ----------
+
+test("expand: validates the query", () => {
+  assert.equal(validateExpand({ service: "expand", query: "  wild   fire " }), "wild fire");
+  assert.throws(() => validateExpand({ service: "expand", query: "" }), (e: HttpError) => e.status === 400);
+  assert.throws(() => validateExpand({ service: "expand" }), (e: HttpError) => e.status === 400);
+  assert.throws(() => validateExpand({ service: "expand", query: "x".repeat(EXPAND_MAX_QUERY + 1) }), (e: HttpError) => e.status === 400);
+});
+
+test("expand: cleans the terms (specials, length, repeats, query, cap)", () => {
+  const raw = ["Rural fires", "rural FIRES", "wildfire", "forest (fires)", 42, "a".repeat(41), "", "fire%_prevention", "x1", "x2", "x3", "x4"];
+  assert.deepEqual(cleanTerms(raw, "Wildfire"), ["Rural fires", "forest fires", "fire prevention", "x1", "x2", "x3"]);
+  assert.deepEqual(cleanTerms(null, "q"), []);
+});
+
+test("expand: one short structured call to the expand model, terms returned, nothing saved", async () => {
+  const f = fakeFetch({ model: [textReply(JSON.stringify({ terms: ["rural fires", "forest fires"] }))] });
+  const res = await handle(post({ service: "expand", query: "wildfire" }), ENV, f.impl);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { terms: ["rural fires", "forest fires"], saved: false });
+  const calls = f.modelCalls();
+  assert.equal(calls.length, 1);
+  const body = sent(calls[0]);
+  assert.equal(body.model, EXPAND_MODEL);
+  assert.equal(body.max_tokens, MAX_TOKENS.expand);
+  assert.deepEqual(body.output_config, { effort: "low", format: { type: "json_schema", schema: EXPAND_SCHEMA } });
+  assert.match(body.messages[0].content, /"wildfire"/);
+  assert.equal(body.tools, undefined);
+  assert.equal(f.dbCalls().length, 0);
+});
+
+test("expand: refusal or unreadable answer gives no terms; non-tester refused", async () => {
+  const refused = fakeFetch({ model: [{ body: { content: [], stop_reason: "refusal" } }] });
+  assert.deepEqual(await (await handle(post({ service: "expand", query: "x" }), ENV, refused.impl)).json(), { terms: [], saved: false });
+  const garbled = fakeFetch({ model: [textReply("not json")] });
+  assert.deepEqual(await (await handle(post({ service: "expand", query: "x" }), ENV, garbled.impl)).json(), { terms: [], saved: false });
+  const stranger = fakeFetch({ tester: false });
+  assert.equal((await handle(post({ service: "expand", query: "x" }), ENV, stranger.impl)).status, 403);
+  assert.equal(stranger.modelCalls().length, 0);
 });

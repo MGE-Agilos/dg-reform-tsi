@@ -34,7 +34,7 @@ def _uses_llm(args: argparse.Namespace) -> bool:
     if args.command == "run":
         # --dry-run garde la verification : l'arbitre du sitemap (SitemapMergeJudge) appelle le LLM meme en dry-run.
         return not args.seed_sitemap_lastmod
-    return args.command == "llm-check"
+    return args.command in ("llm-check", "area-classify")
 
 
 def _check_llm(settings: Settings) -> bool:
@@ -169,6 +169,12 @@ def main(argv: list[str] | None = None) -> int:
                       help="n'envoyer au LLM que les projets avec page détail (les autres plus tard)")
     link.add_argument("--sample", type=int, help="écrire un échantillon de N projets liés (relecture métier)")
     link.add_argument("--model", help="modèle du CLI Claude (défaut : réglage model ; ignoré en mode openai)")
+    link.add_argument("--skip-areas", action="store_true",
+                      help="ne pas classer d'abord les projets sans domaine politique (area-classify)")
+    areas = sub.add_parser("area-classify", help="domaine politique des projets sans page détail, par LLM "
+                                                "(front matter policy_area, policy_area_source: ai ; cache)")
+    areas.add_argument("--limit", type=int, help="nombre maximal de projets envoyés au LLM")
+    areas.add_argument("--model", help="modèle du CLI Claude (défaut : réglage model ; ignoré en mode openai)")
     check = sub.add_parser("llm-check", help="refaire l'extraction de N projets en cache avec le fournisseur "
                                             "configuré et comparer (output/reports/llm_check.md)")
     check.add_argument("--n", type=int, default=3, help="nombre de projets (défaut : 3)")
@@ -309,10 +315,46 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         try:
             with runlog.open_run(settings.logs_dir) as run:
-                summary = run_linking(settings, csrs, generator, limit=args.limit, project_ids=args.projects,
-                                      detail_only=args.detail_only)
+                areas_summary = None
+                if not args.skip_areas and not args.projects:
+                    from tsi_agent.area_classify import SCHEMA as AREA_SCHEMA
+                    from tsi_agent.area_classify import run_classification
+                    area_gen = LoggedChatGenerator(chat_generator=make_json_generator(
+                        settings, AREA_SCHEMA, timeout_s=settings.llm_timeout_s, model=args.model),
+                        pricing=settings.pricing)
+                    areas_summary = run_classification(settings, area_gen)
+                if areas_summary and areas_summary["quota_exceeded"]:
+                    summary = {"projects": 0, "linked": 0, "cached": 0, "no_candidates": 0, "failed": [],
+                               "files_updated": 0, "quota_exceeded": True, "deferred": 0}
+                else:
+                    summary = run_linking(settings, csrs, generator, limit=args.limit, project_ids=args.projects,
+                                          detail_only=args.detail_only)
+                if areas_summary:
+                    summary["areas"] = areas_summary
                 run.extra.update({"mode": "csr_link", **{k: v for k, v in summary.items() if k != "failed"},
                                   "failed": summary["failed"][:50]})
+        except Exception as exc:
+            print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            return 2
+        print(json.dumps({**summary, "run": run.final_summary.get("run_id") if run.final_summary else None,
+                          "cost_usd": (run.final_summary or {}).get("cost_usd")}, indent=2, ensure_ascii=False))
+        return 1 if summary["quota_exceeded"] else 0
+    if args.command == "area-classify":
+        from tsi_agent import runlog
+        from tsi_agent.area_classify import SCHEMA, run_classification
+        from tsi_agent.chat.generator import LoggedChatGenerator
+        from tsi_agent.llm import make_json_generator
+        try:
+            generator = LoggedChatGenerator(chat_generator=make_json_generator(
+                settings, SCHEMA, timeout_s=settings.llm_timeout_s, model=args.model), pricing=settings.pricing)
+        except ValueError as exc:
+            print(f"ERREUR : {exc}", file=sys.stderr)
+            return 2
+        try:
+            with runlog.open_run(settings.logs_dir) as run:
+                summary = run_classification(settings, generator, limit=args.limit)
+                run.extra.update({"mode": "area_classify", **summary})
         except Exception as exc:
             print(f"ERREUR : {exc!r} — voir le journal du run dans {settings.logs_dir}/runs/", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)

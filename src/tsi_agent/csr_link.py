@@ -40,6 +40,7 @@ from tsi_agent.store import _retry_on_lock
 WINDOW = 3
 MAX_PER_COUNTRY = 15
 MAX_CANDIDATES = 60
+COUNTRIES_PER_CALL = MAX_CANDIDATES // MAX_PER_COUNTRY  # 4 : au-dela, un appel LLM par tranche de 4 pays
 PROMPT_VERSION = 3
 MANY_COUNTRIES = 2
 MAX_LINKS = 5
@@ -77,8 +78,10 @@ def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
     return len(a & b) / len(a | b) if a and b else 0.0
 
 
-def select_candidates(fm: dict, text: str, idx: dict[tuple[str, int], list[Candidate]]) -> list[Candidate]:
-    """Candidates d'un projet (front matter + texte d'entree), par pays puis annee puis numero."""
+def select_candidates(fm: dict, text: str, idx: dict[tuple[str, int], list[Candidate]],
+                      many: bool | None = None) -> list[Candidate]:
+    """Candidates d'un projet (front matter + texte d'entree), par pays puis annee puis numero. `many` : borne par pays
+    (MAX_PER_COUNTRY) ; par defaut au-dela de MANY_COUNTRIES pays."""
     year, countries = fm.get("year"), list(dict.fromkeys(fm.get("countries") or []))
     if not isinstance(year, int) or not countries:
         return []
@@ -86,7 +89,7 @@ def select_candidates(fm: dict, text: str, idx: dict[tuple[str, int], list[Candi
     out: list[Candidate] = []
     for country in countries:
         found = [c for y in range(year - WINDOW, year) for c in idx.get((country, y), [])]
-        if len(countries) > MANY_COUNTRIES and len(found) > MAX_PER_COUNTRY:
+        if (len(countries) > MANY_COUNTRIES if many is None else many) and len(found) > MAX_PER_COUNTRY:
             ranked = sorted(found, key=lambda c: (-_jaccard(tokens, prefix_tokens(c.text)), -c.year))
             keep = {c.part_id for c in ranked[:MAX_PER_COUNTRY]}
             found = [c for c in found if c.part_id in keep]
@@ -96,6 +99,23 @@ def select_candidates(fm: dict, text: str, idx: dict[tuple[str, int], list[Candi
         keep = {c.part_id for c in ranked[:MAX_CANDIDATES]}
         out = [c for c in out if c.part_id in keep]
     return out
+
+
+def candidate_groups(fm: dict, text: str, idx: dict[tuple[str, int], list[Candidate]]) -> list[list[Candidate]]:
+    """Candidates par appel LLM. Jusqu'a COUNTRIES_PER_CALL pays : un seul groupe (select_candidates). Au-dela (projet
+    multi-pays, jusqu'aux 27 Etats membres), un groupe par tranche de COUNTRIES_PER_CALL pays, chacune avec ses
+    MAX_PER_COUNTRY plus proches par pays : le plafond global ne retient plus ~2 sous-parties generiques par pays."""
+    countries = list(dict.fromkeys(fm.get("countries") or []))
+    if len(countries) <= COUNTRIES_PER_CALL:
+        found = select_candidates(fm, text, idx)
+        return [found] if found else []
+    groups = []
+    for i in range(0, len(countries), COUNTRIES_PER_CALL):
+        chunk = countries[i:i + COUNTRIES_PER_CALL]
+        found = select_candidates({**fm, "countries": chunk}, text, idx, many=True)
+        if found:
+            groups.append(found)
+    return groups
 
 
 def candidates_hash(cands: list[Candidate]) -> str:
@@ -147,11 +167,18 @@ For each link give csr_id (a candidate id exactly as written), level, and a one-
 what the project does. Return an empty list when no candidate is supported."""
 
 
-def build_prompt(fm: dict, text: str, basis: str, cands: list[Candidate]) -> str:
+def build_prompt(fm: dict, text: str, basis: str, cands: list[Candidate], part: tuple[int, int] | None = None) -> str:
+    """`part` = (numero, nombre) d'un groupe de pays d'un projet multi-pays lie en plusieurs appels."""
     countries = ", ".join(name_from_iso(c) for c in fm.get("countries") or [])
     head = [f"Title: {fm.get('title')}",
             f"Programme and year: {' '.join(str(v) for v in (fm.get('programme'), fm.get('year')) if v)}",
             f"Countries: {countries}"]
+    if part:
+        here = ", ".join(name_from_iso(c) for c in dict.fromkeys(c.country for c in cands))
+        head.append(f"Note: this project serves {len(fm.get('countries') or [])} Member States. The candidates below "
+                    f"are those of {here} (group {part[0]} of {part[1]}; the other countries are assessed separately). "
+                    "Judge each country's candidates on their own: a project that supports a recommendation in one "
+                    "country may support the matching recommendation of another.")
     if basis == "title_only":
         head.append("Note: only the title of this project is published; link only when the title makes the "
                     "connection clear.")
@@ -180,15 +207,25 @@ def parse_links(text: str, cands: list[Candidate]) -> list[dict[str, str]]:
     return out[:MAX_LINKS]
 
 
-def link_project(generator: Any, fm: dict, body: str, cands: list[Candidate]) -> dict[str, Any]:
-    """Enregistrement de liaison d'un projet (un appel LLM). Exceptions du generateur propagees (quota...)."""
+def link_project(generator: Any, fm: dict, body: str, cands: list[Candidate] | list[list[Candidate]]) -> dict[str, Any]:
+    """Enregistrement de liaison d'un projet : un appel LLM par groupe de candidates (un seul groupe sauf projet a
+    plus de COUNTRIES_PER_CALL pays), liens fusionnes sans doublon. Exceptions du generateur propagees (quota...)."""
+    groups = cands if cands and isinstance(cands[0], list) else [cands]
+    flat = [c for g in groups for c in g]
     text, basis = project_input(fm, body)
-    reply = generator.run(messages=[ChatMessage.from_system(SYSTEM_PROMPT),
-                                    ChatMessage.from_user(build_prompt(fm, text, basis, cands))])["replies"][0]
+    links: list[dict[str, str]] = []
+    model = None
+    for i, group in enumerate(groups, 1):
+        part = (i, len(groups)) if len(groups) > 1 else None
+        reply = generator.run(messages=[ChatMessage.from_system(SYSTEM_PROMPT),
+                                        ChatMessage.from_user(build_prompt(fm, text, basis, group, part))])["replies"][0]
+        seen = {link["csr_id"] for link in links}
+        links += [link for link in parse_links(reply.text or "", group) if link["csr_id"] not in seen]
+        model = model or (reply.meta or {}).get("model")
     return {"project_id": fm.get("project_id"), "status": "ok", "basis": basis,
-            "content_hash": fm.get("content_hash"), "candidates_hash": candidates_hash(cands),
-            "input_hash": input_hash(basis, text, cands), "candidates": [c.part_id for c in cands], "links": parse_links(reply.text or "", cands),
-            "model": (reply.meta or {}).get("model"), "date": date.today().isoformat()}
+            "content_hash": fm.get("content_hash"), "candidates_hash": candidates_hash(flat),
+            "input_hash": input_hash(basis, text, flat), "candidates": [c.part_id for c in flat], "links": links,
+            "model": model, "date": date.today().isoformat()}
 
 
 def links_section(record: dict[str, Any]) -> str | None:
@@ -280,7 +317,7 @@ def run_linking(settings: Settings, csrs: list[Csr], generator: Any, *, concurre
     idx = index_parts(csrs)
     summary: dict[str, Any] = {"projects": 0, "linked": 0, "cached": 0, "no_candidates": 0, "failed": [],
                                "files_updated": 0, "quota_exceeded": False, "deferred": 0}
-    todo: list[tuple[Path, dict, str, list[Candidate]]] = []
+    todo: list[tuple[Path, dict, str, list[list[Candidate]]]] = []
     for path in sorted((root / "projects").glob("*.md")):
         try:
             fm, body = parse_front_matter(path.read_text(encoding="utf-8").replace("\r\n", "\n"))
@@ -292,7 +329,8 @@ def run_linking(settings: Settings, csrs: list[Csr], generator: Any, *, concurre
             continue
         summary["projects"] += 1
         text, basis = project_input(fm, body)
-        cands = select_candidates(fm, text, idx)
+        groups = candidate_groups(fm, text, idx)
+        cands = [c for g in groups for c in g]
         record_path = links_dir / f"{path.stem}.json"
         stored = _read_json(record_path)
         if not cands:
@@ -308,19 +346,19 @@ def run_linking(settings: Settings, csrs: list[Csr], generator: Any, *, concurre
         if detail_only and not fm.get("detail_page"):
             summary["deferred"] += 1
             continue
-        todo.append((path, fm, body, cands))
+        todo.append((path, fm, body, groups))
     if limit is not None:
         todo = todo[:limit]
     stop = threading.Event()
     lock = threading.Lock()
 
-    def process(item: tuple[Path, dict, str, list[Candidate]]) -> None:
-        path, fm, body, cands = item
+    def process(item: tuple[Path, dict, str, list[list[Candidate]]]) -> None:
+        path, fm, body, groups = item
         if stop.is_set():
             return
         for attempt in (1, 2):
             try:
-                record = link_project(generator, fm, body, cands)
+                record = link_project(generator, fm, body, groups)
                 break
             except ValueError as exc:  # reponse illisible : un second essai
                 if attempt == 2:
@@ -348,7 +386,7 @@ def run_linking(settings: Settings, csrs: list[Csr], generator: Any, *, concurre
         with lock:
             summary["linked"] += 1
 
-    def work(item: tuple[Path, dict, str, list[Candidate]]) -> None:
+    def work(item: tuple[Path, dict, str, list[list[Candidate]]]) -> None:
         try:
             process(item)
         except BaseException:  # le lot s'arrete : les elements restants sortent sans appel

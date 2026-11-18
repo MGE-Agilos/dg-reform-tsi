@@ -354,3 +354,38 @@ def test_detail_only_defers_title_only_projects(tmp_path):
     assert not (out / "csr_links" / "b.json").exists()
     s2 = run_linking(settings, csrs, FakeGenerator([answer()]), concurrency=1)
     assert s2["linked"] == 1 and s2["deferred"] == 0
+
+
+FIVE = ["Croatia", "Slovenia", "Austria", "Belgium", "Bulgaria"]
+
+
+def five_country_parts():
+    rows = [row(country=c, year="2023", nbr=f"{j}.1", text=f"{c} recommendation {j}.") for c in FIVE for j in (1, 2)]
+    return index_parts(build_csrs(rows, year_from=2016, year_to=2025))
+
+
+def test_more_than_four_countries_are_linked_in_groups_of_four():
+    from tsi_agent.csr_link import candidate_groups
+
+    fm = {"project_id": "p", "title": "EU-wide academy", "year": 2024, "countries": ["HR", "SI", "AT", "BE", "BG"]}
+    groups = candidate_groups(fm, "", five_country_parts())
+    assert [sorted({c.country for c in g}) for g in groups] == [["AT", "BE", "HR", "SI"], ["BG"]]
+    assert sum(len(g) for g in groups) == 10  # rien n'est coupe par le plafond global
+    few = {**fm, "countries": ["HR", "SI"]}
+    assert len(candidate_groups(few, "", five_country_parts())) == 1
+
+
+def test_grouped_project_one_call_per_group_and_merged_links():
+    from tsi_agent.csr_link import candidate_groups
+
+    fm = {"project_id": "p", "title": "EU-wide academy", "year": 2024, "countries": ["HR", "SI", "AT", "BE", "BG"],
+          "detail_page": True}
+    groups = candidate_groups(fm, "", five_country_parts())
+    gen = FakeGenerator([{"links": [{"csr_id": "csr-HR-2023-1.1", "level": "partial", "rationale": "A."}]},
+                         {"links": [{"csr_id": "csr-BG-2023-2.1", "level": "direct", "rationale": "B."},
+                                    {"csr_id": "csr-HR-2023-1.1", "level": "direct", "rationale": "not a candidate"}]}])
+    rec = link_project(gen, fm, "# P\n\nIntro.", groups)
+    assert [link["csr_id"] for link in rec["links"]] == ["csr-HR-2023-1.1", "csr-BG-2023-2.1"]
+    assert len(gen.prompts) == 2 and "group 1 of 2" in gen.prompts[0] and "group 2 of 2" in gen.prompts[1]
+    assert "csr-BG-2023-1.1" not in gen.prompts[0] and "csr-HR-2023-1.1" not in gen.prompts[1]
+    assert len(rec["candidates"]) == 10

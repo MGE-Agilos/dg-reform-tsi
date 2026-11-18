@@ -95,7 +95,7 @@ export function reportingModel(data, opts = {}) {
     const imp = impacts.get(p.project_id);
     const types = anomalies.get(p.project_id) || [];
     return [
-      p.project_id, str(p.title), str(p.programme), p.year ?? "", arr(p.countries).map(country).join(", "), area(p.policy_area) || "",
+      p.project_id, str(p.title), str(p.programme), p.year ?? "", arr(p.countries).map(country).join(", "), (area(p.policy_area) || "") + (p.policy_area && p.policy_area_ai ? " (AI)" : ""),
       str(p.results) || "not stated", p.deliverables ?? 0, p.detail_page ? "yes" : "no", detailUrl(p.project_id), str(p.url),
       own.length, recs.length, recs.join("; "), level,
       imp && Number.isFinite(imp.score) ? imp.score : "", imp ? str(imp.level) : "", imp ? str(imp.confidence) : "", imp ? isoDay(imp.created_at) : "",

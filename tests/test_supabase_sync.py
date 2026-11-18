@@ -82,10 +82,20 @@ def test_build_rows_tables_and_projects(tmp_path):
     assert rows["csr_related_projects"] == []
     p1, p2 = sorted(rows["projects"], key=lambda r: r["project_id"])
     assert p1 == {"project_id": "p1", "title": "Public administration reform", "programme": "TSI", "year": 2024,
-                  "countries": ["HR"], "policy_area": "public-administration-and-governance", "results": "achieved",
-                  "detail_page": True, "url": "https://example.eu/p1", "summary": "The project reformed things.",
+                  "countries": ["HR"], "policy_area": "public-administration-and-governance", "policy_area_ai": False,
+                  "results": "achieved", "detail_page": True, "url": "https://example.eu/p1", "summary": "The project reformed things.",
                   "deliverables": 2, "csrs": ["csr-HR-2022-1.1"]}
     assert p2["summary"] is None and p2["csrs"] == [] and p2["deliverables"] == 0 and p2["url"] is None
+
+
+def test_project_row_ai_area_and_invisible_characters():
+    from tsi_agent.supabase_sync import _project_row
+
+    fm = {"project_id": "x", "title": "\u200b\u200bPACE - Wildfires\u200b", "policy_area": "green-transition",
+          "policy_area_source": "ai"}
+    r = _project_row(fm, "Intro.")
+    assert r["title"] == "PACE - Wildfires" and r["policy_area_ai"] is True
+    assert _project_row({**fm, "policy_area_source": None}, "")["policy_area_ai"] is False
 
 
 def test_build_rows_csrs_parts_links_anomalies(tmp_path):

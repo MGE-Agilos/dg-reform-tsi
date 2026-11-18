@@ -24,6 +24,7 @@ import yaml
 
 from tsi_agent.anomalies import detect, load_csr_links, load_projects, load_publications
 from tsi_agent.chunking import INTRO, SUMMARY, split_sections
+from tsi_agent.ids import clean_text
 from tsi_agent.csr import build_documents
 from tsi_agent.csr_commission import load_all_csrs
 from tsi_agent.csr_related import load_related_rows
@@ -55,9 +56,10 @@ def _project_row(fm: dict, body: str) -> dict[str, Any]:
     summary = sections.get(SUMMARY) or sections.get(INTRO) or None
     urls = fm.get("source_urls") or []
     csrs = fm.get("csrs")
-    return {"project_id": fm["project_id"], "title": str(fm.get("title") or fm["project_id"]),
+    return {"project_id": fm["project_id"], "title": clean_text(str(fm.get("title") or fm["project_id"])),
             "programme": fm.get("programme"), "year": fm.get("year") if isinstance(fm.get("year"), int) else None,
             "countries": list(fm.get("countries") or []), "policy_area": fm.get("policy_area"),
+            "policy_area_ai": bool(fm.get("policy_area")) and fm.get("policy_area_source") == "ai",
             "results": fm.get("results"), "detail_page": bool(fm.get("detail_page")),
             "url": urls[0] if urls else None, "summary": summary[:SUMMARY_CHARS] if summary else None,
             "deliverables": _int(fm.get("deliverables")), "csrs": list(csrs) if isinstance(csrs, list) else []}

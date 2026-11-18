@@ -451,7 +451,7 @@ function setActiveTab(route) {
 
 // ---------- projects ----------
 
-const PROJECT_LIST_COLS = "project_id,title,programme,year,countries,policy_area,detail_page,csrs";
+const PROJECT_LIST_COLS = "project_id,title,programme,year,countries,policy_area,policy_area_ai,detail_page,csrs";
 /** Projects supporting CSRs: links -> sub-parts -> recommendations, inner joins so that the filters below keep projects. */
 const CSR_SUPPORT_EMBED = "l:project_csr_links!inner(level,p:csr_parts!inner(c:csrs!inner(year,country,policy_areas)))";
 const MULTI_OPTIONS = { single: "One country", multi: "Several countries" };
@@ -461,10 +461,80 @@ function pgQuote(text) {
   return `"${String(text).replace(/["\\]/g, "\\$&")}"`;
 }
 
-/** Title contains the words, or title and summary match them (full-text search in English: stems, AND of the words). */
-function textMatchFilter(text) {
-  const t = text.trim();
-  return `title.ilike.${pgQuote(likePattern(t))},fts.wfts(english).${pgQuote(t)}`;
+/** Title contains the words, or title and summary match them (full-text search in English: stems, AND of the words);
+ * the same for each related term (AI), any of them matching. */
+function textMatchFilter(text, terms = []) {
+  return [text, ...terms].map((x) => x.trim()).filter(Boolean)
+    .map((t) => `title.ilike.${pgQuote(likePattern(t))},fts.wfts(english).${pgQuote(t)}`).join(",");
+}
+
+const EXPAND_TIMEOUT_MS = 10000;
+const RELATED_KEY = "tsi-related:"; // sessionStorage: related terms of a query, this browser session
+const termsCache = new Map();
+
+/** Related search terms suggested by AI (tsi-assistant, service "expand"), cached for the session.
+ * { terms, failed }: on any failure no terms, and the search runs on the words alone. */
+async function relatedTerms(q) {
+  const query = q.replace(/\s+/g, " ").trim();
+  const key = query.toLowerCase();
+  if (!key || key.length > 120) return { terms: [], failed: false };
+  if (termsCache.has(key)) return termsCache.get(key);
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(RELATED_KEY + key) || "null");
+    if (Array.isArray(stored)) {
+      const hit = { terms: stored.filter((t) => typeof t === "string" && t.trim()).slice(0, 6), failed: false };
+      termsCache.set(key, hit);
+      return hit;
+    }
+  } catch { /* no storage: ask again */ }
+  let out = { terms: [], failed: true };
+  try {
+    const { data } = await sb.auth.getSession();
+    const token = data?.session?.access_token;
+    if (token) {
+      const res = await fetch(PROXY_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ service: "expand", query }),
+        signal: AbortSignal.timeout(EXPAND_TIMEOUT_MS),
+      });
+      const body = await res.json().catch(() => null);
+      if (res.ok && Array.isArray(body?.terms)) {
+        out = { terms: body.terms.filter((t) => typeof t === "string" && t.trim()).slice(0, 6), failed: false };
+      }
+    }
+  } catch { /* network, timeout: the search runs on the words alone */ }
+  if (!out.failed) {
+    termsCache.set(key, out);
+    try { sessionStorage.setItem(RELATED_KEY + key, JSON.stringify(out.terms)); } catch { /* storage full or blocked */ }
+  }
+  return out;
+}
+
+/** Search words plus related terms unless "exact" is on; { terms, failed, exact }. */
+async function searchTerms(q, exact) {
+  if (!q.trim() || exact) return { terms: [], failed: false, exact };
+  return { ...(await relatedTerms(q)), exact };
+}
+
+/** Line under a search form: the related terms also searched, and a link to switch to the exact words (or back). */
+function relatedNotice(route, p, q, rel) {
+  if (!q.trim()) return "";
+  const params = Object.fromEntries(p);
+  delete params.page;
+  const toggle = (exact) => `<a href="${esc(hrefFor(route, { ...params, exact: exact ? "1" : "" }))}">`
+    + `${exact ? "Search the exact words only" : "Also search related terms (AI)"}</a>`;
+  if (rel.exact) return `<p class="related-notice muted small">Exact words only. ${toggle(false)}</p>`;
+  if (rel.failed) return `<p class="related-notice muted small">Related terms are not available right now: exact words only.</p>`;
+  if (!rel.terms.length) return "";
+  return `<p class="related-notice small"><span class="badge badge-ai" title="Suggested by an AI model">AI</span> Also searched: `
+    + `${rel.terms.map((t) => `<span class="related-term">${esc(t)}</span>`).join(", ")}. ${toggle(true)}</p>`;
+}
+
+/** Policy area of a project, with an "AI" mark when an AI model assigned it from the title (no official area). */
+function areaHtml(r) {
+  return esc(areaLabel(r?.policy_area))
+    + (r?.policy_area && r?.policy_area_ai ? ` <span class="badge badge-ai" title="Assigned by an AI model from the project title: the project has no detail page with an official policy area">AI</span>` : "");
 }
 
 /** Filters on the CSRs a project supports (from CSR progress): ECFIN policy areas, CSR years, CSR countries, link level. */
@@ -476,7 +546,7 @@ function projectsQuery(f, opts, cols = PROJECT_LIST_COLS) {
   const support = csrSupportActive(f);
   let q = sb.from("projects").select(support ? `${cols},${CSR_SUPPORT_EMBED}` : cols, opts)
     .order("year", { ascending: false }).order("title").order("project_id");
-  if (f.q) q = q.or(textMatchFilter(f.q));
+  if (f.q) q = q.or(textMatchFilter(f.q, f.terms || []));
   if (f.multi === "single") q = q.or(Object.keys(COUNTRIES).map((c) => `countries.eq.{${c}}`).join(","));
   if (f.multi === "multi") {
     for (const c of Object.keys(COUNTRIES)) q = q.neq("countries", `{${c}}`);
@@ -514,7 +584,11 @@ async function renderProjects(p, seq) {
     csrFrom: yearOf(p, "csrfrom"), csrTo: yearOf(p, "csrto"),
     csrCountries: String(p.get("csrcountries") || "").split(",").map((x) => x.trim().toUpperCase()).filter((x) => Object.hasOwn(COUNTRIES, x)),
     csrLevel: p.get("csrlevel") === "direct" ? "direct" : "",
+    exact: p.get("exact") === "1",
   };
+  const rel = await searchTerms(f.q, f.exact);
+  if (stale(seq)) return;
+  f.terms = rel.terms;
   const [res, reviews] = await Promise.all([fetchPage((opts) => projectsQuery(f, opts), page), reviewsAvailable()]);
   if (stale(seq)) return;
   if (res.redirectPage) return redirectToPage("projects", p, res.redirectPage);
@@ -529,9 +603,10 @@ async function renderProjects(p, seq) {
       f.csrFrom || f.csrTo ? `CSR years ${f.csrFrom ?? "…"}–${f.csrTo ?? "…"}` : "",
       f.csrCountries.length ? S.countriesLabel(f.csrCountries, COUNTRIES) : "", f.csrLevel ? "direct links only" : ""].filter(Boolean).join(" · "))
     + ` (AI-assessed links). <a href="${esc(hrefFor("projects", { q: f.q, country: f.country, programme: f.programme, from: f.from ?? "", to: f.to ?? "",
-      area: f.area, linked: f.linked, multi: f.multi, detail: f.detail ? "1" : "" }))}">Remove this filter</a></p>` : "";
+      area: f.area, linked: f.linked, multi: f.multi, detail: f.detail ? "1" : "", exact: f.exact ? "1" : "" }))}">Remove this filter</a></p>` : "";
   const form = filterForm("projects",
-    hidden + textField("q", "Search titles and summaries", f.q, "e.g. wildfire, sustainable development goals")
+    hidden + (f.exact ? `<input type="hidden" name="exact" value="1">` : "")
+    + textField("q", "Search titles and summaries", f.q, "e.g. wildfire, sustainable development goals")
     + countriesSelect(f.country)
     + selectField("multi", "Countries per project", MULTI_OPTIONS, f.multi, "Any")
     + selectField("programme", "Programme", Object.fromEntries(PROGRAMMES.map((x) => [x, x])), f.programme)
@@ -542,13 +617,13 @@ async function renderProjects(p, seq) {
   const rows = data.map((r) => [
     td(hashLink("project", r.project_id, r.title), "title-cell"),
     td(esc(r.programme)), td(esc(r.year), "nowrap"), td(countriesCell(r.countries)),
-    td(esc(areaLabel(r.policy_area))), td(esc((r.csrs || []).length), "num"),
+    td(areaHtml(r)), td(esc((r.csrs || []).length), "num"),
   ]);
   const tools = `<div class="toolbar"><span class="muted small">${fmtN(count ?? 0)} project${count === 1 ? "" : "s"} match these filters.</span>`
     + `<span class="toolbar-actions"><span id="xlsx-note" class="muted small" role="status" aria-live="polite"></span>`
     + (reviews ? `<a class="btn btn-secondary" href="#reviews">Links to review</a>` : "")
     + `<button type="button" class="btn btn-secondary" id="xlsx"${count ? "" : " disabled"}>Export to Excel</button></span></div>`;
-  view(`${heading("Projects")}${supportLine}${form}${tools}${pager("projects", p, page, count)}`
+  view(`${heading("Projects")}${supportLine}${form}${relatedNotice("projects", p, f.q, rel)}${tools}${pager("projects", p, page, count)}`
     + table(["Title", "Programme", "Year", "Countries", "Policy area", "CSRs"], rows, "No project matches these filters.")
     + (data.length ? pager("projects", p, page, count) : ""));
   bindFilters();
@@ -569,7 +644,9 @@ function countriesCell(list) {
 /** The Projects filters in words (Notes sheet of the Excel export). */
 function projectFilterLabels(f) {
   return [
-    f.q ? ["Title or summary matches", f.q] : null, f.country ? ["Country", countryName(f.country)] : null,
+    f.q ? ["Title or summary matches", f.q] : null,
+    f.terms?.length ? ["Related terms also searched (AI)", f.terms.join("; ")] : null,
+    f.country ? ["Country", countryName(f.country)] : null,
     f.multi ? ["Countries per project", MULTI_OPTIONS[f.multi]] : null,
     f.csrAreas?.length ? ["Supports CSRs in (ECFIN areas)", f.csrAreas.join("; ")] : null,
     f.csrFrom || f.csrTo ? ["CSR years", `${f.csrFrom ?? "…"}–${f.csrTo ?? "…"}`] : null,
@@ -595,7 +672,7 @@ function linkItem(link, project) {
 
 async function renderProject(id, seq) {
   const [proj, links, latest] = await Promise.all([
-    sb.from("projects").select("project_id,title,programme,year,countries,policy_area,results,detail_page,url,summary,deliverables,csrs").eq("project_id", id).single(),
+    sb.from("projects").select("project_id,title,programme,year,countries,policy_area,policy_area_ai,results,detail_page,url,summary,deliverables,csrs").eq("project_id", id).single(),
     sb.from("project_csr_links").select("level,rationale,basis,part_id,csr_parts(text,assessment,csr_id,csrs(title,year,country))").eq("project_id", id),
     impactHistoryQuery(id, 1),
   ]);
@@ -611,7 +688,7 @@ async function renderProject(id, seq) {
   const sorted = [...links.data].sort((a, b) => (rank[a.level] ?? 2) - (rank[b.level] ?? 2) || a.part_id.localeCompare(b.part_id));
   const facts = [
     ["Programme", esc(r.programme)], ["Year", esc(r.year)], ["Countries", esc(countriesText(r.countries))],
-    ["Policy area", esc(areaLabel(r.policy_area))], ["Results", esc(r.results || "not stated")],
+    ["Policy area", areaHtml(r)], ["Results", esc(r.results || "not stated")],
     ["Deliverables", esc(r.deliverables)], ["Detail page", r.detail_page ? "yes" : "no"], ["Project ID", `<code>${esc(r.project_id)}</code>`],
   ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
   // Lineage: the country with the most links of this project, years of its linked CSRs.
@@ -778,7 +855,7 @@ function csrsQuery(f, opts) {
     .order("year", { ascending: false }).order("country").order("number").order("csr_id");
   if (f.country) q = q.eq("country", f.country);
   if (f.year) q = q.eq("year", f.year);
-  if (f.q) q = q.ilike("text", likePattern(f.q));
+  if (f.q) q = q.or([f.q, ...(f.terms || [])].map((t) => `text.ilike.${pgQuote(likePattern(t))}`).join(","));
   return q;
 }
 
@@ -863,7 +940,10 @@ async function renderCsrs(p, seq) {
 /** All recommendations (one row each), with the text search: the former CSR list, now linked to the documents. */
 async function renderCsrList(p, seq, { title, years, country, year }) {
   const page = pageOf(p);
-  const f = { country, year, q: p.get("q") || "" };
+  const f = { country, year, q: p.get("q") || "", exact: p.get("exact") === "1" };
+  const rel = await searchTerms(f.q, f.exact);
+  if (stale(seq)) return;
+  f.terms = rel.terms;
   const res = await fetchPage((opts) => csrsQuery(f, opts), page);
   if (stale(seq)) return;
   if (res.redirectPage) return redirectToPage("csrs", p, res.redirectPage);
@@ -871,7 +951,7 @@ async function renderCsrList(p, seq, { title, years, country, year }) {
   if (error) return showError(error, "Could not load CSRs");
 
   const form = filterForm("csrs",
-    `<input type="hidden" name="view" value="recs">`
+    `<input type="hidden" name="view" value="recs">` + (f.exact ? `<input type="hidden" name="exact" value="1">` : "")
     + textField("q", "Search recommendation text", f.q, "e.g. pension, energy")
     + countriesSelect(f.country)
     + yearSelect([["", "All years"], ...years.map((y) => [String(y), String(y)])], f.year ? String(f.year) : ""));
@@ -883,7 +963,7 @@ async function renderCsrList(p, seq, { title, years, country, year }) {
     td(r.assessment ? `${esc(r.assessment)}${r.assessment_year ? ` <span class="muted">(${esc(r.assessment_year)})</span>` : ""}`
       : `<span class="muted">not yet assessed</span>`),
   ]);
-  view(`${title}${csrsIntro()}${form}${csrsModeLinks(true, f)}${pager("csrs", p, page, count)}`
+  view(`${title}${csrsIntro()}${form}${relatedNotice("csrs", p, f.q, rel)}${csrsModeLinks(true, f)}${pager("csrs", p, page, count)}`
     + table(["Recommendation", "Document", "No.", "Title", "Latest assessment"], rows, "No recommendation matches these filters.")
     + (data.length ? pager("csrs", p, page, count) : ""));
   bindFilters();
@@ -1574,7 +1654,7 @@ function relatedCoverageHtml(related, docs, year) {
 }
 
 // Excel reporting export (SheetJS CE, loaded on first use from cdnjs with its integrity hash).
-const REPORT_PROJECT_COLS = "project_id,title,programme,year,countries,policy_area,results,deliverables,detail_page,url";
+const REPORT_PROJECT_COLS = "project_id,title,programme,year,countries,policy_area,policy_area_ai,results,deliverables,detail_page,url";
 let xlsxLoading = null;
 
 function loadSheetJs() {
@@ -2730,9 +2810,16 @@ const GUIDE = [
       the <a href="#guide/assistant">assistant</a> on any page.</p>` },
   { id: "projects", title: "Projects", html: () => `
     <p><strong>Search</strong> looks in the titles and in the AI summaries (English words, singular or plural alike; all words must
-      appear). Projects known only by their title have no summary. <strong>Countries per project</strong> keeps single-country or
-      multi-country projects; multi-country projects carry a <em>Multi-country</em> badge. From CSR progress, a policy area or a
-      number of supported recommendations opens the projects that support those recommendations.</p>
+      appear). Projects known only by their title have no summary. <strong>Related terms</strong>: an AI model also suggests a few
+      terms that the documents may use for the same subject (<em>wildfire</em> also finds <em>rural fires</em> and <em>forest
+      fires</em>); the terms searched are listed under the filters, with a link to search the exact words only. The CSR text search
+      works the same way. <strong>Countries per project</strong> keeps single-country or multi-country projects; multi-country
+      projects carry a <em>Multi-country</em> badge, and their links to CSRs are assessed against the recommendations of each
+      beneficiary country. From CSR progress, a policy area or a number of supported recommendations opens the projects that
+      support those recommendations.</p>
+    <p><strong>Policy areas marked <span class="badge badge-ai">AI</span></strong>: the official policy area comes from the
+      project's page on the Commission website. Projects known only by their title (country factsheets, SRSP list) have none;
+      an AI model assigned them one from their title. Treat these as indicative.</p>
     <p>All projects of the Technical Support Instrument (TSI) and of its predecessors SRSP and SRSS.</p>
     <ul><li><strong>Filters</strong>: title search, country, programme, years, policy area, &ldquo;Linked to a CSR&rdquo; and
       &ldquo;Has a detail page&rdquo;. Selects and checkboxes apply at once, the text search on Enter or <em>Apply</em>;
@@ -3814,7 +3901,7 @@ function dashStartHtml() {
     + card(hrefFor("lineage", { view: "country" }), "One country", "Its CSRs, the projects that support them and their outcome (Lineage › By country).")
     + card("#compare", "A theme across countries", "Countries × policy areas: projects, CSRs supported, progress (Compare).")
     + card("#progress", "CSR implementation", "Do supported recommendations progress more? Click a policy area for its projects (CSR progress).")
-    + card("#projects", "Find projects", "Search titles and summaries, filter by country, multi-country, policy area (Projects).")
+    + card("#projects", "Find projects", "Search titles and summaries (with related terms), filter by country, multi-country, policy area (Projects).")
     + `</div><p class="muted small">The figures below cover all projects and CSRs. The assistant (round button, bottom right) answers questions and prepares briefings. `
     + `<a href="#guide">Guide</a></p></section>`;
 }

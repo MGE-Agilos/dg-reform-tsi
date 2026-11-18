@@ -504,6 +504,25 @@ sémantiques, jugés par Sonnet, enregistrée dans `output/eval/aggregation_trut
 vrai chatbot ; rappel, précision et F1 des pays cités (noms anglais/français, codes ISO) et des projets cités
 (sources, titres, identifiants). Sorties : `output/eval/aggregation-<date>.md` et `.csv`.
 
+## Domaines politiques par IA et projets multi-pays
+
+Le domaine politique officiel d'un projet vient de l'URL de sa page détail. Les projets connus seulement par leur titre
+(factsheets pays, PDF SRSP : environ 1 300) n'en ont pas. `csr-link` les classe d'abord par LLM (lots de 40 titres,
+l'un des 10 domaines du site ou « unclear »), sauf avec `--skip-areas` ; la commande seule :
+
+```powershell
+.venv\Scripts\python -m tsi_agent area-classify            # --limit N pour un essai
+```
+
+Résultat dans le front matter (`policy_area`, `policy_area_source: ai`), jamais à la place d'un domaine officiel ;
+décisions dans `output/project_areas.json`, rejouées sans LLM tant que titres et résumé ne changent pas (un `run` qui
+réécrit le front matter d'un projet thin ne les perd donc pas). L'explorateur marque ces domaines « AI » (colonne
+`projects.policy_area_ai`, migration `008_policy_area_ai.sql`).
+
+**Projets multi-pays dans `csr-link`** : au-delà de 4 pays (jusqu'aux 27 États membres), un appel LLM par tranche de
+4 pays, chacune avec ses 15 sous-parties de CSR les plus proches par pays ; avant, un seul appel plafonné à 60
+candidates ne gardait qu'environ 2 sous-parties (souvent génériques) par pays.
+
 ## Rapport d'anomalies
 
 Contrôle de publication, sans LLM ni réseau, à partir de `output/` (spec :

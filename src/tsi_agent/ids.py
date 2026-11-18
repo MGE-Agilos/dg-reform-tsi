@@ -7,11 +7,14 @@ from urllib.parse import urlsplit
 
 _PACE_PREFIX = re.compile(r"^pace\s*[-–—]\s*")
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
+# Caracteres invisibles (espaces de largeur nulle, BOM) : les factsheets en glissent dans certains titres, ce qui
+# empechait le retrait du prefixe PACE et la fusion des mentions d'un meme projet multi-pays.
+_INVISIBLE = re.compile(r"[\u200b-\u200d\u2060\ufeff]")
 
 
 def clean_text(text: str) -> str:
-    """Réduit tous les blancs (y compris sauts de ligne) à un espace simple."""
-    return " ".join(text.split())
+    """Réduit tous les blancs (y compris sauts de ligne) à un espace simple ; retire les caracteres invisibles."""
+    return " ".join(_INVISIBLE.sub("", text).split())
 
 
 def slugify(text: str, max_len: int = 80) -> str:
