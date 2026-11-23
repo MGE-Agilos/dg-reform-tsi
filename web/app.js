@@ -28,6 +28,7 @@ const CHAT_EXAMPLES = [
   "What does the Spanish primary care project cover, and which CSRs is it linked to?",
   "What CSRs did Croatia receive on public administration since 2022, and how were they assessed?",
   "Which projects support Croatia's 2022 country-specific recommendations?",
+  "What do the 2026 country reports say about water management in Portugal, Spain and Italy?",
 ];
 const PAGE_SIZE = 50;
 const CSV_LIMIT = 5000;
@@ -3058,7 +3059,7 @@ const GUIDE = [
       link to the lineage network.</li>
     <li><strong>All recommendations</strong>: one row per recommendation, with the text search, country and year filters
       (a text search always opens this list). Each row links to its recommendation page and to its document. When 2026 recitals
-      also match the search, a line above the list says how many and opens them.</li>
+      or country report passages also match the search, a line above the list says how many and opens them.</li>
     <li><strong>Recitals 2026</strong>: the numbered paragraphs ("Whereas: (1)…") that precede the recommendations in each 2026
       Commission document, with the Commission's analysis of the country's challenges. Search them by word (with related terms,
       like the other searches) and by country; each row shows the passage that matches and links to the document and its PDF.
@@ -3184,7 +3185,9 @@ const GUIDE = [
       closes it; the conversation is kept while the browser tab is open.</p>
     <ul><li><strong>What it can answer</strong>: questions on TSI projects and CSRs: which projects work on a topic or in a country,
       what a project covers, which CSRs a country received and how they were assessed, which projects support them.</li>
-    <li><strong>Data it uses</strong>: project records, AI summaries, CSRs and their sub-parts, AI-assessed links.
+    <li><strong>Data it uses</strong>: project records, AI summaries, CSRs and their sub-parts, AI-assessed links, and for 2026 the
+      recitals of the recommendations and the country reports (it cites a country report passage with a link to its PDF page). It is
+      the place for cross-country questions on a topic, such as water management or wildfires in several countries.
       <strong>Deliverable full texts are not searched</strong> by the assistant.</li>
     <li><strong>On a project or CSR page</strong>, <em>Ask about this project</em> (or CSR) pre-fills the question; you still press Send.</li>
     <li><strong>Export to Word</strong> downloads the conversation as a .docx document.</li>
@@ -3243,7 +3246,8 @@ const GUIDE = [
   { id: "data", title: "Data and updates", html: () => `
     <ul><li><strong>Sources</strong>: reforms-investments.ec.europa.eu (TSI projects, detail pages, country factsheets, deliverables),
       the SRSP list of approved requests (PDF), and the ECFIN CSR database (2016–2025 recommendations and their assessments) and the Commission's 2026 country-specific
-      recommendations (one PDF per Member State).</li>
+      recommendations (one PDF per Member State, with their recitals), and the 2026 country reports (economy-finance.ec.europa.eu,
+      one PDF per Member State).</li>
     <li><strong>Monthly update</strong>: an automated run each month adds new or changed projects, publications, CSRs and links
       (incremental: only what changed is re-read; a full check runs quarterly), then refreshes the anomalies and this explorer.</li>
     <li><strong>Data releases</strong>: each update is also published as a dated data release (data-YYYY-MM-DD) in the project's
@@ -3287,6 +3291,14 @@ const GUIDE = [
     <dt>CSR document</dt><dd>The yearly set of recommendations addressed to one Member State: 27 per year. Council recommendation once
       adopted; Commission recommendation while it is still a proposal (2026).</dd>
     <dt>Recommendation</dt><dd>One numbered recommendation of a CSR document (1 to 5).</dd>
+    <dt>Recital</dt><dd>One of the numbered paragraphs (&ldquo;Whereas: (1)…&rdquo;) before the recommendations of a CSR document: the
+      Commission's analysis of the country's situation, of which the recommendations are the conclusion. Searchable for 2026.</dd>
+    <dt>Country report</dt><dd>The Commission's yearly staff working document on each Member State (about 100 pages), published with
+      the recommendations; it develops in detail the analysis summarised in the recitals. Searchable for 2026.</dd>
+    <dt>Related terms (AI)</dt><dd>Words an AI model suggests for a search, which the documents may use for the same subject; shown
+      under the search, which can be limited to the exact words.</dd>
+    <dt>AI policy area</dt><dd>A policy area assigned by an AI model from the title of a project that has no detail page, hence no
+      official area; marked <span class="badge badge-ai">AI</span>, indicative.</dd>
     <dt>European Semester</dt><dd>The EU's yearly cycle of economic and social policy coordination, which produces the CSRs.</dd>
     <dt>Detail page</dt><dd>A project's own page on reforms-investments.ec.europa.eu; projects without one are known only from a listing.</dd>
     <dt>Sub-part</dt><dd>One distinct request inside a recommendation; the level at which project links are assessed.</dd>
