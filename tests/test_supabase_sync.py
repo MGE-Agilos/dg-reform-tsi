@@ -78,8 +78,10 @@ def make_output(tmp_path):
 def test_build_rows_tables_and_projects(tmp_path):
     rows = build_rows(make_output(tmp_path), current_year=2026)
     assert list(TABLES) == ["projects", "csr_documents", "csrs", "csr_parts", "project_csr_links", "anomalies"]
-    assert list(rows) == [*TABLES, "impact_reports", "csr_related_projects", "csr_recitals"]
+    assert list(rows) == [*TABLES, "impact_reports", "csr_related_projects", "csr_recitals", "country_reports",
+                          "country_report_passages"]
     assert rows["impact_reports"] == [] and rows["csr_related_projects"] == [] and rows["csr_recitals"] == []
+    assert rows["country_reports"] == [] and rows["country_report_passages"] == []
     p1, p2 = sorted(rows["projects"], key=lambda r: r["project_id"])
     assert p1 == {"project_id": "p1", "title": "Public administration reform", "programme": "TSI", "year": 2024,
                   "countries": ["HR"], "policy_area": "public-administration-and-governance", "policy_area_ai": False,

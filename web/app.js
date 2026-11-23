@@ -876,9 +876,73 @@ function csrsModeLinks(mode, f) {
   const docs = hrefFor("csrs", { year: f.year || "", country: f.country });
   const recs = hrefFor("csrs", { view: "recs", year: f.year || "", country: f.country, q: f.q });
   const recitals = hrefFor("csrs", { view: "recitals", country: f.country, q: f.q });
+  const reports = hrefFor("csrs", { view: "reports", country: f.country, q: f.q });
   const a = (href, label, on) => `<a class="btn btn-secondary seg"${on ? ' aria-current="page"' : ""} href="${esc(href)}">${label}</a>`;
   return `<p class="seg-group" role="group" aria-label="Show">${a(docs, "By document", mode === "docs")}`
-    + `${a(recs, "All recommendations", mode === "recs")}${a(recitals, `Recitals ${RECITALS_YEAR}`, mode === "recitals")}</p>`;
+    + `${a(recs, "All recommendations", mode === "recs")}${a(recitals, `Recitals ${RECITALS_YEAR}`, mode === "recitals")}`
+    + `${a(reports, `Country reports ${RECITALS_YEAR}`, mode === "reports")}</p>`;
+}
+
+// ---------- Country reports (country_reports, country_report_passages: migration 010) ----------
+const REPORTS_ABOUT = `Country reports are the Commission's staff working documents published with the ${RECITALS_YEAR} recommendations: `
+  + `about 100 pages per Member State analysing its economy, reforms and investment needs. Search them by word to find `
+  + `the passages on a topic, with a link to the page of the PDF.`;
+
+function pdfPage(url, page) {
+  return url ? `${String(url).split("#")[0]}#page=${page}` : "";
+}
+
+/** Country reports view: without a search, the list of reports; with a search, the matching passages. */
+async function renderReportList(p, seq, { title, country }) {
+  const page = pageOf(p);
+  const f = { country, q: p.get("q") || "", exact: p.get("exact") === "1" };
+  const rel = await searchTerms(f.q, f.exact);
+  if (stale(seq)) return;
+  f.terms = rel.terms;
+  const intro = `<p class="muted">${esc(REPORTS_ABOUT)}</p>`;
+  const modes = csrsModeLinks("reports", f);
+  const form = filterForm("csrs",
+    `<input type="hidden" name="view" value="reports">` + (f.exact ? `<input type="hidden" name="exact" value="1">` : "")
+    + textField("q", "Search the country reports", f.q, "e.g. water management, wildfires, housing")
+    + countriesSelect(f.country));
+  const missing = () => view(`${title}${intro}${modes}<p class="empty">Country reports are not available yet.</p>`);
+  if (!f.q.trim()) {
+    let q = sb.from("country_reports").select("report_id,country,year,title,source_url,page_url,pages").order("country");
+    if (f.country) q = q.eq("country", f.country);
+    const res = await q;
+    if (stale(seq)) return;
+    if (res.error) return relationMissing(res) ? missing() : showError(res.error, "Could not load the country reports");
+    const rows = [...res.data].sort((a, b) => countryName(a.country).localeCompare(countryName(b.country))).map((r) => [
+      td(`${esc(countryName(r.country))} <span class="muted small">${esc(r.country)}</span>`, "nowrap"),
+      td(esc(r.year), "num"), td(esc(r.pages ?? "—"), "num"),
+      td([r.source_url ? `<a href="${esc(r.source_url)}" target="_blank" rel="noopener">PDF</a>` : "",
+        r.page_url ? `<a href="${esc(r.page_url)}" target="_blank" rel="noopener">Country page</a>` : "",
+        hashLink("csrdoc", docIdOf(r.country, r.year), "Recommendations")].filter(Boolean).join(" · ")),
+    ]);
+    view(`${title}${intro}${form}${modes}` + table(["Country", "Year", "Pages", "Links"], rows, "No country report."));
+    bindFilters();
+    return;
+  }
+  const res = await fetchPage((opts) => {
+    let q = sb.from("country_report_passages").select("passage_id,country,year,page,text,source_url", opts)
+      .order("country").order("page").order("seq");
+    if (f.country) q = q.eq("country", f.country);
+    return q.or(recitalMatchFilter(f.q, f.terms || []));
+  }, page);
+  if (stale(seq)) return;
+  if (res.redirectPage) return redirectToPage("csrs", p, res.redirectPage);
+  if (res.error) return relationMissing(res) ? missing() : showError(res.error, "Could not load the country report passages");
+  const { data, count } = res;
+  const words = [f.q, ...f.terms];
+  const rows = data.map((r) => [
+    td(`${esc(countryName(r.country))} ${esc(r.year)}`, "nowrap"),
+    td(r.source_url ? `<a href="${esc(pdfPage(r.source_url, r.page))}" target="_blank" rel="noopener">p. ${esc(r.page)}</a>` : `p. ${esc(r.page)}`, "nowrap"),
+    td(`<span class="recital-text">${recitalExcerpt(r.text, words)}</span>`, "title-cell"),
+  ]);
+  view(`${title}${intro}${form}${relatedNotice("csrs", p, f.q, rel)}${modes}${pager("csrs", p, page, count)}`
+    + table(["Country report", "Page", "Passage"], rows, "No passage matches these filters.")
+    + (data.length ? pager("csrs", p, page, count) : ""));
+  bindFilters();
 }
 
 // ---------- Recitals of the Commission recommendations (csr_recitals, migration 009) ----------
@@ -961,6 +1025,17 @@ async function renderRecitalList(p, seq, { title, country }) {
   bindFilters();
 }
 
+/** The country report of a country and year, or null (none, or the table is not available). */
+async function countryReport(country, year) {
+  if (year !== RECITALS_YEAR) return null;
+  try {
+    const res = await sb.from("country_reports").select("title,source_url,pages").eq("country", country).eq("year", year).maybeSingle();
+    return res.error ? null : res.data;
+  } catch {
+    return null;
+  }
+}
+
 /** All recitals of a document, in order; [] when there are none or the table is not available. */
 async function docRecitals(docId) {
   try {
@@ -982,10 +1057,10 @@ function recitalsCard(recitals) {
 }
 
 /** Number of recitals matching a recommendation search (country filter kept); null when unknown or not applicable. */
-async function recitalMatchCount(f) {
+async function recitalMatchCount(f, tableName = "csr_recitals", idCol = "recital_id") {
   if (!f.q || (f.year && f.year !== RECITALS_YEAR)) return null;
   try {
-    let q = sb.from("csr_recitals").select("recital_id", { count: "exact", head: true }).or(recitalMatchFilter(f.q, f.terms || []));
+    let q = sb.from(tableName).select(idCol, { count: "exact", head: true }).or(recitalMatchFilter(f.q, f.terms || []));
     if (f.country) q = q.eq("country", f.country);
     const res = await q;
     return res.error ? null : res.count ?? null;
@@ -1015,11 +1090,12 @@ function docCard(d, related = null) {
 
 async function renderCsrs(p, seq) {
   const recitalsMode = p.get("view") === "recitals";
-  const recsMode = !recitalsMode && (p.get("view") === "recs" || Boolean((p.get("q") || "").trim()));
+  const reportsMode = p.get("view") === "reports";
+  const recsMode = !recitalsMode && !reportsMode && (p.get("view") === "recs" || Boolean((p.get("q") || "").trim()));
   const country = pick(p.get("country"), COUNTRIES);
-  if (recitalsMode) {
+  if (recitalsMode || reportsMode) {
     const title = `<div class="title-row">${heading("Country-specific recommendations")}${infoButton("csrlevels", "About the three levels")}</div>`;
-    return renderRecitalList(p, seq, { title, country });
+    return (reportsMode ? renderReportList : renderRecitalList)(p, seq, { title, country });
   }
   const yrs = await fetchCsrYears();
   if (stale(seq)) return;
@@ -1065,14 +1141,19 @@ async function renderCsrList(p, seq, { title, years, country, year }) {
   const rel = await searchTerms(f.q, f.exact);
   if (stale(seq)) return;
   f.terms = rel.terms;
-  const [res, nRecitals] = await Promise.all([fetchPage((opts) => csrsQuery(f, opts), page), recitalMatchCount(f)]);
+  const [res, nRecitals, nPassages] = await Promise.all([fetchPage((opts) => csrsQuery(f, opts), page), recitalMatchCount(f),
+    recitalMatchCount(f, "country_report_passages", "passage_id")]);
   if (stale(seq)) return;
   if (res.redirectPage) return redirectToPage("csrs", p, res.redirectPage);
   const { data, error, count } = res;
   if (error) return showError(error, "Could not load CSRs");
-  const recitalsNote = nRecitals ? `<p class="related-notice small">${fmtN(nRecitals)} recital${nRecitals === 1 ? "" : "s"} of the `
-    + `${RECITALS_YEAR} Commission documents also mention${nRecitals === 1 ? "s" : ""} this (the Commission's analysis before the recommendations). `
-    + `<a href="${esc(hrefFor("csrs", { view: "recitals", country: f.country, q: f.q, exact: f.exact ? "1" : "" }))}">Show the recitals</a></p>` : "";
+  const also = (view, label) => `<a href="${esc(hrefFor("csrs", { view, country: f.country, q: f.q, exact: f.exact ? "1" : "" }))}">${label}</a>`;
+  const extra = [
+    nRecitals ? also("recitals", `${fmtN(nRecitals)} recital${nRecitals === 1 ? "" : "s"}`) : "",
+    nPassages ? also("reports", `${fmtN(nPassages)} country report passage${nPassages === 1 ? "" : "s"}`) : "",
+  ].filter(Boolean);
+  const recitalsNote = extra.length ? `<p class="related-notice small">The Commission's ${RECITALS_YEAR} analysis also mentions this: `
+    + `${extra.join(" · ")}.</p>` : "";
 
   const form = filterForm("csrs",
     `<input type="hidden" name="view" value="recs">` + (f.exact ? `<input type="hidden" name="exact" value="1">` : "")
@@ -1156,8 +1237,9 @@ async function renderCsrDoc(id, seq) {
   const year = num(d.year);
   const commission = isCommission(d.stage);
   const keys = partLinkKeys(arr(d.csrs).flatMap((c) => arr(c.csr_parts)));
-  const [, related, recitals] = await Promise.all([keys.length ? loadReviews(keys) : null,
-    year >= RELATED_YEAR ? loadRelated() : null, year === RECITALS_YEAR ? docRecitals(d.doc_id) : []]);
+  const [, related, recitals, report] = await Promise.all([keys.length ? loadReviews(keys) : null,
+    year >= RELATED_YEAR ? loadRelated() : null, year === RECITALS_YEAR ? docRecitals(d.doc_id) : [],
+    countryReport(d.country, year)]);
   if (stale(seq)) return;
   const recs = [...arr(d.csrs)].sort(csrNumber);
   const s = docStats(d);
@@ -1168,7 +1250,11 @@ async function renderCsrDoc(id, seq) {
     ["Recommendations", fmtN(s.recs)], ["Sub-parts", fmtN(s.parts)],
     ["Linked projects", commission && !s.projects ? "none yet" : `${fmtN(s.projects)} <span class="ai-note">AI-assessed</span>`],
     ["Main assessment", commission ? "not yet assessed" : s.dominant ? `${esc(s.dominant.label)} <span class="muted">(${s.dominant.n} of ${s.recs})</span>` : "—"],
-    ["Source", docSourceLink(d.document_url, d.stage) || "—"], ["Document ID", `<code>${esc(d.doc_id)}</code>`],
+    ["Source", docSourceLink(d.document_url, d.stage) || "—"],
+    ...(report?.source_url ? [["Country report", `<a href="${esc(report.source_url)}" target="_blank" rel="noopener">${esc(report.title)}</a>`
+      + `${report.pages ? ` <span class="muted small">${esc(report.pages)} pages</span>` : ""} · `
+      + `<a href="${esc(hrefFor("csrs", { view: "reports", country: d.country }))}">Search it</a>`]] : []),
+    ["Document ID", `<code>${esc(d.doc_id)}</code>`],
   ].map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
   const lineage = Object.hasOwn(COUNTRIES, d.country) && !commission
     ? `<p><a class="btn btn-secondary" href="${esc(lineageHref(d.country, [year], `doc:${d.doc_id}`, s.projects === 0))}">Show in lineage network</a></p>` : "";
@@ -2977,6 +3063,10 @@ const GUIDE = [
       like the other searches) and by country; each row shows the passage that matches and links to the document and its PDF.
       They cover topics that the recommendations only mention briefly, such as water or wildfires. The 2026 document pages list
       their recitals in a collapsed section, and the assistant can search them too.</li>
+    <li><strong>Country reports 2026</strong>: the Commission's staff working document for each Member State (about 100 pages),
+      published with the 2026 recommendations. Without a search, the list of the 27 reports with their PDF; with a search, the
+      passages that match, each with a link to its page in the PDF. The 2026 document pages link to their country report, and
+      the assistant searches the reports for detailed or cross-country questions (e.g. water management in several countries).</li>
     <li><strong>Recommendation page</strong>: the full text, the sub-parts, their assessment, the linked projects, the document it
       belongs to (breadcrumb at the top) and a link to the lineage network.</li>
     <li><strong>2026: related past projects</strong>: each 2026 country card counts the past projects suggested by AI for its

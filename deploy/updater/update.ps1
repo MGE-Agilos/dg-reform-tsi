@@ -1,5 +1,5 @@
 # Full update of the TSI data on a Windows PC (see deploy/updater/README.md).
-# Runs: run -> deliverables -> csr-fetch -> csr-build -> csr-link -> anomalies -> [supabase-sync] -> prod-export
+# Runs: run -> deliverables -> csr-fetch -> csr-build -> country-reports -> csr-link -> anomalies -> [supabase-sync] -> prod-export
 # -> [release-data --publish] -> [index]. No key in this file: OPENAI_API_KEY, SUPABASE_URL and
 # SUPABASE_SERVICE_KEY are read from the environment or from .env at the root of the repository.
 #
@@ -10,7 +10,8 @@
 #   .\deploy\updater\update.ps1 -SkipDeliverables -SkipCsr -DetailOnly -Settings deploy\updater\settings.updater.yaml
 #   -Scheduled: set by the scheduled task (register-task.ps1): full check in January, April, July and October.
 #
-# Exit codes: 0 done; 1 warning (LLM quota, or a soft step failed: csr-fetch, supabase-sync, release, index);
+# Exit codes: 0 done; 1 warning (LLM quota, or a soft step failed: csr-fetch, country-reports, supabase-sync, release,
+# index);
 # 3 warning (the site sitemap could not be read); 2 or another code from a strict step: stopped. Warnings do not
 # stop the update: the next steps run and the script ends with the worst code (1 before 3).
 # Log of each update: logs\update-YYYYMMDD-HHMM.log (transcript, with the summary of the runs at the end).
@@ -216,6 +217,9 @@ try {
         if ($code -ne 0) { Add-Warning "csr-fetch failed (exit code $code): ECFIN site unavailable? the previous CSR export is kept" 1 }
         $code = Invoke-Step "CSR files" "csr-build" "strict" @("csr-build")
         if ($code -ne 0) { Stop-Update "csr-build failed (exit code $code)" $code }
+        # Country reports: only the missing ones are downloaded (once a year in practice); no LLM.
+        $code = Invoke-Step "country reports" "country-reports" "soft" @("country-reports")
+        if ($code -ne 0) { Add-Warning "country-reports: some reports could not be downloaded (exit code $code); the others are kept" 1 }
         $linkArgs = @("csr-link")
         if ($DetailOnly) { $linkArgs += "--detail-only" }
         $code = Invoke-Step "project -> CSR links" "csr-link" "quota" $linkArgs

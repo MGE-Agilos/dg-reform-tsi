@@ -178,6 +178,10 @@ def main(argv: list[str] | None = None) -> int:
     check = sub.add_parser("llm-check", help="refaire l'extraction de N projets en cache avec le fournisseur "
                                             "configuré et comparer (output/reports/llm_check.md)")
     check.add_argument("--n", type=int, default=3, help="nombre de projets (défaut : 3)")
+    reports = sub.add_parser("country-reports", help="télécharger les country reports du Semestre (PDF anglais, un par "
+                                                    "pays) dans output/country_reports (sans LLM)")
+    reports.add_argument("--country", action="append", dest="countries", help="code ISO (répétable ; défaut : les 27)")
+    reports.add_argument("--force", action="store_true", help="retélécharger les rapports déjà présents")
     sub.add_parser("supabase-sync", help="publier projets, CSR, liens et anomalies dans Supabase (explorateur web)")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
@@ -257,6 +261,24 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(json.dumps(result, indent=2))
         return 0
+    if args.command == "country-reports":
+        from tsi_agent.countries import COUNTRIES
+        from tsi_agent.country_reports import chunks, fetch_reports, load_reports
+        from tsi_agent.http import shared_fetcher
+        wanted = [c.upper() for c in args.countries or []]
+        unknown = [c for c in wanted if c not in COUNTRIES]
+        if unknown:
+            print(f"ERREUR : pays inconnus : {', '.join(unknown)}", file=sys.stderr)
+            return 1
+        fetcher = shared_fetcher(settings.cache_dir, settings.min_interval_s, settings.user_agent)
+        result = fetch_reports(Path(settings.output_dir), fetcher, wanted or None, force=args.force)
+        reports = load_reports(Path(settings.output_dir))
+        result["reports"] = len(reports)
+        result["passages"] = sum(len(chunks(r)) for r in reports)
+        for country, reason in result["failed"].items():
+            print(f"ATTENTION (country report {country}) : {reason}", file=sys.stderr)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 1 if result["failed"] else 0
     if args.command == "csr-build":
         from tsi_agent.csr import build_csrs, build_documents, read_rows, write_csrs, write_documents
         source = Path(settings.output_dir) / "csr" / "csr_full.xlsx"

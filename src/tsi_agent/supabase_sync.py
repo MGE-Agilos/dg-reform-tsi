@@ -10,7 +10,8 @@ output/impact/*.md) sont remplacees ; les analyses lancees depuis la page (`sour
 `csr_related_projects` (migration 006, output/csr_related/*.json de `csr-related`) est remplacee en entier, apres les
 autres tables ; si la table n'existe pas encore (migration non appliquee), elle est sautee avec un avertissement.
 `csr_recitals` (migration 009) : considerants des recommandations de la Commission (texte de la publication 2026),
-remplaces en entier comme csr_related_projects (table absente -> sautee avec un avertissement).
+remplaces en entier comme csr_related_projects (table absente -> sautee avec un avertissement) ; de meme
+`country_reports` et `country_report_passages` (migration 010, rapports de output/country_reports decoupes en passages).
 `link_reviews` (avis des testeurs, ecrits depuis la page) n'est JAMAIS lue, videe ni ecrite par la synchronisation.
 """
 
@@ -30,6 +31,8 @@ from tsi_agent.ids import clean_text
 from tsi_agent.csr import build_documents, document_id
 from tsi_agent.csr_commission import load as load_commission, load_all_csrs
 from tsi_agent.csr_related import load_related_rows
+from tsi_agent.countries import name_from_iso
+from tsi_agent.country_reports import chunks as report_chunks, load_reports
 from tsi_agent.llm import read_dotenv
 from tsi_agent.render import parse_front_matter
 
@@ -46,9 +49,13 @@ DELETE_FILTER = {"projects": "project_id=not.is.null", "csr_documents": "doc_id=
 IMPACT_TABLE = "impact_reports"
 RELATED_TABLE = "csr_related_projects"
 RECITALS_TABLE = "csr_recitals"
+REPORTS_TABLE = "country_reports"
+PASSAGES_TABLE = "country_report_passages"
 # Tables optionnelles remplacees en entier apres les autres : (table, filtre DELETE couvrant toutes les lignes, migration).
 OPTIONAL_TABLES = ((RELATED_TABLE, "csr_id=not.is.null", "006_reviews_related.sql"),
-                   (RECITALS_TABLE, "recital_id=not.is.null", "009_csr_recitals.sql"))
+                   (RECITALS_TABLE, "recital_id=not.is.null", "009_csr_recitals.sql"),
+                   (REPORTS_TABLE, "report_id=not.is.null", "010_country_reports.sql"),
+                   (PASSAGES_TABLE, "passage_id=not.is.null", "010_country_reports.sql"))
 # Tables que la synchronisation ne doit jamais toucher (ecrites ailleurs) : garde-fou verifie dans push.
 PROTECTED_TABLES = ("testers", "link_reviews")
 IMPACT_LEVELS = ("strong", "moderate", "weak")
@@ -191,9 +198,16 @@ def build_rows(output_dir: Path, current_year: int | None = None) -> dict[str, l
     recitals = [{"recital_id": r.recital_id, "country": r.country, "year": r.year, "number": r.number, "text": r.text,
                  "source_url": r.source_url, "doc_id": document_id(r.country, r.year)}
                 for r in load_commission(output_dir).recitals]
+    reports = load_reports(output_dir)
+    report_rows = [{"report_id": r.report_id, "country": r.country, "year": r.year,
+                    "title": f"{name_from_iso(r.country)} — {r.year} country report", "source_url": r.source_url or None,
+                    "page_url": r.page_url or None, "pages": r.pages} for r in reports]
+    passages = [{"passage_id": c.chunk_id, "report_id": r.report_id, "country": c.country, "year": c.year,
+                 "page": c.page, "seq": c.seq, "text": c.text, "source_url": c.source_url or None}
+                for r in reports for c in report_chunks(r)]
     return {"projects": projects, "csr_documents": doc_rows, "csrs": csr_rows, "csr_parts": part_rows, "project_csr_links": links,
             "anomalies": anomalies, IMPACT_TABLE: impact_rows(output_dir), RELATED_TABLE: related,
-            RECITALS_TABLE: recitals}
+            RECITALS_TABLE: recitals, REPORTS_TABLE: report_rows, PASSAGES_TABLE: passages}
 
 
 class SyncError(RuntimeError):

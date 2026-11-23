@@ -536,6 +536,24 @@ que le corps) et les notes numérotées « (n) » de certains documents (Irlande
 la recherche des recommandations, section repliée sur chaque page document 2026) ; l'assistant les interroge avec
 l'outil `search_recitals`.
 
+## Country reports 2026
+
+Le rapport de la Commission sur chaque État membre (document de travail SWD, une centaine de pages, PDF anglais)
+accompagne les recommandations. Téléchargement (rapports absents seulement, sans LLM ; aussi une étape de la mise à
+jour mensuelle) :
+
+```powershell
+.venv\Scripts\python -m tsi_agent country-reports              # --country PT (répétable), --force pour tout reprendre
+```
+
+Le lien du PDF est lu sur la page pays d'ECFIN (`country-report-<pays>_en`, premier lien anglais `..._SWD_2026_...`).
+Le texte est extrait colonne par colonne (les pages sont sur deux colonnes : `extract_text` mélangerait leurs lignes)
+dans `output/country_reports/<ISO>-2026.md`. `supabase-sync` le découpe en passages d'environ 1 500 caractères (coupés
+entre phrases, avec leur page ; pages presque vides et tableaux de chiffres écartés) : tables `country_reports` et
+`country_report_passages` (migration `010_country_reports.sql`, recherche plein texte, fonction
+`tsi_search_country_reports`). L'explorateur les montre dans l'onglet CSRs (vue « Country reports 2026 », lien vers la
+page du PDF, lien depuis les pages document 2026) ; l'assistant les interroge avec l'outil `search_country_reports`.
+
 ## Rapport d'anomalies
 
 Contrôle de publication, sans LLM ni réseau, à partir de `output/` (spec :

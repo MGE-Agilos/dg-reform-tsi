@@ -183,7 +183,7 @@ test("chat loop: list_projects tool_use, tool_result sent back, PostgREST called
   assert.deepEqual(body1.output_config, { effort: "low" });
   assert.equal(body1.system[0].text, CHAT_SYSTEM);
   assert.deepEqual(body1.system[0].cache_control, { type: "ephemeral" });
-  assert.deepEqual(body1.tools.map((t: { name: string }) => t.name), ["search_projects", "list_projects", "get_project", "search_csrs", "get_csr", "search_recitals"]);
+  assert.deepEqual(body1.tools.map((t: { name: string }) => t.name), ["search_projects", "list_projects", "get_project", "search_csrs", "get_csr", "search_recitals", "search_country_reports"]);
   assert.deepEqual(body1.messages, [{ role: "user", content: [{ type: "text", text: chatBody.messages[0].content, cache_control: { type: "ephemeral" } }] }]);
   assert.equal(body1.tool_choice, undefined);
 
@@ -1104,5 +1104,20 @@ test("search_recitals calls its RPC with countries and a bounded limit, and labe
   assert.deepEqual(sent(c), { q: "wildfire", p_countries: ["HR"], p_year_from: null, p_year_to: null, lim: 20 });
   assert.match(await runTool("search_recitals", { query: "nothing" }, { ...CTX, fetchImpl: fakeFetch().impl }), /^No recital matches/);
   assert.match(CHAT_SYSTEM, /search_recitals/);
+});
+
+test("search_country_reports calls its RPC and links each passage to its PDF page", async () => {
+  const f = fakeFetch({ rpc: {
+    tsi_search_country_reports: [{ passage_id: "cr-PT-2026-p21-1", country: "PT", year: 2026, page: 21, text: "Water scarcity calls for better management.", source_url: "https://ec.example/pt.pdf", rank: 0.5 }],
+  } });
+  const out = await runTool("search_country_reports", { query: "water", countries: ["pt"] }, { ...CTX, fetchImpl: f.impl });
+  assert.match(out, /^1 passages of the 2026 country reports/);
+  assert.match(out, /cr-PT-2026-p21-1 — PT 2026 country report, page 21 — https:\/\/ec\.example\/pt\.pdf#page=21/);
+  assert.match(out, /Water scarcity calls for better management\./);
+  const [c] = f.dbCalls();
+  assert.equal(c.url, "https://project.supabase.co/rest/v1/rpc/tsi_search_country_reports");
+  assert.deepEqual(sent(c), { q: "water", p_countries: ["PT"], lim: 8 });
+  assert.match(await runTool("search_country_reports", { query: "nothing" }, { ...CTX, fetchImpl: fakeFetch().impl }), /^No country report passage matches/);
+  assert.match(CHAT_SYSTEM, /search_country_reports/);
 });
 

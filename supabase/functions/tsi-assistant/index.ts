@@ -94,6 +94,8 @@ Tools:
   (csrdoc-HR-2025), one CSR document and all its recommendations.
 - search_recitals: full-text search over the recitals of the 2026 Commission recommendations: the numbered
   paragraphs before the recommendations, with the Commission's analysis of each country's challenges.
+- search_country_reports: full-text search over the 2026 country reports (Commission staff working documents, about
+  100 pages per Member State): detailed analysis of each country's economy, reforms and investment needs.
 
 Rules:
 1. Answer in the language of the user's question.
@@ -132,6 +134,10 @@ Rules:
 16. For a country's challenges, context or the reasons behind a 2026 recommendation, or a topic the recommendations
     only mention briefly (e.g. water, wildfires, housing), also call search_recitals. Cite recitals by id
     (rec-HR-2026-12) and say they are recitals (analysis), not recommendations; they exist for 2026 only.
+17. For detailed or cross-country analysis of a topic (e.g. water management, wildfires, housing, skills), call
+    search_country_reports, one search per country when you compare countries. Cite each passage as a Markdown link
+    to its source with the page, e.g. [Portugal 2026 country report, p. 21](https://...#page=21). Country reports are
+    the Commission's analysis (staff working documents), not recommendations.
 
 ${FILTER_VALUES}`;
 
@@ -255,13 +261,26 @@ const SEARCH_RECITALS = {
     required: ["query"],
   },
 };
+const SEARCH_COUNTRY_REPORTS = {
+  name: "search_country_reports",
+  description: "Full-text search (English) over the 2026 European Semester country reports (Commission staff working documents, one per Member State). Returns passages with their country, page and a link to the PDF page.",
+  input_schema: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "English search words." },
+      countries: { ...countriesProp, description: "ISO country codes, e.g. [\"PT\"]." },
+      limit: { type: "integer", minimum: 1, maximum: 20, description: "Maximum passages (default 8)." },
+    },
+    required: ["query"],
+  },
+};
 export const WEB_SEARCH_TOOL = { type: "web_search_20260209", name: "web_search", max_uses: WEB_SEARCH_MAX_USES };
 
-export const TOOLS_CHAT: Record<string, unknown>[] = [SEARCH_PROJECTS, LIST_PROJECTS, GET_PROJECT, SEARCH_CSRS, GET_CSR, SEARCH_RECITALS];
+export const TOOLS_CHAT: Record<string, unknown>[] = [SEARCH_PROJECTS, LIST_PROJECTS, GET_PROJECT, SEARCH_CSRS, GET_CSR, SEARCH_RECITALS, SEARCH_COUNTRY_REPORTS];
 export const TOOLS_IMPACT: Record<string, unknown>[] = [GET_PROJECT, SEARCH_PROJECTS, WEB_SEARCH_TOOL];
 
 const SERVICES: Record<AgentService, { system: () => string; tools: Record<string, unknown>[]; clientTools: string[] }> = {
-  chat: { system: () => CHAT_SYSTEM, tools: TOOLS_CHAT, clientTools: ["search_projects", "list_projects", "get_project", "search_csrs", "get_csr", "search_recitals"] },
+  chat: { system: () => CHAT_SYSTEM, tools: TOOLS_CHAT, clientTools: ["search_projects", "list_projects", "get_project", "search_csrs", "get_csr", "search_recitals", "search_country_reports"] },
   impact: { system: () => impactSystem(), tools: TOOLS_IMPACT, clientTools: ["get_project", "search_projects"] },
 };
 
@@ -580,6 +599,28 @@ async function searchRecitals(input: Input, ctx: ToolContext): Promise<string> {
   return lines.join("\n");
 }
 
+type PassageRow = { passage_id: string; country: string; year: number; page: number; text: string; source_url: string | null };
+
+/** Link to one page of a PDF (viewers open it at that page). */
+export function pdfPageUrl(url: string | null, page: number): string | null {
+  return url ? `${url.split("#")[0]}#page=${page}` : null;
+}
+
+async function searchCountryReports(input: Input, ctx: ToolContext): Promise<string> {
+  const q = reqString(input, "query");
+  const rows = await db(ctx, "rpc/tsi_search_country_reports", {
+    q, p_countries: optCountries(input), lim: limitOf(input, 8, 20),
+  }) as PassageRow[];
+  if (!Array.isArray(rows) || !rows.length) return `No country report passage matches "${q}" with these filters.`;
+  const lines = [`${rows.length} passages of the ${rows[0].year} country reports (Commission staff working documents; best matches first):`];
+  rows.forEach((r, i) => {
+    const url = pdfPageUrl(r.source_url, r.page);
+    lines.push(`${i + 1}. ${r.passage_id} — ${r.country} ${r.year} country report, page ${r.page}${url ? ` — ${url}` : ""}`);
+    lines.push(`   ${clip(r.text, 1400)}`);
+  });
+  return lines.join("\n");
+}
+
 type PartRow = { part_id: string; text: string; assessment: string | null; project_csr_links: { level: string; rationale: string; projects: ProjectRow | null }[] | null };
 
 type DocCsrRow = { csr_id: string; number: string; text: string; assessment: string | null; assessment_year: number | null;
@@ -652,6 +693,7 @@ async function getCsr(input: Input, ctx: ToolContext): Promise<string> {
 const TOOL_IMPLS: Record<string, (input: Input, ctx: ToolContext) => Promise<string>> = {
   search_projects: searchProjects, list_projects: listProjects, get_project: getProject,
   search_csrs: searchCsrs, get_csr: getCsr, search_recitals: searchRecitals,
+  search_country_reports: searchCountryReports,
 };
 
 /** Runs a client tool and returns compact text for the model; never throws ("Tool error: ..." instead). */
