@@ -1,10 +1,12 @@
 # TSI × CSR Explorer — self-hosted installation (Linux)
 
-> **DRAFT: target procedure, not runnable yet.**
-> This document describes the installation as it will be once the self-hosted version is developed. Today the
-> explorer runs on a cloud service (Supabase) and some components below do not exist yet: they are marked
-> **(planned)**. The steps without that mark already work as described. The procedure will be updated, tested end to
-> end and released with a version tag before the installation.
+> **Status: first release, steps 1 to 9 ready and tested.** Database, data transfer, PostgREST, application service,
+> web page and users work as described (tested end to end on PostgreSQL 16, PostgREST 12.2.3 and Node.js 22).
+> Still **(planned)**: the assistant on GPT@EC and the automatic monthly data update (steps 10 and 11); the explorer
+> works without them in the meantime. Sign-in with your identity provider is tested at the installation.
+>
+> The repository is public: no GitHub account is needed. The server only needs HTTPS access to `github.com`
+> (or download the code as a ZIP and copy it to the server).
 
 Server preparation (to do first): [REQUIREMENTS.md](REQUIREMENTS.md).
 
@@ -141,6 +143,10 @@ git clone https://github.com/MGE-Agilos/dg-reform-tsi.git app
 cd app
 git checkout <release>
 ```
+
+Without access to `github.com` from the server: download
+<https://github.com/MGE-Agilos/dg-reform-tsi/archive/refs/heads/main.zip> on a workstation, copy it to the server
+and unpack it in `/opt/tsi-explorer/app` (`git` is then not needed; the upgrades are done the same way).
 
 ## Step 4 — Install the database schema
 
