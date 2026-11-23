@@ -14,3 +14,7 @@ deploy/frontend-local/config.local.js
 deploy/frontend-local/dist/
 deploy/*.zip
 .secrets/
+
+# Data export for the self-hosted installation (personal data: never commit)
+tsi-explorer-data*.sql
+TSI-Explorer-data-*.zip

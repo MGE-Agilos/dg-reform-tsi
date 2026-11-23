@@ -19,6 +19,7 @@ Server preparation (to do first): [REQUIREMENTS.md](REQUIREMENTS.md).
   [2. Create the database roles](#step-2--create-the-database-roles) ·
   [3. Get the code](#step-3--get-the-code) ·
   [4. Install the database schema](#step-4--install-the-database-schema) ·
+  [4b. Load the current data](#step-4b--load-the-current-data) ·
   [5. Install PostgREST](#step-5--install-postgrest) ·
   [6. Install the application service](#step-6--install-the-application-service-nodejs) ·
   [7. Publish the web page](#step-7--publish-the-web-page) ·
@@ -36,7 +37,8 @@ Server preparation (to do first): [REQUIREMENTS.md](REQUIREMENTS.md).
 |---|---|
 | Data pipeline (projects, publications, recommendations, recitals, country reports, links, anomalies) | Ready. Runs with GPT@EC (`llm_provider: openai`). |
 | Web page (`web/`) | Ready; its sign-in must be switched to the application service **(planned)**. |
-| Database schema (`supabase/migrations/001` to `010`) | Ready; needs a compatibility script for a plain PostgreSQL **(planned)**. |
+| Database schema (`deploy/onprem/sql/000_compat.sql`, then `supabase/migrations/001` to `010`) | Ready. Tested on PostgreSQL 16: schema, row-level security, search and dashboard functions. |
+| Transfer of the current data (SQL file provided by Agilos) | Ready. Tested: same rows and same content as the cloud database. |
 | Application service: sign-in, API, assistant on GPT@EC (`server/`) | **(planned)** |
 | Data load into a self-hosted database (`supabase-sync` to a local PostgREST) | **(planned)** |
 | Linux update script and service files (`deploy/onprem/`) | **(planned)** |
@@ -146,22 +148,43 @@ As `tsi` on the application server, with the owner account:
 ```bash
 cd /opt/tsi-explorer/app
 export PGHOST=<db-host> PGDATABASE=tsi_explorer PGUSER=<db-owner>   # the password is asked, or read from ~/.pgpass
-psql -v ON_ERROR_STOP=1 -f deploy/onprem/sql/000_compat.sql         # (planned) see below
+psql -v ON_ERROR_STOP=1 -f deploy/onprem/sql/000_compat.sql         # see below
 for f in supabase/migrations/0*.sql; do
   echo "== $f"; psql -v ON_ERROR_STOP=1 -f "$f" || break
 done
 psql -c "notify pgrst, 'reload schema';"
 ```
 
-`000_compat.sql` **(planned)** provides, on a plain PostgreSQL, the few objects the schema expects from the cloud
-service: the `auth` schema with `auth.uid()`, `auth.jwt()` and `auth.role()` (read from the token claims that
-PostgREST sets for each request) and a minimal `auth.users` view. The migrations then run unchanged.
+`000_compat.sql` provides, on a plain PostgreSQL, the few objects the schema expects from the cloud service: the
+`auth` schema with `auth.uid()`, `auth.jwt()` and `auth.role()` (read from the token claims that PostgREST sets
+for each request) and an `auth.users` view of the signed-in user. The migrations then run unchanged.
 
 Check:
 
 ```bash
 psql -c "select count(*) from information_schema.tables where table_schema = 'public';"   # 15 or more
 ```
+
+### Step 4b — Load the current data
+
+Agilos sends a file `tsi-explorer-data.sql` (about 32 MB, in a zip) with all the current data of the explorer:
+projects, recommendations, recitals, country reports, links, anomalies, impact analyses, and also the users, their
+reviews and the usage data. It contains personal data (users' e-mail addresses): it is sent through a secure
+channel and must not be stored in a shared folder.
+
+As `tsi`, with the owner account (same `PG*` variables as above):
+
+```bash
+psql -v ON_ERROR_STOP=1 -f tsi-explorer-data.sql
+```
+
+It runs in one transaction (about 10 seconds): it empties the explorer's tables, loads every row, sets the id
+counters and ends with a table of row counts, where `rows` must equal `expected` on every line. It can be run
+again: the previous rows are replaced. Delete the file afterwards.
+
+With this file, the database is complete without running the first data load (step 10): the monthly update
+(step 11) then only adds what changed. The file is produced by Agilos with
+`python deploy/onprem/export_data.py --out tsi-explorer-data.sql`.
 
 ## Step 5 — Install PostgREST
 
@@ -346,8 +369,9 @@ curl -sI https://<dns>/ | head -1        # HTTP/2 200
 
 ## Step 9 — Users and administrators
 
-Only the e-mail addresses in the `testers` table can open the explorer. Migration 007 creates a default
-administrator (Agilos): add yours, then remove it if you wish.
+Only the e-mail addresses in the `testers` table can open the explorer. The data file of step 4b brings the
+current users and administrators; migration 007 alone only creates a default administrator (Agilos). Add your
+administrator, then remove the others if you wish.
 
 ```bash
 psql -c "insert into public.testers (email, role) values ('first.admin@example.eu', 'admin')
@@ -395,8 +419,9 @@ Check the AI model, then run the steps in this order:
 
 Each step can be run again: it resumes where it stopped and only processes what changed. Logs are in `logs/`.
 
-Faster alternative for the first load: Agilos provides the current data files (`output/`) from its own update, and
-only `supabase-sync` is run here. Later updates are then incremental.
+If the database was loaded from Agilos's file (step 4b), the database is already complete; the update still needs
+its working files (`output/`) to know what is new. Agilos provides them with the data file (unpack them in
+`/opt/tsi-explorer/app/output/`), or run the steps above once: they rebuild the files and reload the same data.
 
 ## Step 11 — Monthly update
 
