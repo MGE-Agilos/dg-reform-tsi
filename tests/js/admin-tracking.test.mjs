@@ -97,6 +97,8 @@ test("admin helpers: e-mail, durations, statuses, last admin", () => {
   assert.equal(A.userStatus({ account: true, email_confirmed_at: null }).key, "unconfirmed");
   assert.equal(A.userStatus({ account: true, email_confirmed_at: "x", must_change_password: true }).key, "pending");
   assert.equal(A.userStatus({ account: true, email_confirmed_at: "x" }).key, "active");
+  assert.deepEqual(A.userStatus({ account: true, sso: true, last_sign_in_at: null }), { key: "unconfirmed", label: "Not signed in yet" });
+  assert.equal(A.userStatus({ account: true, sso: true, last_sign_in_at: "2026-11-20T10:00:00Z" }).key, "active");
   const users = [{ email: "b@x.y", role: "user" }, { email: "a@x.y", role: "admin" }];
   assert.deepEqual(A.sortUsers(users).map((u) => u.email), ["a@x.y", "b@x.y"]);
   assert.equal(A.wouldRemoveLastAdmin(users, "a@x.y", "user"), true);

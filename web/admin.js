@@ -40,6 +40,8 @@ export function fmtDuration(seconds) {
 
 /** Status of a listed user: { key, label } — not confirmed, pending first password change, active, or no account. */
 export function userStatus(u) {
+  // Self-hosted installation (organisation account): active once the user has opened the explorer.
+  if (u?.sso) return u.last_sign_in_at ? { key: "active", label: "Active" } : { key: "unconfirmed", label: "Not signed in yet" };
   if (!u?.account) return { key: "none", label: "No account" };
   if (!u.email_confirmed_at) return { key: "unconfirmed", label: "Not confirmed" };
   if (u.must_change_password) return { key: "pending", label: "Pending password change" };

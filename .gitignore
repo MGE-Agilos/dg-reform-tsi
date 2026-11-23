@@ -18,3 +18,6 @@ deploy/*.zip
 # Data export for the self-hosted installation (personal data: never commit)
 tsi-explorer-data*.sql
 TSI-Explorer-data-*.zip
+
+# Application service of the self-hosted installation
+server/node_modules/

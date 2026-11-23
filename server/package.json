@@ -1,0 +1,16 @@
+{
+  "name": "tsi-explorer-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TSI x CSR Explorer: application service of the self-hosted installation (sign-in, data API, administration)",
+  "type": "module",
+  "main": "index.js",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "openid-client": "6.9.1"
+  }
+}

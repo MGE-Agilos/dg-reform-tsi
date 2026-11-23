@@ -1,7 +1,8 @@
 // TSI x CSR Explorer: static page over Supabase (RLS: signed-in testers only).
 // Every database string goes through esc() before being injected; only https:// URLs become links.
 // Chat and Impact answers (Markdown) are inserted only after marked + DOMPurify; without them, as escaped text.
-import { SUPABASE_URL, SUPABASE_ANON_KEY, PROXY_URL } from "./config.js";
+import * as CFG from "./config.js";
+import { createServerAuth } from "./server-auth.js";
 import * as B from "./briefing.js";
 import * as R from "./reporting.js";
 import * as A from "./admin.js";
@@ -9,6 +10,11 @@ import * as T from "./tracking.js";
 import * as PG from "./progress.js";
 import * as S from "./scope.js";
 import * as CM from "./compare.js";
+
+// config.js: SUPABASE_URL is the cloud project, or the API of a self-hosted installation (AUTH_MODE "server",
+// deploy/onprem/config.js), where the application service signs users in with their organisation account.
+const { SUPABASE_URL, SUPABASE_ANON_KEY, PROXY_URL } = CFG;
+const SERVER_AUTH = CFG.AUTH_MODE === "server";
 
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
 const MARKED_JS = "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
@@ -69,6 +75,8 @@ const SEVERITY_OPTIONS = { "": "High and medium", all: "All severities", high: "
 
 const $ = (id) => document.getElementById(id);
 let sb = null;
+// Sign-in: supabase-js auth (cloud), or the application service of a self-hosted installation (web/server-auth.js).
+let auth = null;
 let testerCache = null; // { userId, ok }
 let renderSeq = 0;
 let authError = "";
@@ -490,7 +498,7 @@ async function relatedTerms(q) {
   } catch { /* no storage: ask again */ }
   let out = { terms: [], failed: true };
   try {
-    const { data } = await sb.auth.getSession();
+    const { data } = await auth.getSession();
     const token = data?.session?.access_token;
     if (token) {
       const res = await fetch(PROXY_URL, {
@@ -2135,7 +2143,7 @@ function proxyMessage(status, body) {
 
 /** POST {service, messages} to PROXY_URL (tsi-assistant) with the session token; returns { answer, saved } or throws. */
 async function callProxy(service, messages) {
-  const { data } = await sb.auth.getSession();
+  const { data } = await auth.getSession();
   const token = data?.session?.access_token;
   if (!token) throw new Error("Your session has expired: sign in again.");
   const controller = new AbortController();
@@ -5374,7 +5382,7 @@ async function fetchBriefingData(country, from, to, signal) {
 
 /** POST {service: "briefing", ...} to tsi-assistant; returns { ai, unverified } or throws a readable Error. */
 async function callBriefing(payload, signal) {
-  const { data } = await sb.auth.getSession();
+  const { data } = await auth.getSession();
   const token = data?.session?.access_token;
   if (!token) throw new Error("Your session has expired: sign in again.");
   const controller = new AbortController();
@@ -5770,7 +5778,7 @@ function bindTracking() {
 
 // ---------- admin (#admin: users and roles through the tsi-admin function; #admin/usage: usage monitoring) ----------
 
-const ADMIN_URL = SUPABASE_URL + "/functions/v1/tsi-admin";
+const ADMIN_URL = SERVER_AUTH ? SUPABASE_URL + "/admin" : SUPABASE_URL + "/functions/v1/tsi-admin";
 const ADMIN_TIMEOUT_MS = 30000;
 const ROLE_MISSING_CODES = new Set(["PGRST202", "42883"]); // my_role() not created yet (migration 007)
 const LOG_COLS_DB = "email,view,detail,started_at,duration_s,session_id";
@@ -5829,7 +5837,7 @@ function setupUserMenu() {
 
 /** POST {action, ...} to tsi-admin with the session token; returns the JSON answer or throws Error(message). */
 async function callAdmin(action, payload = {}) {
-  const { data } = await sb.auth.getSession();
+  const { data } = await auth.getSession();
   const token = data?.session?.access_token;
   if (!token) throw new Error("Your session has expired. Please sign in again.");
   const controller = new AbortController();
@@ -5879,11 +5887,14 @@ function inviteFormHtml() {
     + `<form id="adm-invite-form" class="adm-form" novalidate>`
     + `<label class="field field-grow"><span>E-mail address</span><input type="email" name="email" required autocomplete="off" spellcheck="false" placeholder="name@example.org"></label>`
     + `<label class="field"><span>Role</span><select name="role">${options(A.ROLES, "user", null)}</select></label>`
-    + `<label class="check"><input type="checkbox" name="send_link" value="1"> Also e-mail a sign-in link</label>`
+    + (SERVER_AUTH ? "" : `<label class="check"><input type="checkbox" name="send_link" value="1"> Also e-mail a sign-in link</label>`)
     + `<button type="submit" class="btn" id="adm-invite-submit">Invite</button></form>`
-    + `<p class="muted small">A new address gets an account with a temporary password, to be replaced at the first sign-in. An address that`
-    + ` already has an account in the shared sign-in service (for example another application) only receives access to the explorer: it`
-    + ` keeps its password, or signs in with an e-mailed link. Administrators can also invite users and see the usage monitoring.</p>`
+    + (SERVER_AUTH
+      ? `<p class="muted small">The address gets access to the explorer: the user signs in with their organisation account (no password`
+        + ` here). Tell them the address of the site. Administrators can also invite users and see the usage monitoring.</p>`
+      : `<p class="muted small">A new address gets an account with a temporary password, to be replaced at the first sign-in. An address that`
+        + ` already has an account in the shared sign-in service (for example another application) only receives access to the explorer: it`
+        + ` keeps its password, or signs in with an e-mailed link. Administrators can also invite users and see the usage monitoring.</p>`)
     + `<p id="adm-invite-status" class="briefing-status" role="status" aria-live="polite"></p></section>`
     + `<div id="adm-secret" class="adm-secret-slot"></div>`;
 }
@@ -5927,7 +5938,7 @@ function usersTableHtml(state) {
       + ` data-email="${esc(u.email)}"${action === "role" ? ` data-role="${other}"` : ""}${disabled ? ` disabled title="${esc(why)}"` : ""}>${esc(label)}</button>`;
     const actions = state.fallback ? `<span class="muted small">—</span>`
       : `<div class="adm-actions">${act("role", other === "admin" ? "Make admin" : "Make user", lastAdmin, "The last administrator cannot be demoted")}`
-        + act("reset", "Reset password", !u.account, "No account for this e-mail")
+        + (SERVER_AUTH ? "" : act("reset", "Reset password", !u.account, "No account for this e-mail"))
         + act("revoke", "Revoke", self, "You cannot revoke your own access") + `</div>`;
     return [
       td(`${esc(u.email)}${self ? ` <span class="muted small">(you)</span>` : ""}`, "adm-email"),
@@ -6013,7 +6024,7 @@ async function submitInvite() {
     return;
   }
   const role = form.elements.role.value === "admin" ? "admin" : "user";
-  const sendLink = form.elements.send_link.checked;
+  const sendLink = form.elements.send_link?.checked === true; // no e-mailed link with an organisation account
   if (role === "admin" && !(await confirmAdmin({ title: "Invite an administrator?", confirm: "Invite as Admin",
     html: `<p><strong>${esc(email)}</strong> will be able to invite and revoke users, change roles, reset passwords and see the usage monitoring.</p>` }, $("adm-invite-submit")))) return;
   $("adm-invite-submit").disabled = true;
@@ -6294,7 +6305,7 @@ function showSession(session) {
 async function isTester(session) {
   if (testerCache && testerCache.userId === session.user.id) return testerCache;
   // getUser() asks the server: detects a session revoked server-side and gives fresh user metadata.
-  const { data: userData, error: userError } = await sb.auth.getUser();
+  const { data: userData, error: userError } = await auth.getUser();
   if (userError || !userData?.user) return { expired: true };
   const { data, error } = await sb.rpc("is_tester");
   if (error) return { error };
@@ -6580,7 +6591,7 @@ async function route(seq) {
 async function render() {
   const seq = ++renderSeq;
   if (!sb) return;
-  const { data, error } = await sb.auth.getSession();
+  const { data, error } = await auth.getSession();
   if (stale(seq)) return;
   const session = data?.session;
   const uid = session?.user?.id ?? null;
@@ -6598,7 +6609,7 @@ async function render() {
   if (stale(seq)) return;
   if (tester.expired) {
     testerCache = null;
-    await sb.auth.signOut({ scope: "local" });
+    await auth.signOut({ scope: "local" });
     authError = "Your session has expired. Please sign in again.";
     return render();
   }
@@ -6644,14 +6655,14 @@ async function changePassword(event) {
   const button = event.submitter || $("change-password-form").querySelector("button[type=submit]");
   button.disabled = true;
   msg("Saving…", false);
-  const { error } = await sb.auth.updateUser({ password, data: { must_change_password: false } });
+  const { error } = await auth.updateUser({ password, data: { must_change_password: false } });
   button.disabled = false;
   if (error && (error.name === "AuthSessionMissingError" || /session (missing|not found|expired)|refresh token/i.test(error.message || ""))) {
     // Session stored in the browser but no longer valid on the server: sign in again.
     msg("", false);
     wantsPasswordChange = false;
     testerCache = null;
-    await sb.auth.signOut({ scope: "local" });
+    await auth.signOut({ scope: "local" });
     authError = "Your session has expired. Please sign in again.";
     return render();
   }
@@ -6661,7 +6672,7 @@ async function changePassword(event) {
   msg("", false);
   wantsPasswordChange = false;
   testerCache = null; // re-read the user metadata (must_change_password is now false)
-  await sb.auth.refreshSession();
+  await auth.refreshSession();
   render();
 }
 
@@ -6684,7 +6695,7 @@ async function signInWithPassword(event) {
   const button = event.submitter || $("login-form").querySelector("button[type=submit]");
   button.disabled = true;
   setLoginMessage("Signing in…", false);
-  const { error } = await sb.auth.signInWithPassword({ email, password });
+  const { error } = await auth.signInWithPassword({ email, password });
   button.disabled = false;
   if (error) {
     // Same message for unknown e-mail and wrong password (no account enumeration).
@@ -6709,7 +6720,7 @@ async function sendMagicLink(event) {
   button.disabled = true;
   setLoginMessage("Sending…", false);
   // Invitation only: no account is created here (testers are invited from the Supabase dashboard).
-  const { error } = await sb.auth.signInWithOtp({
+  const { error } = await auth.signInWithOtp({
     email, options: { shouldCreateUser: false, emailRedirectTo: new URL("./", location.href).href },
   });
   button.disabled = false;
@@ -6736,14 +6747,32 @@ async function init() {
   captureAuthError();
   try {
     const { createClient } = await import(SUPABASE_JS);
-    sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    if (SERVER_AUTH) {
+      // Data requests go to the service's /api/rest/v1 with the token of the signed-in user.
+      auth = createServerAuth(SUPABASE_URL);
+      sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { accessToken: async () => (await auth.getSession()).data.session?.access_token ?? null });
+    } else {
+      sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      auth = sb.auth;
+    }
   } catch (e) {
     showScreen("config-error");
     $("config-error").innerHTML = `<h2>Could not load the Supabase client</h2><p>${esc(e.message || e)}. Check your network connection and reload the page.</p>`;
     return;
   }
-  $("login-form").addEventListener("submit", signInWithPassword);
-  $("login-magic").addEventListener("click", sendMagicLink);
+  if (SERVER_AUTH) {
+    // Organisation account (identity provider of the installation): no password, no e-mailed link.
+    $("login-form").hidden = true;
+    $("login-help").textContent = "Access is restricted to registered users. Sign in with your organisation account.";
+    const sso = $("login-sso-link");
+    sso.href = auth.loginUrl(location.hash);
+    sso.addEventListener("click", () => { sso.href = auth.loginUrl(location.hash); }); // current route
+    $("login-sso").hidden = false;
+    $("change-password-open").hidden = true;
+  } else {
+    $("login-form").addEventListener("submit", signInWithPassword);
+    $("login-magic").addEventListener("click", sendMagicLink);
+  }
   $("change-password-form").addEventListener("submit", changePassword);
   $("change-password-open").addEventListener("click", () => { wantsPasswordChange = true; render(); });
   setupUserMenu();
@@ -6754,7 +6783,7 @@ async function init() {
     adminUsers = null;
     trackStop(); // ends the current views while the token is still known
     wantsPasswordChange = false;
-    await sb.auth.signOut({ scope: "local" }); // SIGNED_OUT re-renders (user id changes)
+    await auth.signOut({ scope: "local" }); // SIGNED_OUT re-renders (user id changes)
     history.replaceState(null, "", location.pathname + location.search + "#projects");
   });
   // One Escape handler for the whole page: hides the chart tooltips and releases a pinned lineage node.
@@ -6799,7 +6828,7 @@ async function init() {
   });
   // Re-render only when the signed-in user changes (or is updated): SIGNED_IN is also emitted when the tab
   // regains focus, and must not rebuild the view. The callback must not await Supabase calls (auth lock).
-  sb.auth.onAuthStateChange((event, session) => {
+  auth.onAuthStateChange((event, session) => {
     trackToken = session?.access_token || null; // refreshed tokens too (keepalive requests read it synchronously)
     if (event === "INITIAL_SESSION") return; // covered by the first render() below
     const uid = session?.user?.id ?? null;

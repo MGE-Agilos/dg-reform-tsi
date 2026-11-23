@@ -50,6 +50,14 @@ create or replace view auth.users as
   select auth.uid() as id, lower(auth.jwt() ->> 'email') as email, now() as email_confirmed_at
   where auth.uid() is not null;
 
+-- Same default privileges as a Supabase project, which the migrations were written for: the three roles can use the
+-- public schema and receive the privileges on every object the owner creates there; the migrations then revoke what
+-- anon and authenticated must not have, and row-level security filters the rows.
+grant usage on schema public to anon, authenticated, service_role;
+alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
+alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;
+
 grant usage on schema auth to anon, authenticated, service_role;
 grant execute on function auth.jwt(), auth.uid(), auth.role() to anon, authenticated, service_role;
 grant select on auth.users to authenticated, service_role;

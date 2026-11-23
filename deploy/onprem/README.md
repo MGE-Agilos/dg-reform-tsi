@@ -36,10 +36,11 @@ Server preparation (to do first): [REQUIREMENTS.md](REQUIREMENTS.md).
 | Component | Status |
 |---|---|
 | Data pipeline (projects, publications, recommendations, recitals, country reports, links, anomalies) | Ready. Runs with GPT@EC (`llm_provider: openai`). |
-| Web page (`web/`) | Ready; its sign-in must be switched to the application service **(planned)**. |
+| Web page (`web/`) with `deploy/onprem/config.js` | Ready. Signs in through the application service. Tested end to end on this stack. |
 | Database schema (`deploy/onprem/sql/000_compat.sql`, then `supabase/migrations/001` to `010`) | Ready. Tested on PostgreSQL 16: schema, row-level security, search and dashboard functions. |
 | Transfer of the current data (SQL file provided by Agilos) | Ready. Tested: same rows and same content as the cloud database. |
-| Application service: sign-in, API, assistant on GPT@EC (`server/`) | **(planned)** |
+| Application service (`server/`): sign-in, data API, administration | Ready. Tested end to end with the test sign-in; OpenID Connect tested against a simulated identity provider only. |
+| Assistant on GPT@EC (questions, impact analyses, briefings, related search terms) | **(planned)**. Until then the page works without it (the assistant answers "not available yet"). |
 | Data load into a self-hosted database (`supabase-sync` to a local PostgREST) | **(planned)** |
 | Linux update script and service files (`deploy/onprem/`) | **(planned)** |
 | Export to Haystack Enterprise (`prod-export`, `deploy/prod/`) | Ready. |
@@ -203,7 +204,8 @@ Generate the token secret shared by PostgREST and the application service (at le
 ```bash
 sudo install -d -o tsi -g tsi -m 700 /etc/tsi-explorer
 openssl rand -base64 48 | tr -d '\n' | sudo -u tsi tee /etc/tsi-explorer/jwt-secret >/dev/null
-sudo chmod 600 /etc/tsi-explorer/jwt-secret
+openssl rand -base64 48 | tr -d '\n' | sudo -u tsi tee /etc/tsi-explorer/session-secret >/dev/null   # step 6
+sudo chmod 600 /etc/tsi-explorer/jwt-secret /etc/tsi-explorer/session-secret
 ```
 
 `/etc/tsi-explorer/postgrest.conf` (owner `tsi`, mode `600`):
@@ -245,7 +247,9 @@ curl -s http://127.0.0.1:3001/projects?limit=1     # [] or 401: PostgREST answer
 
 ## Step 6 — Install the application service (Node.js)
 
-**(planned)** The service is in `server/` of the repository.
+The service is in `server/` of the repository (Node.js, one dependency: `openid-client`). It signs users in with
+your identity provider (OpenID Connect, authorization code with PKCE), keeps the session in an HttpOnly cookie,
+gives the page a token valid 15 minutes for its data requests and forwards them to PostgREST.
 
 As `tsi`:
 
@@ -261,17 +265,19 @@ PORT=3000
 PUBLIC_URL=https://<dns>
 POSTGREST_URL=http://127.0.0.1:3001
 JWT_SECRET_FILE=/etc/tsi-explorer/jwt-secret
-SESSION_SECRET=<random, 48 characters or more>
+SESSION_SECRET_FILE=/etc/tsi-explorer/session-secret   # 32 characters or more, like jwt-secret
+SESSION_HOURS=10                                       # a user signs in again after 10 hours
 
-# Sign-in (OpenID Connect): values from your identity provider, redirect URI https://<dns>/api/auth/callback
-OIDC_ISSUER=https://<identity-provider>/...
+# Sign-in (OpenID Connect): register the site with your identity provider, redirect URI
+# https://<dns>/api/auth/callback, scopes openid email profile
+AUTH_MODE=oidc
+OIDC_ISSUER=https://<identity-provider>/...            # its discovery document: <issuer>/.well-known/openid-configuration
 OIDC_CLIENT_ID=<client id>
 OIDC_CLIENT_SECRET=<client secret>
+# OIDC_EMAIL_CLAIM=email                               # claim of the ID token that holds the e-mail address
 
-# Assistant (GPT@EC, OpenAI-compatible API)
-LLM_BASE_URL=https://api.tech.ec.europa.eu/ecgpt/v1
-LLM_API_KEY=<GPT@EC key>
-LLM_MODEL=gpt-5.1
+# Assistant (planned): address of the assistant service once installed
+# ASSISTANT_URL=http://127.0.0.1:3002
 
 # Outbound proxy, if any
 # HTTPS_PROXY=http://<proxy>:<port>
@@ -300,7 +306,7 @@ WantedBy=multi-user.target
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now tsi-explorer
-curl -s http://127.0.0.1:3000/api/health      # {"ok":true,"database":true,"llm":true}
+curl -s http://127.0.0.1:3000/api/health      # {"ok":true,"database":true,"assistant":false,"auth":"oidc"}
 ```
 
 ## Step 7 — Publish the web page
@@ -312,14 +318,14 @@ sudo install -d -m 755 /var/www/tsi-explorer
 sudo rsync -a --delete /opt/tsi-explorer/app/web/ /var/www/tsi-explorer/
 ```
 
-Then write `/var/www/tsi-explorer/config.js` **(planned format)**, which points the page to the application
-service instead of the cloud service:
+Then replace the page's `config.js` with the one of the self-hosted installation, which points the page to the
+application service (`/api` on the same site) instead of the cloud service:
 
-```js
-export const API_URL = "/api";
+```bash
+sudo cp /opt/tsi-explorer/app/deploy/onprem/config.js /var/www/tsi-explorer/config.js
 ```
 
-The page holds no secret: it signs in through the application service.
+The page holds no key and no secret: it signs in through the application service.
 
 ## Step 8 — Configure nginx
 
@@ -476,6 +482,21 @@ and `sudo systemctl restart tsi-explorer`.
 | PostgREST | `journalctl -u tsi-postgrest` |
 | nginx | `/var/log/nginx/` |
 | Data update | `/opt/tsi-explorer/app/logs/` |
+
+## Local test (Agilos)
+
+The whole stack can run on a workstation, with the test sign-in (any e-mail address, no password; refused unless
+`PUBLIC_URL` is a localhost address) and the application service serving the page itself (no nginx):
+
+```bash
+# PostgreSQL with steps 2, 4 and 4b done, PostgREST running with the configuration of step 5 (port 3001)
+cp -r web /tmp/site && cp deploy/onprem/config.js /tmp/site/config.js
+cd server && npm ci
+PORT=8080 PUBLIC_URL=http://localhost:8080 AUTH_MODE=dev POSTGREST_URL=http://127.0.0.1:3001 \
+  JWT_SECRET_FILE=<jwt-secret file> SESSION_SECRET=<32+ characters> STATIC_DIR=/tmp/site node index.js
+```
+
+Then open <http://localhost:8080/>. Tests of the service: `cd server && npm test`.
 
 ## Optional: Haystack Enterprise
 
