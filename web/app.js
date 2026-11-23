@@ -884,7 +884,8 @@ function csrsModeLinks(mode, f) {
 }
 
 // ---------- Country reports (country_reports, country_report_passages: migration 010) ----------
-const REPORTS_ABOUT = `Country reports are the Commission's staff working documents published with the ${RECITALS_YEAR} recommendations: `
+const REPORTS_YEAR = 2026; // declared here: RECITALS_YEAR comes later in the file (temporal dead zone at load)
+const REPORTS_ABOUT = `Country reports are the Commission's staff working documents published with the ${REPORTS_YEAR} recommendations: `
   + `about 100 pages per Member State analysing its economy, reforms and investment needs. Search them by word to find `
   + `the passages on a topic, with a link to the page of the PDF.`;
 
