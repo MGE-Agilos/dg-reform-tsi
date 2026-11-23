@@ -950,7 +950,7 @@ details.dash-fold[open] > summary h3::before { content: "▾ "; }
 .badge-multi { background: var(--accent-soft); color: var(--accent); border: 1px solid color-mix(in oklab, var(--accent) 35%, transparent); white-space: nowrap; }
 
 /* AI-assigned policy areas and AI-suggested related search terms (user feedback, lot 2) */
-.badge-ai { font-size: 0.7rem; padding: 1px 5px; border-radius: 3px; border: 1px solid var(--accent); color: var(--accent); background: transparent; font-weight: 600; letter-spacing: 0.02em; vertical-align: 1px; }
+.badge-ai { font-size: 0.7rem; padding: 1px 5px; border-radius: 3px; border: 1px solid var(--accent); color: var(--accent); background: transparent; font-weight: 600; letter-spacing: 0.02em; vertical-align: 1px; text-transform: none; }
 .related-notice { margin: -4px 0 12px; }
 .related-term { font-style: italic; }
 

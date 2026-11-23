@@ -972,14 +972,20 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const EXCERPT_STOP = new Set(["with", "from", "into", "that", "this", "their", "between", "within", "across", "through",
+  "under", "over", "about", "other", "more", "less", "also"]);
+
 /** Escaped excerpt of a recital around the first searched word, the searched words marked. */
 function recitalExcerpt(text, words) {
   const t = String(text || "");
-  const tokens = [...new Set(words.flatMap((w) => [w.trim(), ...w.split(/\s+/)]).map((w) => w.trim()).filter((w) => w.length >= 3))]
-    .sort((a, b) => b.length - a.length);
+  const phrases = [...new Set(words.map((w) => w.trim()).filter((w) => w.length >= 3))];
+  // Single words of the phrases, without short or grammatical words ("and", "of the" would be marked everywhere).
+  const parts = phrases.flatMap((w) => w.split(/\s+/)).filter((w) => w.length >= 4 && !EXCERPT_STOP.has(w.toLowerCase()));
+  const tokens = [...new Set([...phrases, ...parts])].sort((a, b) => b.length - a.length);
   const lower = t.toLowerCase();
-  const hits = tokens.map((w) => lower.indexOf(w.toLowerCase())).filter((i) => i >= 0);
-  const at = hits.length ? Math.min(...hits) : 0;
+  const first = (list) => { const hits = list.map((w) => lower.indexOf(w.toLowerCase())).filter((i) => i >= 0); return hits.length ? Math.min(...hits) : -1; };
+  const atPhrase = first(phrases);
+  const at = atPhrase >= 0 ? atPhrase : Math.max(0, first(parts)); // a whole searched phrase first, else one of its words
   const start = t.length <= RECITAL_EXCERPT ? 0 : Math.max(0, Math.min(at - 120, t.length - RECITAL_EXCERPT));
   const cut = t.slice(start, start + RECITAL_EXCERPT);
   let html = esc(cut);
@@ -3318,9 +3324,9 @@ const GUIDE = [
 const GUIDE_IDS = GUIDE.map((s) => s.id);
 
 // Illustrated part of the guide (screenshots in web/guide/, relative paths: the site is served under a sub-path).
-// Screenshots taken on 23 Oct 2026 with the real data of that day; the figures quoted in the steps are read off them.
+// Screenshots taken on 23 Nov 2026 with the real data of that day; the figures quoted in the steps are read off them.
 const GUIDE_PROJECT = "technical-support-transforming-existing-fully-state-administered-funded-pension-scheme-lithuania";
-const GUIDE_SHOT_DATE = "23 October 2026";
+const GUIDE_SHOT_DATE = "23 November 2026";
 const GUIDE_ESSENTIALS = [
   { icon: "▦", title: "Tabs", text: "Dashboard, Projects, CSRs, Lineage, CSR progress, Compare, Anomalies, Impact and Guide. The ? button in the header brings you back here; the menu under your e-mail address holds Change password, Sign out (and Admin for administrators)." },
   { icon: "⚲", title: "Filters", text: "Each list has its filters (country, programme, years, text search…). The address of the page keeps them: bookmark or share it." },
@@ -3334,37 +3340,40 @@ const GUIDE_ESSENTIALS = [
 const LT_PROJECT_SEL = `sel=${encodeURIComponent(`project:${GUIDE_PROJECT}`)}`;
 const GUIDE_STEPS = [
   { img: "01-dashboard.jpg", to: "#dashboard", title: "Start from the big picture",
-    alt: "Dashboard: tiles with the totals and the chart of projects by year and programme",
-    text: `The <strong>Dashboard</strong> sums up the whole data set: 2,157 projects (39% with a detail page), 536 deliverables,
-      27 CSR documents per year (294 documents, 1,049 recommendations and 3,363 sub-parts for 2016–2026), 1,339 project–CSR links
-      (28% of projects linked), 5 impact analyses (mean score 4.2/10) and 1,884 anomalies, 262 of them high severity. The first
-      chart splits the projects by year and programme: TSI 1,185, SRSP 890, SRSS 82. Click a bar to open the matching list.` },
+    alt: "Dashboard: what the explorer is for, the four ways in, and the tiles with the totals",
+    text: `The <strong>Dashboard</strong> opens with what the explorer is for, a reminder that it is an internal tool, and four ways
+      in: one country, a theme across countries, CSR implementation, finding projects. The tiles sum up the data set: 2,155
+      projects (39% with a detail page), 536 deliverables, 27 CSR documents per year (294 documents, 1,049 recommendations and
+      3,363 sub-parts for 2016–2026), 1,441 project–CSR links (28% of projects linked), 743 impact analyses (indicative, mean score
+      5.1/10) and 1,879 anomalies, 262 of them high severity. The charts below split the projects by year and programme (TSI 1,183,
+      SRSP 890, SRSS 82); click a bar to open the matching list.` },
   { img: "02-csrs.jpg", to: "#csrs", title: "Browse the CSR documents of a year",
     alt: "CSRs tab: the 27 country documents of 2026 as cards",
     text: `The <strong>CSRs</strong> tab opens on the latest year: 2026, 27 documents, 146 recommendations. They are still
       <em>Commission recommendations</em>: not yet adopted by the Council, not yet assessed, and no project is linked yet (a
       recommendation can only be supported by projects of the following years). Each card gives the number of recommendations,
       the main assessment and the linked projects, with links to the document page and its PDF. Choose an earlier year to see
-      assessments and links.` },
+      assessments and links. The buttons above the cards switch to all recommendations, the 2026 recitals and the 2026 country
+      reports (steps 13 and 14).` },
   { img: "03-document.jpg", to: "#csrdoc/csrdoc-LT-2023", title: "Open a country's CSR document",
     alt: "CSR document page: Lithuania, 2023 country-specific recommendations",
     text: `The <strong>Lithuania — 2023</strong> document is a Council recommendation with 4 recommendations split into 18
-      sub-parts. 5 projects are linked to it (AI-assessed) and its main assessment is <em>Some progress</em> (3 of 4
+      sub-parts. 6 projects are linked to it (AI-assessed) and its main assessment is <em>Some progress</em> (3 of 4
       recommendations). Below, each recommendation lists its sub-parts with their policy areas, assessment and linked projects:
       sub-part 1.6, &ldquo;social protection&rdquo;, is partially supported by the Lithuanian pension project followed in the
       next steps.` },
   { img: "04-lineage-sankey.jpg", to: "#lineage", title: "See where support goes, for all countries",
     alt: "Lineage tab, Sankey view: countries, policy areas, programmes and outcomes of all CSR Recommendations",
-    text: `The <strong>Lineage</strong> tab opens on the <em>Sankey</em>: for the CSRs of 2016–2025, 1,185 CSR
-      Recommendations (391 distinct recommendations, 597 projects, 27 countries, 34% direct) flow from the country of the recommendation to the policy
-      area of the project, its programme and its stated outcome. Croatia comes first with 90 CSR Recommendations, Romania 84, Spain 82, and
-      Lithuania 64; TSI carries 948 CSR Recommendations and 954 lead to results achieved. The CSR years and the link level (all, direct, partial)
+    text: `The <strong>Lineage</strong> tab opens on the <em>Sankey</em>: for the CSRs of 2016–2025, 1,284 CSR
+      Recommendations (439 distinct recommendations, 602 projects, 27 countries, 34% direct) flow from the country of the recommendation to the policy
+      area of the project, its programme and its stated outcome. Croatia comes first with 94 CSR Recommendations, Spain 90, Romania 87, and
+      Lithuania 68; TSI carries 1,040 CSR Recommendations and 977 lead to results achieved. The CSR years and the link level (all, direct, partial)
       filter the Sankey, the Network and the Sunburst alike; click a country to split it by CSR year.` },
   { img: "04-lineage.jpg", to: `#lineage?view=country&country=LT&${LT_PROJECT_SEL}`, title: "Follow one country stage by stage",
     alt: "Lineage By country, Lithuania, with the pension project pinned: its chain from two documents to its outcome is highlighted",
     text: `<em>By country</em> follows the five stages for one country: CSR document → recommendation → initial request (a dashed
-      placeholder until the JIRA export) → project → outcome. Lithuania, 2019–2025: 7 CSR documents, 25 recommendations (10 with
-      at least one project), 35 CSR Recommendations (11 direct) from 44 sub-part links and 23 projects. With the pension
+      placeholder until the JIRA export) → project → outcome. Lithuania, 2019–2025: 7 CSR documents, 25 recommendations (11 with
+      at least one project), 39 CSR Recommendations (11 direct) from 48 sub-part links and 25 projects. With the pension
       project pinned, its chain lights up: a solid line (direct) to LT 2021 · CSR 1, a dashed line (partial) to LT 2023 · CSR 1,
       and in the <em>Outcome</em> column: results achieved, 1 deliverable and the pill <em>2/10</em>, its latest impact score.` },
   { img: "05-project.jpg", to: `#project/${GUIDE_PROJECT}`, title: "Read the project page",
@@ -3378,7 +3387,7 @@ const GUIDE_STEPS = [
     text: `<em>Review</em>, next to each link, opens a short form: the link of the pension project to csr-LT-2021-1.4 is
       <em>Not reviewed</em> yet. Choose Confirmed, Rejected or To review, add a comment if useful and save: the status is shared with
       all users at once, and the history (who, when, why) stays in the form. <em>Links to review</em>, on the Projects tab, lists all
-      the links still to check; on the day of the screenshots none of the 1,339 links had been reviewed.` },
+      the links still to check; on the day of the screenshots none of the 1,441 links had been reviewed.` },
   { img: "06-impact.jpg", to: `#impact/${GUIDE_PROJECT}`, title: "Check the impact analysis",
     alt: "Impact tab: the saved analysis of the Lithuanian pension project, report open",
     text: `<em>Impact analysis</em> opens the project in the <strong>Impact</strong> tab. Its saved analysis (2/10, weak,
@@ -3401,13 +3410,32 @@ const GUIDE_STEPS = [
     alt: "Assistant drawer open beside the project page, with the question about this project pre-filled",
     text: `The round button at the bottom right opens the <strong>assistant</strong> beside the page. On a project page,
       <em>Ask about this project</em> pre-fills the question; you still press <em>Send</em>. Examples get you started, and the
-      conversation can be exported to Word. Answers use the project records, summaries, CSRs and links (not the deliverable
-      full texts) and are generated by AI: verify the cited sources.` },
+      conversation can be exported to Word. Answers use the project records, summaries, CSRs and links, and the 2026 recitals and
+      country reports (not the deliverable full texts); they are generated by AI: verify the cited sources.` },
+  { img: "11-projects-search.jpg", to: "#projects?q=wildfire", title: "Search projects, with related terms",
+    alt: "Projects tab searched for wildfire: related terms suggested by AI, eight projects, policy areas marked AI",
+    text: `A search on the <strong>Projects</strong> tab also looks for related terms suggested by AI, listed under the filters:
+      <em>wildfire</em> also finds <em>rural fires</em> and <em>forest fires</em>, 8 projects in all (the suggestions can vary from
+      one search to the next). <em>Search the exact words only</em> turns them off. Multi-country projects carry a badge with
+      their number of countries, and a policy area marked <span class="badge badge-ai">AI</span> was assigned by AI from the title
+      of a project without a detail page (1,320 projects): indicative.` },
+  { img: "12-recitals.jpg", to: "#csrs?view=recitals&q=wildfire", title: "Find a topic in the 2026 recitals",
+    alt: "CSRs tab, Recitals 2026 view, searched for wildfire: six recitals of Cyprus, Spain and other countries",
+    text: `The <strong>recitals</strong> are the numbered paragraphs that precede the recommendations in each 2026 document: the
+      Commission's analysis of the country's challenges (1,055 for the 27 countries). They cover topics that the recommendations only
+      mention briefly: no 2026 recommendation mentions wildfires, but 6 recitals do, with the related terms, starting with Cyprus (28)
+      and Spain (29). Each row shows the matching passage, with the searched words marked, and links to the document and its PDF.` },
+  { img: "13-country-reports.jpg", to: "#csrs?view=reports&q=water%20management&country=PT", title: "Dig into the 2026 country reports",
+    alt: "CSRs tab, Country reports 2026 view, searched for water management in Portugal: passages with their page",
+    text: `The <strong>country reports</strong> (about 100 pages per Member State) develop that analysis in detail. Searched for
+      <em>water management</em> in Portugal, they give 24 passages, each with a link to its page in the PDF (p. 4, p. 10, p. 15…).
+      Without a search, the view lists the 27 reports. For a question across several countries, ask the assistant: it searches
+      the reports country by country and cites the pages.` },
 ];
 const GUIDE_CASES = [
-  { title: "Direct links only", text: "The Sankey with the direct CSR Recommendations only: 399 CSR Recommendations, 227 recommendations and 282 projects.", to: "#lineage?view=sankey&level=direct", cta: "Open the Sankey" },
-  { title: "Croatia, stage by stage", text: "One of the densest countries: 73 CSR Recommendations from 78 sub-part links (2019–2025), 35 projects.", to: "#lineage?view=country&country=HR", cta: "Open By country" },
-  { title: "Best-covered country", text: "Belgium has the highest share of recommendations supported by a project: 65% (22 of 34).", to: "#lineage?view=country&country=BE", cta: "See Belgium" },
+  { title: "Direct links only", text: "The Sankey with the direct CSR Recommendations only: 433 CSR Recommendations, 237 recommendations and 284 projects.", to: "#lineage?view=sankey&level=direct", cta: "Open the Sankey" },
+  { title: "Croatia, stage by stage", text: "One of the densest countries: 77 CSR Recommendations from 82 sub-part links (2019–2025), 38 projects.", to: "#lineage?view=country&country=HR", cta: "Open By country" },
+  { title: "A well-covered country", text: "Belgium, 2019–2025: 14 of its 25 recommendations are supported by at least one project, 35 projects in all.", to: "#lineage?view=country&country=BE", cta: "See Belgium" },
   { title: "Projects that bridge countries", text: "The Network shows the projects linked to recommendations of several countries.", to: "#lineage?view=network", cta: "Open the Network" },
   { title: "Highest impact score", text: "Barnahus Slovenia (SRSP 2019), support for children victims of violence: 8/10, strong.", to: "#impact/barnahus-slovenia-supporting-children-victims-violence", cta: "Read the analysis" },
   { title: "A multi-country project", text: "Inclusive education in Portugal, Italy and Spain: one project linked to four CSR sub-parts of three countries.", to: "#project/combatting-disparities-access-inclusive-education-portugal-italy-and-spain", cta: "Open the project" },
@@ -3428,7 +3456,7 @@ const GUIDE_TIPS = [
   "The 2026 recommendations are Commission proposals: not yet assessed and not yet linked to projects; related past projects suggested by AI are leads, not links.",
   "Projects known only by their title are not linked yet: no link does not mean no support.",
   "Your reviews are shared with all users at once: add a short comment when you reject a link.",
-  "Impact statistics rest on the analyses run so far (5 in October 2026): indicative only.",
+  "Impact analyses are generated by AI (743 in November 2026): indicative only.",
   "Anomalies are deterministic checks of the publication, not judgements on the projects.",
   "To improve the explorer, the pages you open and the time spent on them are recorded with your e-mail address; only administrators can see them.",
   "The data are updated every month: the figures in the screenshots may have changed since.",
