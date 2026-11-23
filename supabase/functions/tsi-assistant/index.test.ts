@@ -208,19 +208,23 @@ test("chat loop: list_projects tool_use, tool_result sent back, PostgREST called
   assert.equal(dh.get("apikey"), "anon-test");
 });
 
-test("TSI_MODEL overrides the model; impact: max_tokens 16000, effort medium, impact prompt, web_search server tool with max_uses 4", async () => {
+test("TSI_MODEL overrides the model; impact: max_tokens 16000, effort high, impact prompt, basic web_search (max 8) and web_fetch (max 3) server tools", async () => {
   const f = fakeFetch({ model: [textReply("Report\n\nImpact score: 5/10 (moderate) — Confidence: medium")] });
   const res = await handle(post(impactBody), { ...ENV, TSI_MODEL: "claude-test-model" }, f.impl);
   assert.equal(res.status, 200);
   const body = sent(f.modelCalls()[0]);
   assert.equal(body.model, "claude-test-model");
   assert.equal(body.max_tokens, 16000);
-  assert.deepEqual(body.output_config, { effort: "medium" });
+  assert.deepEqual(body.output_config, { effort: "high" });
   assert.equal(body.system[0].text, impactSystem());
+  assert.match(body.system[0].text, /at least 5 searches, one of them in the country's language/);
   assert.match(body.system[0].text, /Impact score: X\/10/);
-  assert.deepEqual(body.tools.find((t: { name: string }) => t.name === "web_search"), { type: "web_search_20260209", name: "web_search", max_uses: 4 });
-  assert.deepEqual(TOOLS_IMPACT.map((t) => t.name), ["get_project", "search_projects", "web_search"]);
-  assert.ok(!TOOLS_CHAT.some((t) => t.name === "web_search"));
+  assert.deepEqual(body.tools.find((t: { name: string }) => t.name === "web_search"), { type: "web_search_20250305", name: "web_search", max_uses: 8 });
+  assert.deepEqual(body.tools.find((t: { name: string }) => t.name === "web_fetch"), { type: "web_fetch_20250910", name: "web_fetch", max_uses: 3, max_content_tokens: 20000, citations: { enabled: true } });
+  assert.match(body.system[0].text, /At most 8 searches/);
+  assert.match(body.system[0].text, /web_fetch/);
+  assert.deepEqual(TOOLS_IMPACT.map((t) => t.name), ["get_project", "search_projects", "web_search", "web_fetch"]);
+  assert.ok(!TOOLS_CHAT.some((t) => t.name === "web_search" || t.name === "web_fetch"));
 });
 
 test("server_tool_use and web_search_tool_result blocks are passed back unchanged and never answered", async () => {
@@ -312,19 +316,24 @@ test("client tools of one turn run in parallel; results in block order; errors f
   assert.match(results[2].content, /^Tool error: unknown tool nope/);
 });
 
-test("web search: once 4 searches are used in the run, the server tool is no longer offered (history kept)", async () => {
+test("web search and fetch: once their limits (8 and 3) are used in the run, each server tool is no longer offered (history kept)", async () => {
   const search = (id: string) => [{ type: "server_tool_use", id, name: "web_search", input: { query: "q" } },
     { type: "web_search_tool_result", tool_use_id: id, content: [] }];
+  const fetchUse = (id: string) => [{ type: "server_tool_use", id, name: "web_fetch", input: { url: "https://x.example" } },
+    { type: "web_fetch_tool_result", tool_use_id: id, content: {} }];
+  const seven = [1, 2, 3, 4, 5, 6, 7].flatMap((i) => search(`s${i}`));
   const f = fakeFetch({ model: [
-    { body: { content: [...search("s1"), ...search("s2"), ...search("s3")], stop_reason: "pause_turn" } },
-    { body: { content: [...search("s4"), { type: "tool_use", id: "t1", name: "get_project", input: { project_id: "p1" } }], stop_reason: "tool_use" } },
+    { body: { content: [...seven, ...fetchUse("f1"), ...fetchUse("f2"), ...fetchUse("f3")], stop_reason: "pause_turn" } },
+    { body: { content: [...search("s8"), { type: "tool_use", id: "t1", name: "get_project", input: { project_id: "p1" } }], stop_reason: "tool_use" } },
     textReply("Report"),
   ] });
   const result = await agentLoop("impact", impactBody.messages as any, ENV, f.impl, Date.now, CTX);
-  assert.equal(result.stats.web_searches, 4);
+  assert.equal(result.stats.web_searches, 8);
+  assert.equal(result.stats.web_fetches, 3);
   const calls = f.modelCalls().map(sent);
-  assert.ok(calls[1].tools.some((t: any) => t.name === "web_search"), "3 searches: still offered");
-  assert.ok(!calls[2].tools.some((t: any) => t.name === "web_search"), "4 searches: dropped");
+  assert.ok(calls[1].tools.some((t: any) => t.name === "web_search"), "7 searches: still offered");
+  assert.ok(!calls[1].tools.some((t: any) => t.name === "web_fetch"), "3 fetches: dropped");
+  assert.ok(!calls[2].tools.some((t: any) => t.name === "web_search"), "8 searches: dropped");
   assert.deepEqual(calls[2].tools.map((t: any) => t.name), ["get_project", "search_projects"]);
   assert.equal(calls[2].messages.length, 4, "history intact");
 });
@@ -341,7 +350,7 @@ test("usage is summed and logged without content", async () => {
     console.log = orig;
   }
   const last = JSON.parse(logs[logs.length - 1]);
-  assert.deepEqual(last, { service: "chat", status: 200, ms: last.ms, steps: 1, input_tokens: 200, output_tokens: 40, cache_read_tokens: 100, cache_creation_tokens: 20, web_searches: 0 });
+  assert.deepEqual(last, { service: "chat", status: 200, ms: last.ms, steps: 1, input_tokens: 200, output_tokens: 40, cache_read_tokens: 100, cache_creation_tokens: 20, web_searches: 0, web_fetches: 0 });
   assert.ok(!logs.join("\n").includes("secret answer") && !logs.join("\n").includes("Croatia"));
 });
 
@@ -448,6 +457,19 @@ test("answerText: report after the last tool block, cited fragments joined as wr
     { type: "text", text: "part two." }, { type: "thinking", thinking: "" },
   ]), "Part one, part two.");
   assert.equal(answerText([]), "");
+});
+
+test("answerText: web citations become Markdown links after the cited fragment (each URL once per fragment)", () => {
+  const cite = (url: string, title: string) => ({ type: "web_search_result_location", url, title, cited_text: "x", encrypted_index: "e" });
+  assert.equal(answerText([
+    { type: "text", text: "The reform " },
+    { type: "text", text: "was adopted in 2023", citations: [cite("https://gov.example/d", "Decision [1056/2023]"), cite("https://gov.example/d", "dup"), cite("https://oecd.example/r", "OECD")] },
+    { type: "text", text: "." },
+  ]), "The reform was adopted in 2023 ([Decision (1056/2023)](https://gov.example/d); [OECD](https://oecd.example/r)).");
+  assert.equal(answerText([{ type: "text", text: "Seen", citations: [{ type: "char_location", document_index: 0, cited_text: "x" }] }]), "Seen",
+    "citations without a URL add nothing");
+  assert.equal(answerText([{ type: "text", text: "Known ([gov](https://gov.example/d))", citations: [cite("https://gov.example/d", "gov")] }]),
+    "Known ([gov](https://gov.example/d))", "a URL already linked in the fragment is not repeated");
 });
 
 test("validate: the first message must come from the user", () => {
@@ -621,7 +643,8 @@ test("prompts: chat rules and filter values, impact scoring rubric", () => {
   assert.match(CHAT_SYSTEM, /GR Greece/);
   assert.match(CHAT_SYSTEM, /skills-education-and-training/);
   assert.match(impactSystem(), /Call get_project/);
-  assert.match(impactSystem(), /At most 4 searches/);
+  assert.match(impactSystem(), /At most 8 searches: never repeat a query/);
+  assert.match(impactSystem(), /A tool error is not evidence/);
   assert.match(impactSystem(), /9-10 \(strong\)/);
 });
 
@@ -652,6 +675,10 @@ test("extractVerdict, extractProject and jwtSub", () => {
   assert.equal(extractVerdict("## Overall verdict\n\nAdopted, early results.\nStill partial.\n\nImpact score: 5/10 (moderate) — Confidence: low"),
     "Adopted, early results. Still partial.");
   assert.equal(extractVerdict("**Overall verdict**\nNot adopted.\nImpact score: 1/10 (weak) — Confidence: high"), "Not adopted.");
+  assert.equal(extractVerdict("**Overall conclusion**\n\nPilot launched.\n\nImpact score: 5/10 (moderate) — Confidence: medium"), "Pilot launched.");
+  assert.match(impactSystem(), /\*\*Overall conclusion\*\*/);
+  assert.match(impactSystem(), /objective \| conclusion:/);
+  assert.match(impactSystem(), /Never use the word "verdict"/);
   assert.equal(extractVerdict("No verdict section"), null);
   assert.deepEqual(extractProject([{ role: "user", content: "Project: Health reform (phase 2) in Croatia (id p1; TSI 2023; countries HR)" }]),
     { project_id: "p1", title: "Health reform (phase 2) in Croatia" });

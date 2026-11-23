@@ -2,7 +2,7 @@
 // Run: node --test tests/js/briefing.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { OCCASION_FORMATS, OCCASION_MAX, cleanOccasion, occasionErrors, briefingFileName, keyFigures } from "../../web/briefing.js";
+import { OCCASION_FORMATS, OCCASION_MAX, cleanOccasion, occasionErrors, briefingFileName, keyFigures, conclusionWording } from "../../web/briefing.js";
 
 const VALID = { recipient: "Director X", title: "Meeting with the Minister of Finance", date: "2026-11-12", place: "Vilnius", format: "bilateral", context: "", background: "" };
 
@@ -126,4 +126,14 @@ test("compareFileName: group key or codes, occasion day and slug", () => {
   assert.equal(compareFileName(["EE", "LT", "LV"], { title: "Baltic panel", date: "2026-11-20" }, day), "briefing-baltic-2026-11-20-baltic-panel.docx");
   assert.equal(compareFileName(["FR", "GR"], { title: "" }, day), "briefing-FR-GR-2026-11-04.docx");
   assert.equal(compareFileName(["AT", "BE", "CY", "DE", "FR", "GR", "IT"], {}, day), "briefing-AT-BE-CY-DE-FR-2-more-2026-11-04.docx");
+});
+
+test("conclusionWording: saved impact reports say conclusion, not verdict (headings, label, objectives table)", () => {
+  assert.equal(conclusionWording("**Overall verdict**\n\nText"), "**Overall conclusion**\n\nText");
+  assert.equal(conclusionWording("**Overall verdict:** Adopted."), "**Overall conclusion:** Adopted.");
+  assert.equal(conclusionWording("## Overall Verdict"), "## Overall Conclusion");
+  assert.equal(conclusionWording("| Objective | Verdict | Rationale |\n|---|---|---|\n| A | achieved | r |"),
+    "| Objective | Conclusion | Rationale |\n|---|---|---|\n| A | achieved | r |");
+  assert.equal(conclusionWording("The court's verdict was clear."), "The court's verdict was clear.", "other uses untouched");
+  assert.equal(conclusionWording(null), "");
 });

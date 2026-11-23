@@ -31,7 +31,7 @@ type ModelResponse = { content: Block[]; stop_reason: string | null; usage?: Usa
 /** deadline: absolute time (same clock as now) after which no database call may run. */
 export type ToolContext = { supabaseUrl: string; apikey: string; userAuth: string; fetchImpl: FetchImpl; deadline?: number; now?: () => number };
 /** Run statistics, filled in place (also when the run fails) and logged without any content. */
-export type RunStats = { steps: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; web_searches: number };
+export type RunStats = { steps: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; web_searches: number; web_fetches: number };
 
 export const MAX_MESSAGES = 20;
 export const MAX_CONTENT = 8000; // per message
@@ -40,7 +40,7 @@ export const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 export const ANTHROPIC_VERSION = "2023-06-01";
 export const DEFAULT_MODEL = "claude-sonnet-5-5";
 export const MAX_TOKENS: Record<ServiceName, number> = { chat: 16000, impact: 16000, briefing: 5000, expand: 1000 };
-export const EFFORT: Record<ServiceName, string> = { chat: "low", impact: "medium", briefing: "low", expand: "low" };
+export const EFFORT: Record<ServiceName, string> = { chat: "low", impact: "high", briefing: "low", expand: "low" };
 export const MAX_FACTS = 25000; // characters of JSON.stringify(facts) (briefing)
 export const MAX_STEPS = 8; // tool rounds; then one last call without tools
 export const MODEL_TIMEOUT_MS = 60000; // per Anthropic call
@@ -49,7 +49,8 @@ export const BUDGET_MS = DEADLINE_MS - 30000; // beyond it, one last call withou
 export const DB_TIMEOUT_MS = 20000; // per PostgREST call
 export const LIST_MIN_REMAINING_MS = 5000; // list_projects stops paging below this
 export const TESTER_TIMEOUT_MS = 10000;
-export const WEB_SEARCH_MAX_USES = 4;
+export const WEB_SEARCH_MAX_USES = 8;
+export const WEB_FETCH_MAX_USES = 3; // pages or PDFs read in full per impact analysis
 const TOOL_OUTPUT_MAX = 15000; // characters returned to the model per tool call
 const DEFAULT_ORIGINS = ["https://mge-agilos.github.io", "http://localhost:8000"];
 
@@ -153,7 +154,11 @@ Method:
 2. Search the web with web_search for evidence of impact: adoption and implementation of the reform (laws, decrees,
    action plans), indicators before and after, evaluations, OECD / World Bank / European Commission documents
    (European Semester country reports, recovery and resilience plans), government sites, press articles, criticism.
-   Use precise English queries naming the country, the institution and the reform. At most ${maxSearches} searches.
+   Use precise English queries naming the country, the institution and the reform (also its national name or acronym
+   once you know it). At most ${maxSearches} searches: never repeat a query, and refine it from what earlier results show.
+   Before concluding that evidence is insufficient, run at least 5 searches, one of them in the country's language.
+3. Read the most relevant sources in full with web_fetch (at most ${WEB_FETCH_MAX_USES}): an official decision, an
+   evaluation, a country report or a recovery plan page found by web_search. Read at least one.
 
 Rules:
 - Cite the project with a Markdown link to its URL; cite web sources with a Markdown link to the source URL given by
@@ -161,13 +166,16 @@ Rules:
 - Distinguish correlation from causation: say how directly the evidence can be attributed to the project (causal
   link established, plausible, or unclear).
 - When evidence is missing or too recent, say so: a short, honest report is better than a speculative one.
+- If a web_search or web_fetch call returns an error, try another query or source. A tool error is not evidence:
+  never lower the score because of it; if most searches failed, say "web evidence could not be checked" and set
+  the confidence to low.
 - Write in English, concise and factual. Do not write any text before the report (no "I will search...").
 
 Answer with a Markdown report with these sections:
 **Project overview** (objectives and actions), **Evidence of positive impact**, **Evidence of negative impact or
-limitations**, **Impact by level** (country, Europe, world), **Objectives** (a table: objective | verdict:
-achieved, partly achieved, not achieved or insufficient evidence | rationale), **Overall verdict** (one or two
-sentences).
+limitations**, **Impact by level** (country, Europe, world), **Objectives** (a table: objective | conclusion:
+achieved, partly achieved, not achieved or insufficient evidence | rationale), **Overall conclusion** (one or two
+sentences). Never use the word "verdict".
 End with exactly one line: "Impact score: X/10 (strong | moderate | weak) — Confidence: high | medium | low".
 The score rates the POSITIVE impact documented in your report, on outcomes rather than outputs:
 - 0: no evidence of positive impact (outputs not used, reform abandoned, contradicted or reversed).
@@ -274,10 +282,13 @@ const SEARCH_COUNTRY_REPORTS = {
     required: ["query"],
   },
 };
-export const WEB_SEARCH_TOOL = { type: "web_search_20260209", name: "web_search", max_uses: WEB_SEARCH_MAX_USES };
+// Basic tool versions (no dynamic filtering): results reach the model in full, with their URLs to cite. With the
+// _20260209 versions the model filtered results in code, lost searches to code errors and cited no web source.
+export const WEB_SEARCH_TOOL = { type: "web_search_20250305", name: "web_search", max_uses: WEB_SEARCH_MAX_USES };
+export const WEB_FETCH_TOOL = { type: "web_fetch_20250910", name: "web_fetch", max_uses: WEB_FETCH_MAX_USES, max_content_tokens: 20000, citations: { enabled: true } };
 
 export const TOOLS_CHAT: Record<string, unknown>[] = [SEARCH_PROJECTS, LIST_PROJECTS, GET_PROJECT, SEARCH_CSRS, GET_CSR, SEARCH_RECITALS, SEARCH_COUNTRY_REPORTS];
-export const TOOLS_IMPACT: Record<string, unknown>[] = [GET_PROJECT, SEARCH_PROJECTS, WEB_SEARCH_TOOL];
+export const TOOLS_IMPACT: Record<string, unknown>[] = [GET_PROJECT, SEARCH_PROJECTS, WEB_SEARCH_TOOL, WEB_FETCH_TOOL];
 
 const SERVICES: Record<AgentService, { system: () => string; tools: Record<string, unknown>[]; clientTools: string[] }> = {
   chat: { system: () => CHAT_SYSTEM, tools: TOOLS_CHAT, clientTools: ["search_projects", "list_projects", "get_project", "search_csrs", "get_csr", "search_recitals", "search_country_reports"] },
@@ -720,11 +731,28 @@ const NOT_ANSWER_BLOCKS = new Set(["thinking", "redacted_thinking"]); // ignored
 /** Final text, joined as written (Claude splits cited text into several adjacent blocks). If the content ends with text,
  * only the text after the last tool block (the report, without "I'll search..." preambles); with trailingOnly (turn
  * stopped mid tool use), that trailing text or nothing; otherwise all text groups. Thinking blocks are skipped. */
+/** " ([title](url); ...)" for the web citations of one text block (API citations, not in the text itself): each URL
+ * once, skipped when the fragment already links it; citations without a URL (char_location) add nothing. */
+function citationLinks(text: string, citations: unknown): string {
+  if (!Array.isArray(citations)) return "";
+  const seen = new Set<string>();
+  const links: string[] = [];
+  for (const c of citations as { url?: unknown; title?: unknown }[]) {
+    const url = typeof c?.url === "string" ? c.url : "";
+    if (!/^https?:\/\//.test(url) || seen.has(url) || text.includes(url)) continue;
+    seen.add(url);
+    const title = (typeof c.title === "string" && c.title.trim() ? c.title.trim() : new URL(url).hostname)
+      .replace(/\[/g, "(").replace(/\]/g, ")").replace(/\s+/g, " ").slice(0, 80);
+    links.push(`[${title}](${url.replace(/\)/g, "%29")})`);
+  }
+  return links.length ? ` (${links.join("; ")})` : "";
+}
+
 export function answerText(content: Block[], trailingOnly = false): string {
   const blocks = (Array.isArray(content) ? content : []).filter((b) => b && !NOT_ANSWER_BLOCKS.has(b.type));
   const groups: string[][] = [[]];
   for (const b of blocks) {
-    if (b.type === "text" && typeof b.text === "string") groups[groups.length - 1].push(b.text);
+    if (b.type === "text" && typeof b.text === "string") groups[groups.length - 1].push(b.text + citationLinks(b.text, b.citations));
     else if (groups[groups.length - 1].length) groups.push([]);
   }
   const endsWithText = blocks.length > 0 && blocks[blocks.length - 1].type === "text";
@@ -734,7 +762,7 @@ export function answerText(content: Block[], trailingOnly = false): string {
 }
 
 export function emptyStats(): RunStats {
-  return { steps: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, web_searches: 0 };
+  return { steps: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, web_searches: 0, web_fetches: 0 };
 }
 
 /** Copy of the conversation whose last user message carries a cache breakpoint on its last block (caches the loop
@@ -784,6 +812,7 @@ async function modelRequest(service: ServiceName, body: Record<string, unknown>,
   stats.cache_read_tokens += u.cache_read_input_tokens ?? 0;
   stats.cache_creation_tokens += u.cache_creation_input_tokens ?? 0;
   stats.web_searches += json.content.filter((b) => b?.type === "server_tool_use" && b.name === "web_search").length;
+  stats.web_fetches += json.content.filter((b) => b?.type === "server_tool_use" && b.name === "web_fetch").length;
   return json;
 }
 
@@ -806,8 +835,9 @@ export async function agentLoop(
   const conversation: ApiMessage[] = messages.map((m) => ({ role: m.role, content: m.content }));
 
   const call = async (final: boolean): Promise<ModelResponse> => {
-    // Once the web searches allowed for the run are used up, the server tool is no longer offered (history unchanged).
-    const tools = stats.web_searches >= WEB_SEARCH_MAX_USES ? cfg.tools.filter((t) => t !== WEB_SEARCH_TOOL) : cfg.tools;
+    // Once the searches or fetches allowed for the run are used up, that server tool is no longer offered (history unchanged).
+    const tools = cfg.tools.filter((t) => !(t === WEB_SEARCH_TOOL && stats.web_searches >= WEB_SEARCH_MAX_USES)
+      && !(t === WEB_FETCH_TOOL && stats.web_fetches >= WEB_FETCH_MAX_USES));
     const body: Record<string, unknown> = {
       model, max_tokens: MAX_TOKENS[service], system, tools, messages: withCacheBreakpoint(conversation),
       output_config: { effort: EFFORT[service] },
@@ -866,7 +896,7 @@ export function parseImpact(answer: string): ImpactScore | null {
   return null;
 }
 
-const VERDICT_LINE = /^\s*(?:#{1,6}\s*)?[*_]*\s*overall verdict\s*[*_]*\s*:?\s*[*_]*\s*(.*)$/i;
+const VERDICT_LINE = /^\s*(?:#{1,6}\s*)?[*_]*\s*overall (?:verdict|conclusion)\s*[*_]*\s*:?\s*[*_]*\s*(.*)$/i;
 const VERDICT_MAX = 2000;
 
 /** Text of the "Overall verdict" section (inline after the label, or the following paragraph), or null. */

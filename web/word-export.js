@@ -5,7 +5,7 @@
 // Layout in the spirit of the European Commission visual identity (Arial, blue #004494, A4, generous margins),
 // without any logo, emblem, flag or wording that could make the document look official.
 
-import { OCCASION_FORMATS, keyFigures } from "./briefing.js";
+import { OCCASION_FORMATS, keyFigures, conclusionWording } from "./briefing.js";
 
 const BLUE = "004494";
 const ACCENT = "FFD617";
@@ -444,7 +444,7 @@ export function buildChatDocument(D, lexer, { messages, email, date = new Date()
  * score: { score, level, confidence } fallback when the report has no parseable score line. */
 export function buildImpactDocument(D, lexer, { project = {}, report, at, source, score, email, date = new Date() }) {
   const ctx = newContext({ headingOffset: 0 });
-  const body = stripFrontMatter(report);
+  const body = conclusionWording(stripFrontMatter(report));
   const s = parseImpact(body) || (score && Number.isFinite(score.score) ? score : null);
   const generated = fmtDateTime(at);
   const url = typeof project.url === "string" && project.url.startsWith("https://") ? project.url : null;
@@ -773,7 +773,7 @@ export function buildBriefingDocument(D, { model: m, occasion, ai = null, unveri
   } else children.push(noteLine(D, "No project of the period states results."));
   children.push(headingPara(D, 2, [new D.TextRun(`Latest impact analyses (${m.impacts.length})`)]));
   if (m.impacts.length) {
-    children.push(makeTable(D, [["Project", "Score", "Level", "Confidence", "Date", "Verdict (first sentence)"].map((h) => headOf(D, h)),
+    children.push(makeTable(D, [["Project", "Score", "Level", "Confidence", "Date", "Conclusion (first sentence)"].map((h) => headOf(D, h)),
       ...m.impacts.map((p) => [runsCell(p.title, linkRuns(D, p.title, p.detail ? p.url : null, small)), cellOf(D, scoreText(p.impact), { ...small, bold: true }),
         cellOf(D, p.impact.level || "—", small), cellOf(D, p.impact.confidence || "—", small), cellOf(D, fmtDay(p.impact.date), small), cellOf(D, p.impact.verdict || "—", small)])],
     { widths: cols(2.6, 0.75, 1, 1.1, 1.2, 4.2) }), spacer(D));

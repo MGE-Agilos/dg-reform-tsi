@@ -127,7 +127,7 @@ def test_render_report_has_no_impact_score():
     front, body = parse_front_matter(md)
     assert not {"impact_score", "impact_category", "impact_level", "impact_rationale"} & set(front)
     assert "**Impact:**" not in body and "**Positive impact:**" not in body
-    verdict_line = "**Overall verdict:** Positive but partly attributable. (confidence: medium)"
+    verdict_line = "**Overall conclusion:** Positive but partly attributable. (confidence: medium)"
     assert verdict_line + "\n\n## 1. Project overview" in body
 
 

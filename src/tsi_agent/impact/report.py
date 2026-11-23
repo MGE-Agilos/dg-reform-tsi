@@ -159,7 +159,7 @@ def render_report(meta: dict[str, Any], report: dict[str, Any], sources: list[di
 
     scope = " — ".join(p for p in (" ".join(str(v) for v in (meta.get("programme"), meta.get("year")) if v),
                                    ", ".join(meta.get("countries") or []), meta.get("policy_area")) if p)
-    table = ["| Objective | Verdict | Rationale |", "|---|---|---|"]
+    table = ["| Objective | Conclusion | Rationale |", "|---|---|---|"]
     table += [f"| {_cell(o['objective'])} | {o['verdict']} | {_cell(o['rationale'])} |" for o in objectives]
     lines = []
     for s in used:
@@ -168,7 +168,7 @@ def render_report(meta: dict[str, Any], report: dict[str, Any], sources: list[di
     body = "\n\n".join([
         f"# Impact analysis — {meta.get('title') or meta.get('project_id')}",
         f"{scope}  \nGenerated {run['generated']} · {run['model']} · run {run['run_id']}",
-        f"**Overall verdict:** {verdict} (confidence: {report['confidence']})",
+        f"**Overall conclusion:** {verdict} (confidence: {report['confidence']})",
         f"## 1. Project overview\n\n{overview}",
         f"## 2. Evidence of positive impact\n\n{positive}",
         f"## 3. Evidence of negative impact or limitations\n\n{negative}",

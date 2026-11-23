@@ -150,7 +150,7 @@ def apply_score(markdown: str, score: int, rationale: str) -> str:
         out.append(line)
     score_line = f"**Positive impact:** {score}/10 ({IMPACT_LEVEL_LABELS[level]})" + (
         f" — {rationale}" if rationale else "")
-    at = next((i for i, line in enumerate(out) if line.startswith("**Overall verdict:**")), None)
+    at = next((i for i, line in enumerate(out) if line.startswith(("**Overall conclusion:**", "**Overall verdict:**"))), None)
     if at is None:  # pas de verdict : avant la premiere section
         at = next((i - 1 for i, line in enumerate(out) if line.startswith("## ")), len(out) - 1)
     out[at + 1:at + 1] = ["", score_line]

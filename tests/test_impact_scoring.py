@@ -82,7 +82,7 @@ def test_apply_score_front_matter_and_body_line():
     assert keys[i + 1:i + 4] == ["impact_score", "impact_level", "impact_rationale"]
     assert front["impact_score"] == 7 and front["impact_level"] == "strong"
     assert front["impact_rationale"] == "Arrears fell after the reform [3]."  # [9] absent des Sources
-    verdict = "**Overall verdict:** Positive but partly attributable. (confidence: medium)"
+    verdict = "**Overall conclusion:** Positive but partly attributable. (confidence: medium)"
     line = "**Positive impact:** 7/10 (Strong) — Arrears fell after the reform [3]."
     assert verdict + "\n\n" + line + "\n\n## 1. Project overview" in body
     assert apply_score(md, 7, "Arrears fell after the reform [3][9].") == md  # idempotent

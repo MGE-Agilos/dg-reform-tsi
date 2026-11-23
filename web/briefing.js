@@ -73,6 +73,14 @@ export function clip(text, max) {
 
 /** First sentence of a text (a period, question or exclamation mark followed by a capital, with or without the space
  * that the source sometimes drops: "growth.Address"), clipped. */
+/** Saved impact reports (Markdown) worded for the TSI context: "Overall verdict" -> "Overall conclusion" and the
+ * objectives table's "Verdict" column -> "Conclusion" (reports written before the wording changed). */
+export function conclusionWording(text) {
+  return String(text ?? "")
+    .replace(/\b(O|o)verall (V|v)erdict\b/g, (_, o, v) => `${o}verall ${v === "V" ? "C" : "c"}onclusion`)
+    .replace(/^(\|\s*Objective\s*\|\s*)Verdict(\s*\|)/gim, "$1Conclusion$2");
+}
+
 export function firstSentence(text, max = 220) {
   const t = String(text ?? "").replace(/\s+/g, " ").trim();
   const ends = [/^(.{20,}?[.!?])(?=\s+[A-Z(“"])/.exec(t), /^(.{20,}?[a-z)][.!?])(?=[A-Z][a-z])/.exec(t)].filter(Boolean).map((m) => m[1]);

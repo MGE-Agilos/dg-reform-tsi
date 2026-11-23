@@ -2552,7 +2552,7 @@ function paintImpact(id, status = "") {
       + `<button type="button" class="btn btn-secondary" id="impact-copy">Copy report</button>`
       + `<button type="button" class="btn btn-secondary" id="impact-word" aria-label="Export this report to Word">Export to Word</button></span></div>`
       + (Number.isNaN(at.getTime()) ? "" : `<p class="muted small">Generated ${esc(at.toLocaleString("en-GB"))}</p>`)
-      + `<div class="md">${md(saved.report)}</div></div>`;
+      + `<div class="md">${md(B.conclusionWording(saved.report))}</div></div>`;
   }
   box.innerHTML = html;
   $("impact-copy")?.addEventListener("click", async () => {
@@ -2686,7 +2686,7 @@ function bindReportToggles(container) {
         if (res.error) {
           body.innerHTML = `<p class="error">${esc(res.error.message || "Could not load the report")}</p>`;
         } else {
-          body.innerHTML = md(res.data?.report || "");
+          body.innerHTML = md(B.conclusionWording(res.data?.report));
           body.dataset.loaded = "1";
         }
         body.hidden = false;
@@ -2705,10 +2705,16 @@ function latestImpactHtml(rows) {
     + `<span class="toolbar-actions">${reportToggle(r)}</span></div>${reportBody(r)}</div>`;
 }
 
+/** Origin of a saved analysis (impact_reports.source): [label, tooltip]. */
+const IMPACT_SOURCES = {
+  local: ["in-depth analysis", "Batch analysis: larger model, up to 10 web searches and the documents found read in full."],
+  web: ["run from this site", "Run with the button on this page: up to 8 web searches and 3 pages read in full."],
+};
+
 function previousImpactsHtml(rows) {
   if (!rows?.length) return "";
   const items = rows.map((r) => `<li><div class="toolbar"><span>${esc(impactLine(r))}`
-    + `${r.source ? ` <span class="muted small">· ${esc(r.source)}</span>` : ""}</span>`
+    + `${r.source ? ` <span class="muted small" title="${esc(IMPACT_SOURCES[r.source]?.[1] || "")}">· ${esc(IMPACT_SOURCES[r.source]?.[0] || r.source)}</span>` : ""}</span>`
     + `<span class="toolbar-actions">${reportToggle(r)}</span></div>${reportBody(r)}</li>`).join("");
   return `<h3>Previous analyses</h3><ul class="prev-list">${items}</ul>`;
 }
@@ -3315,7 +3321,7 @@ const GUIDE = [
     <dt>Direct / partial link</dt><dd>Level of a project–CSR sub-part link assessed by AI: the project implements what the CSR asks
       (direct), or contributes to one aspect or a precondition (partial).</dd>
     <dt>CSR Recommendation (count)</dt><dd>One recommendation linked to one project, in the Lineage overviews; direct if at least one of its sub-part links is direct.</dd>
-    <dt>Review</dt><dd>A user's verdict on an AI-assessed link: confirmed, rejected or to review; shared with all users, with its history.</dd>
+    <dt>Review</dt><dd>A user's decision on an AI-assessed link: confirmed, rejected or to review; shared with all users, with its history.</dd>
     <dt>Related past project</dt><dd>A project of earlier years suggested by AI as working on the same issues as a 2026 recommendation;
       a lead to verify, not a link.</dd>
     <dt>Briefing</dt><dd>A Word document to prepare an occasion (meeting, panel, mission…) with one country: scene setter and speaking points by AI, the country's data in annexes.</dd></dl>` },
@@ -3391,7 +3397,7 @@ const GUIDE_STEPS = [
   { img: "06-impact.jpg", to: `#impact/${GUIDE_PROJECT}`, title: "Check the impact analysis",
     alt: "Impact tab: the saved analysis of the Lithuanian pension project, report open",
     text: `<em>Impact analysis</em> opens the project in the <strong>Impact</strong> tab. Its saved analysis (2/10, weak,
-      medium confidence, 7 Oct 2026) opens with <em>Show report</em>: the overall verdict finds solid analytical outputs, but a
+      medium confidence, 7 Oct 2026) opens with <em>Show report</em>: the overall conclusion finds solid analytical outputs, but a
       parallel 2025 reform moved the second pillar in the opposite direction and the project closed two months early. Every
       claim cites numbered sources. <em>Export to Word</em> downloads the report; a new analysis takes 30 seconds to 2 minutes
       and has a cost.` },
