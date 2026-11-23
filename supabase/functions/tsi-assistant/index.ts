@@ -92,6 +92,8 @@ Tools:
 - search_csrs: full-text search over EU country-specific recommendations (CSRs, European Semester 2016-2026).
 - get_csr: one CSR, its sub-parts, their assessments and the projects linked to them; or, with a document id
   (csrdoc-HR-2025), one CSR document and all its recommendations.
+- search_recitals: full-text search over the recitals of the 2026 Commission recommendations: the numbered
+  paragraphs before the recommendations, with the Commission's analysis of each country's challenges.
 
 Rules:
 1. Answer in the language of the user's question.
@@ -127,6 +129,9 @@ Rules:
     assessments and the links to projects. Say "recommendation" for csr-CC-YYYY-N and "document" for the yearly
     set. The 2016-2025 recommendations were adopted by the Council; the 2026 ones are Commission recommendations,
     not yet adopted by the Council nor assessed, without sub-parts: say so when you use them.
+16. For a country's challenges, context or the reasons behind a 2026 recommendation, or a topic the recommendations
+    only mention briefly (e.g. water, wildfires, housing), also call search_recitals. Cite recitals by id
+    (rec-HR-2026-12) and say they are recitals (analysis), not recommendations; they exist for 2026 only.
 
 ${FILTER_VALUES}`;
 
@@ -237,13 +242,26 @@ const GET_CSR = {
     required: ["csr_id"],
   },
 };
+const SEARCH_RECITALS = {
+  name: "search_recitals",
+  description: "Full-text search (English) over the recitals of the 2026 Commission recommendations: the numbered paragraphs (\"Whereas: (1)...\") that precede the recommendations in each country's document and explain its challenges. Returns recital ids (rec-HR-2026-12), country, document and text.",
+  input_schema: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "English search words." },
+      countries: { ...countriesProp, description: "ISO country codes, e.g. [\"HR\"]." },
+      limit: { type: "integer", minimum: 1, maximum: 20, description: "Maximum results (default 8)." },
+    },
+    required: ["query"],
+  },
+};
 export const WEB_SEARCH_TOOL = { type: "web_search_20260209", name: "web_search", max_uses: WEB_SEARCH_MAX_USES };
 
-export const TOOLS_CHAT: Record<string, unknown>[] = [SEARCH_PROJECTS, LIST_PROJECTS, GET_PROJECT, SEARCH_CSRS, GET_CSR];
+export const TOOLS_CHAT: Record<string, unknown>[] = [SEARCH_PROJECTS, LIST_PROJECTS, GET_PROJECT, SEARCH_CSRS, GET_CSR, SEARCH_RECITALS];
 export const TOOLS_IMPACT: Record<string, unknown>[] = [GET_PROJECT, SEARCH_PROJECTS, WEB_SEARCH_TOOL];
 
 const SERVICES: Record<AgentService, { system: () => string; tools: Record<string, unknown>[]; clientTools: string[] }> = {
-  chat: { system: () => CHAT_SYSTEM, tools: TOOLS_CHAT, clientTools: ["search_projects", "list_projects", "get_project", "search_csrs", "get_csr"] },
+  chat: { system: () => CHAT_SYSTEM, tools: TOOLS_CHAT, clientTools: ["search_projects", "list_projects", "get_project", "search_csrs", "get_csr", "search_recitals"] },
   impact: { system: () => impactSystem(), tools: TOOLS_IMPACT, clientTools: ["get_project", "search_projects"] },
 };
 
@@ -545,6 +563,23 @@ async function searchCsrs(input: Input, ctx: ToolContext): Promise<string> {
   return lines.join("\n");
 }
 
+type RecitalRow = { recital_id: string; country: string; year: number; number: number; text: string; source_url: string | null };
+
+async function searchRecitals(input: Input, ctx: ToolContext): Promise<string> {
+  const q = reqString(input, "query");
+  const rows = await db(ctx, "rpc/tsi_search_recitals", {
+    q, p_countries: optCountries(input), p_year_from: null, p_year_to: null, lim: limitOf(input, 8, 20),
+  }) as RecitalRow[];
+  if (!Array.isArray(rows) || !rows.length) return `No recital matches "${q}" with these filters.`;
+  const lines = [`${rows.length} recitals of the 2026 Commission recommendations (analysis, not recommendations; best matches first):`];
+  rows.forEach((r, i) => {
+    lines.push(`${i + 1}. ${r.recital_id} — ${r.country} ${r.year} — recital (${r.number}) of document ${docIdOf(r.country, r.year)}`
+      + (r.source_url ? ` — Source: ${r.source_url}` : ""));
+    lines.push(`   ${clip(r.text, 1200)}`);
+  });
+  return lines.join("\n");
+}
+
 type PartRow = { part_id: string; text: string; assessment: string | null; project_csr_links: { level: string; rationale: string; projects: ProjectRow | null }[] | null };
 
 type DocCsrRow = { csr_id: string; number: string; text: string; assessment: string | null; assessment_year: number | null;
@@ -616,7 +651,7 @@ async function getCsr(input: Input, ctx: ToolContext): Promise<string> {
 
 const TOOL_IMPLS: Record<string, (input: Input, ctx: ToolContext) => Promise<string>> = {
   search_projects: searchProjects, list_projects: listProjects, get_project: getProject,
-  search_csrs: searchCsrs, get_csr: getCsr,
+  search_csrs: searchCsrs, get_csr: getCsr, search_recitals: searchRecitals,
 };
 
 /** Runs a client tool and returns compact text for the model; never throws ("Tool error: ..." instead). */

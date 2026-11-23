@@ -523,6 +523,19 @@ réécrit le front matter d'un projet thin ne les perd donc pas). L'explorateur 
 4 pays, chacune avec ses 15 sous-parties de CSR les plus proches par pays ; avant, un seul appel plafonné à 60
 candidates ne gardait qu'environ 2 sous-parties (souvent génériques) par pays.
 
+## Considérants (recitals) 2026
+
+Les documents 2026 de la Commission commencent par des considérants numérotés (« Whereas: (1) … », une trentaine à
+une cinquantaine par pays, environ 1 050 au total) : l'analyse des défis du pays, dont les recommandations sont la
+conclusion. `csr_commission.parse_text` les extrait sans LLM du texte intégral déjà téléchargé (partie « Whereas: » →
+« HEREBY RECOMMENDS ») : notes de bas de page retirées, y compris leur suite sur la page suivante (lignes plus larges
+que le corps) et les notes numérotées « (n) » de certains documents (Irlande). Identifiants `rec-<ISO>-2026-<n>`.
+
+`supabase-sync` les publie dans `csr_recitals` (migration `009_csr_recitals.sql`, recherche plein texte et fonction
+`tsi_search_recitals`). L'explorateur les montre dans l'onglet CSRs (vue « Recitals 2026 » cherchable, renvoi depuis
+la recherche des recommandations, section repliée sur chaque page document 2026) ; l'assistant les interroge avec
+l'outil `search_recitals`.
+
 ## Rapport d'anomalies
 
 Contrôle de publication, sans LLM ni réseau, à partir de `output/` (spec :

@@ -183,7 +183,7 @@ test("chat loop: list_projects tool_use, tool_result sent back, PostgREST called
   assert.deepEqual(body1.output_config, { effort: "low" });
   assert.equal(body1.system[0].text, CHAT_SYSTEM);
   assert.deepEqual(body1.system[0].cache_control, { type: "ephemeral" });
-  assert.deepEqual(body1.tools.map((t: { name: string }) => t.name), ["search_projects", "list_projects", "get_project", "search_csrs", "get_csr"]);
+  assert.deepEqual(body1.tools.map((t: { name: string }) => t.name), ["search_projects", "list_projects", "get_project", "search_csrs", "get_csr", "search_recitals"]);
   assert.deepEqual(body1.messages, [{ role: "user", content: [{ type: "text", text: chatBody.messages[0].content, cache_control: { type: "ephemeral" } }] }]);
   assert.equal(body1.tool_choice, undefined);
 
@@ -1090,3 +1090,19 @@ test("expand: refusal or unreadable answer gives no terms; non-tester refused", 
   assert.equal((await handle(post({ service: "expand", query: "x" }), ENV, stranger.impl)).status, 403);
   assert.equal(stranger.modelCalls().length, 0);
 });
+
+test("search_recitals calls its RPC with countries and a bounded limit, and labels recitals as analysis", async () => {
+  const f = fakeFetch({ rpc: {
+    tsi_search_recitals: [{ recital_id: "rec-HR-2026-12", country: "HR", year: 2026, number: 12, text: "Wildfires are a growing risk.", source_url: "https://ec.example/hr.pdf", rank: 0.4 }],
+  } });
+  const out = await runTool("search_recitals", { query: "wildfire", countries: ["hr"], limit: 99 }, { ...CTX, fetchImpl: f.impl });
+  assert.match(out, /recitals of the 2026 Commission recommendations \(analysis, not recommendations/);
+  assert.match(out, /rec-HR-2026-12 — HR 2026 — recital \(12\) of document csrdoc-HR-2026 — Source: https:\/\/ec\.example\/hr\.pdf/);
+  assert.match(out, /Wildfires are a growing risk\./);
+  const [c] = f.dbCalls();
+  assert.equal(c.url, "https://project.supabase.co/rest/v1/rpc/tsi_search_recitals");
+  assert.deepEqual(sent(c), { q: "wildfire", p_countries: ["HR"], p_year_from: null, p_year_to: null, lim: 20 });
+  assert.match(await runTool("search_recitals", { query: "nothing" }, { ...CTX, fetchImpl: fakeFetch().impl }), /^No recital matches/);
+  assert.match(CHAT_SYSTEM, /search_recitals/);
+});
+

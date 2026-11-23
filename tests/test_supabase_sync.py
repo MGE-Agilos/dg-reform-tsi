@@ -78,8 +78,8 @@ def make_output(tmp_path):
 def test_build_rows_tables_and_projects(tmp_path):
     rows = build_rows(make_output(tmp_path), current_year=2026)
     assert list(TABLES) == ["projects", "csr_documents", "csrs", "csr_parts", "project_csr_links", "anomalies"]
-    assert list(rows) == [*TABLES, "impact_reports", "csr_related_projects"] and rows["impact_reports"] == []
-    assert rows["csr_related_projects"] == []
+    assert list(rows) == [*TABLES, "impact_reports", "csr_related_projects", "csr_recitals"]
+    assert rows["impact_reports"] == [] and rows["csr_related_projects"] == [] and rows["csr_recitals"] == []
     p1, p2 = sorted(rows["projects"], key=lambda r: r["project_id"])
     assert p1 == {"project_id": "p1", "title": "Public administration reform", "programme": "TSI", "year": 2024,
                   "countries": ["HR"], "policy_area": "public-administration-and-governance", "policy_area_ai": False,
@@ -366,3 +366,39 @@ def test_protected_tables_are_not_in_the_sync_lists():
     from tsi_agent.supabase_sync import DELETE_ORDER, INSERT_ORDER, PROTECTED_TABLES
     assert set(PROTECTED_TABLES) == {"testers", "link_reviews"}
     assert not set(PROTECTED_TABLES) & {*DELETE_ORDER, *INSERT_ORDER, "impact_reports", "csr_related_projects"}
+
+
+def test_build_rows_recitals_from_commission_text(tmp_path):
+    out = make_output(tmp_path)
+    (out / "deliverables").mkdir(exist_ok=True)
+    from tsi_agent.csr_commission import PUBLICATION_ID
+    (out / "deliverables" / f"{PUBLICATION_ID}.md").write_text(
+        "## 2026 European Semester: Country Specific Recommendation / Commission Recommendation - Croatia\n\n"
+        "Source: https://ec.example/hr.pdf\n\n--- page 2 ---\nWhereas:\n(1) Wildfires are a growing risk.\n"
+        "HEREBY RECOMMENDS that Croatia take action in 2026 and 2027 to:\n1. Improve water management.\n"
+        "Done at Brussels,\n", encoding="utf-8")
+    rows = build_rows(out, current_year=2026)
+    assert rows["csr_recitals"] == [{"recital_id": "rec-HR-2026-1", "country": "HR", "year": 2026, "number": 1,
+                                     "text": "Wildfires are a growing risk.", "source_url": "https://ec.example/hr.pdf",
+                                     "doc_id": "csrdoc-HR-2026"}]
+
+
+def test_push_replaces_recitals_and_skips_missing_table(tmp_path):
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.path, request.url.query.decode()))
+        if request.url.path.endswith("csr_recitals"):
+            return httpx.Response(404, json={"code": "PGRST205", "message": "Could not find the table"})
+        return httpx.Response(204 if request.method == "DELETE" else 201)
+    rows = {t: [] for t in TABLES}
+    rows["csr_related_projects"] = [{"csr_id": "c", "project_id": "p"}]
+    rows["csr_recitals"] = [{"recital_id": "rec-HR-2026-1"}]
+    summary = push(rows, "https://abc.supabase.co", "k", client=httpx.Client(transport=httpx.MockTransport(handler)),
+                   backup=tmp_path / "r.json")
+    assert calls[-1] == ("DELETE", "/rest/v1/csr_recitals", "recital_id=not.is.null")
+    assert ("POST", "/rest/v1/csr_related_projects", "") in calls
+    assert summary["csr_recitals"] == 0 and summary["csr_related_projects"] == 1
+    assert summary["warnings"] == ["table csr_recitals absente (appliquer supabase/migrations/009_csr_recitals.sql)"
+                                   " : non synchronisee"]
+

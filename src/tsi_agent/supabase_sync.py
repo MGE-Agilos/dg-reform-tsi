@@ -9,6 +9,8 @@ output/impact/*.md) sont remplacees ; les analyses lancees depuis la page (`sour
 
 `csr_related_projects` (migration 006, output/csr_related/*.json de `csr-related`) est remplacee en entier, apres les
 autres tables ; si la table n'existe pas encore (migration non appliquee), elle est sautee avec un avertissement.
+`csr_recitals` (migration 009) : considerants des recommandations de la Commission (texte de la publication 2026),
+remplaces en entier comme csr_related_projects (table absente -> sautee avec un avertissement).
 `link_reviews` (avis des testeurs, ecrits depuis la page) n'est JAMAIS lue, videe ni ecrite par la synchronisation.
 """
 
@@ -25,8 +27,8 @@ import yaml
 from tsi_agent.anomalies import detect, load_csr_links, load_projects, load_publications
 from tsi_agent.chunking import INTRO, SUMMARY, split_sections
 from tsi_agent.ids import clean_text
-from tsi_agent.csr import build_documents
-from tsi_agent.csr_commission import load_all_csrs
+from tsi_agent.csr import build_documents, document_id
+from tsi_agent.csr_commission import load as load_commission, load_all_csrs
 from tsi_agent.csr_related import load_related_rows
 from tsi_agent.llm import read_dotenv
 from tsi_agent.render import parse_front_matter
@@ -43,6 +45,10 @@ DELETE_FILTER = {"projects": "project_id=not.is.null", "csr_documents": "doc_id=
                  "anomalies": "id=not.is.null"}
 IMPACT_TABLE = "impact_reports"
 RELATED_TABLE = "csr_related_projects"
+RECITALS_TABLE = "csr_recitals"
+# Tables optionnelles remplacees en entier apres les autres : (table, filtre DELETE couvrant toutes les lignes, migration).
+OPTIONAL_TABLES = ((RELATED_TABLE, "csr_id=not.is.null", "006_reviews_related.sql"),
+                   (RECITALS_TABLE, "recital_id=not.is.null", "009_csr_recitals.sql"))
 # Tables que la synchronisation ne doit jamais toucher (ecrites ailleurs) : garde-fou verifie dans push.
 PROTECTED_TABLES = ("testers", "link_reviews")
 IMPACT_LEVELS = ("strong", "moderate", "weak")
@@ -182,8 +188,12 @@ def build_rows(output_dir: Path, current_year: int | None = None) -> dict[str, l
                                  current_year or date.today().year, csr_links=load_csr_links(output_dir))]
     csr_ids = {c["csr_id"] for c in csr_rows}
     related = [r for r in load_related_rows(output_dir) if r["csr_id"] in csr_ids and r["project_id"] in project_ids]
+    recitals = [{"recital_id": r.recital_id, "country": r.country, "year": r.year, "number": r.number, "text": r.text,
+                 "source_url": r.source_url, "doc_id": document_id(r.country, r.year)}
+                for r in load_commission(output_dir).recitals]
     return {"projects": projects, "csr_documents": doc_rows, "csrs": csr_rows, "csr_parts": part_rows, "project_csr_links": links,
-            "anomalies": anomalies, IMPACT_TABLE: impact_rows(output_dir), RELATED_TABLE: related}
+            "anomalies": anomalies, IMPACT_TABLE: impact_rows(output_dir), RELATED_TABLE: related,
+            RECITALS_TABLE: recitals}
 
 
 class SyncError(RuntimeError):
@@ -225,10 +235,12 @@ def push(rows: dict[str, list[dict[str, Any]]], url: str, key: str, *, client: h
 
     Non transactionnel : en cas d'echec, les tables peuvent rester vides ou partielles -> relancer supabase-sync.
     """
-    touched = {*DELETE_ORDER, *INSERT_ORDER, *(t for t in (IMPACT_TABLE, RELATED_TABLE) if t in rows)}
+    touched = {*DELETE_ORDER, *INSERT_ORDER,
+               *(t for t in (IMPACT_TABLE, *(o[0] for o in OPTIONAL_TABLES)) if t in rows)}
     if touched & set(PROTECTED_TABLES):  # garde-fou : jamais de suppression ni d'ecriture sur ces tables
         raise SyncError(f"tables protegees dans la synchronisation : {sorted(touched & set(PROTECTED_TABLES))}")
     warnings: list[str] = []
+    missing: set[str] = set()
     if backup is not None:
         backup.parent.mkdir(parents=True, exist_ok=True)
         backup.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
@@ -253,26 +265,28 @@ def push(rows: dict[str, list[dict[str, Any]]], url: str, key: str, *, client: h
                 _check(client.post(f"{url}/rest/v1/{IMPACT_TABLE}", headers=headers,
                                    content=json.dumps(data[start:start + BATCH], ensure_ascii=False)), IMPACT_TABLE,
                        "insert")
-        if RELATED_TABLE in rows:
-            resp = client.delete(f"{url}/rest/v1/{RELATED_TABLE}?csr_id=not.is.null", headers=headers)
+        for table, everything, migration in OPTIONAL_TABLES:
+            if table not in rows:
+                continue
+            resp = client.delete(f"{url}/rest/v1/{table}?{everything}", headers=headers)
             if resp.status_code >= 300 and _table_missing(resp):
-                warnings.append(f"table {RELATED_TABLE} absente (appliquer supabase/migrations/006_reviews_related.sql)"
-                                " : non synchronisee")
-            else:
-                _check(resp, RELATED_TABLE, "delete")
-                data = rows.get(RELATED_TABLE) or []
-                for start in range(0, len(data), BATCH):
-                    _check(client.post(f"{url}/rest/v1/{RELATED_TABLE}", headers=headers,
-                                       content=json.dumps(data[start:start + BATCH], ensure_ascii=False)),
-                           RELATED_TABLE, "insert")
+                warnings.append(f"table {table} absente (appliquer supabase/migrations/{migration}) : non synchronisee")
+                missing.add(table)
+                continue
+            _check(resp, table, "delete")
+            data = rows.get(table) or []
+            for start in range(0, len(data), BATCH):
+                _check(client.post(f"{url}/rest/v1/{table}", headers=headers,
+                                   content=json.dumps(data[start:start + BATCH], ensure_ascii=False)), table, "insert")
     finally:
         if own:
             client.close()
     summary = {table: len(rows.get(table) or []) for table in INSERT_ORDER}
     if IMPACT_TABLE in rows:
         summary[IMPACT_TABLE] = len(rows.get(IMPACT_TABLE) or [])
-    if RELATED_TABLE in rows:
-        summary[RELATED_TABLE] = 0 if warnings else len(rows.get(RELATED_TABLE) or [])
+    for table, _, _ in OPTIONAL_TABLES:
+        if table in rows:
+            summary[table] = 0 if table in missing else len(rows.get(table) or [])
     if warnings:
         summary["warnings"] = warnings
     return summary

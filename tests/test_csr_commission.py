@@ -169,3 +169,76 @@ def test_fetch_missing_downloads_only_missing_english_pdfs():
     assert merge_texts(None, text).startswith(f"# {PUBLICATION_ID}\n\n## Commission")
     assert merge_texts("x", "") == "x"
     assert [c.csr_id for c in parse_text(merge_texts(None, text)).csrs][:1] == ["csr-HR-2026-1"]
+
+
+# Considerants (recitals) -------------------------------------------------------------------------------------------
+
+RECITALS = """Whereas:
+(1) Regulation (EU) 2024/1263 specifies the objectives of the economic governance
+framework (1).
+(2) On 16 July 2025, the Commission adopted its proposal for a regulation (2). The proposal
+1 Regulation (EU) 2024/1263 of the European Parliament and of the Council of 29 April 2024 on the
+effective coordination of economic policies.
+2 Proposal for a Regulation of the European Parliament and of the Council establishing the European
+EN EN
+1
+
+--- page 3 ---
+aims to increase the effectiveness of Union funding, in line with recommendation (1) below.
+(3) Wildfires and droughts are a growing risk for agriculture and water supply (3).
+Regulation (EU, Euratom) 2024/2509 - COM(2025) 565 final. The proposed Regulation is currently the
+subject of negotiations with the co-legislators.
+3 Commission report on rural fires and water resilience, 2026.
+EN EN
+2
+
+--- page 4 ---
+HEREBY RECOMMENDS that Austria take action in 2026 and 2027 to:
+1. Improve water management.
+Done at Brussels,
+"""
+
+PAREN_NOTES = """Whereas:
+(1) The Commission published the 2026 Annual Progress Report (8) for Ireland.
+(2) Ireland faces challenges related to housing.
+(8) The 2026 Annual Progress Reports are available on: https://economy-finance.ec.europa.eu/
+(9) Eurostat-Euro Indicators, 22 April 2026.
+EN EN
+3
+
+--- page 4 ---
+(3) Housing supply remains constrained.
+HEREBY RECOMMENDS that Ireland take action in 2026 and 2027 to:
+1. Increase housing supply.
+Done at Brussels,
+"""
+
+
+def _doc(country: str, body: str) -> str:
+    return (f"## 2026 European Semester: Country Specific Recommendation / Commission Recommendation - {country}\n\n"
+            f"Source: https://ec.example/{country}.pdf\n\n--- page 2 ---\n{body}\n")
+
+
+def test_recitals_split_and_strip_footnotes():
+    parse = parse_text(_doc("Austria", RECITALS))
+    recs = parse.recitals
+    assert [r.recital_id for r in recs] == ["rec-AT-2026-1", "rec-AT-2026-2", "rec-AT-2026-3"]
+    assert recs[0].text == ("Regulation (EU) 2024/1263 specifies the objectives of the economic governance framework (1).")
+    # note de la page 2 retiree ; suite du considerant sur la page 3 recollee ; « (1) » en milieu de ligne garde
+    assert recs[1].text.endswith("The proposal aims to increase the effectiveness of Union funding, in line with "
+                                 "recommendation (1) below.")
+    # suite d'une note commencee page precedente (ligne large) et note numerotee retirees
+    assert recs[2].text == "Wildfires and droughts are a growing risk for agriculture and water supply (3)."
+    assert recs[2].country == "AT" and recs[2].year == 2026 and recs[2].source_url == "https://ec.example/Austria.pdf"
+    assert parse.report()["recitals"] == 3
+
+
+def test_recitals_parenthesised_footnotes():
+    recs = parse_text(_doc("Ireland", PAREN_NOTES)).recitals
+    assert [r.number for r in recs] == [1, 2, 3]
+    assert recs[1].text == "Ireland faces challenges related to housing."
+    assert recs[2].text == "Housing supply remains constrained."
+
+
+def test_recitals_absent_without_whereas():
+    assert parse_text(_doc("Netherlands", NL)).recitals == []

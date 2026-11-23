@@ -953,3 +953,11 @@ details.dash-fold[open] > summary h3::before { content: "▾ "; }
 .badge-ai { font-size: 0.7rem; padding: 1px 5px; border-radius: 3px; border: 1px solid var(--accent); color: var(--accent); background: transparent; font-weight: 600; letter-spacing: 0.02em; vertical-align: 1px; }
 .related-notice { margin: -4px 0 12px; }
 .related-term { font-style: italic; }
+
+/* Recitals of the Commission recommendations (user feedback, lot 3) */
+details.recitals > summary { cursor: pointer; list-style-position: outside; }
+details.recitals > summary .section-label { display: inline; }
+.recital-list { padding-left: 2.2em; }
+.recital-list li { margin-bottom: 8px; }
+.recital-list li::marker { content: "(" counter(list-item) ") "; color: var(--muted, #667); }
+.recital-text mark { background: color-mix(in srgb, var(--accent) 22%, transparent); color: inherit; padding: 0 1px; border-radius: 2px; }

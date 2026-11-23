@@ -870,12 +870,128 @@ function csrsIntro() {
     + `recommendations; the ECFIN database splits each recommendation into sub-parts, the level at which project links are assessed.</p>`;
 }
 
-/** Switch between the document view (default) and the list of all recommendations (also used by the text search). */
-function csrsModeLinks(recsMode, f) {
+/** Switch between the document view (default), the list of all recommendations (also used by the text search) and
+ * the recitals of the Commission recommendations. mode: "docs", "recs" or "recitals". */
+function csrsModeLinks(mode, f) {
   const docs = hrefFor("csrs", { year: f.year || "", country: f.country });
   const recs = hrefFor("csrs", { view: "recs", year: f.year || "", country: f.country, q: f.q });
+  const recitals = hrefFor("csrs", { view: "recitals", country: f.country, q: f.q });
   const a = (href, label, on) => `<a class="btn btn-secondary seg"${on ? ' aria-current="page"' : ""} href="${esc(href)}">${label}</a>`;
-  return `<p class="seg-group" role="group" aria-label="Show">${a(docs, "By document", !recsMode)}${a(recs, "All recommendations", recsMode)}</p>`;
+  return `<p class="seg-group" role="group" aria-label="Show">${a(docs, "By document", mode === "docs")}`
+    + `${a(recs, "All recommendations", mode === "recs")}${a(recitals, `Recitals ${RECITALS_YEAR}`, mode === "recitals")}</p>`;
+}
+
+// ---------- Recitals of the Commission recommendations (csr_recitals, migration 009) ----------
+const RECITALS_YEAR = 2026;
+const RECITAL_COLS = "recital_id,country,year,number,text,source_url,doc_id";
+const RECITAL_EXCERPT = 420;
+const RECITALS_ABOUT = `Recitals are the numbered paragraphs ("Whereas: (1)…") that precede the recommendations in each ${RECITALS_YEAR} `
+  + `Commission document. They set out the Commission's analysis of the country's situation and challenges, so they cover `
+  + `topics that the recommendations only mention briefly. Available for ${RECITALS_YEAR} only.`;
+
+/** Recital text matches the words, or one of the related terms (substring or English full-text search). */
+function recitalMatchFilter(text, terms = []) {
+  return [text, ...terms].map((x) => x.trim()).filter(Boolean)
+    .map((t) => `text.ilike.${pgQuote(likePattern(t))},fts.wfts(english).${pgQuote(t)}`).join(",");
+}
+
+function recitalsQuery(f, opts) {
+  let q = sb.from("csr_recitals").select(RECITAL_COLS, opts).order("country").order("number");
+  if (f.country) q = q.eq("country", f.country);
+  if (f.q) q = q.or(recitalMatchFilter(f.q, f.terms || []));
+  return q;
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Escaped excerpt of a recital around the first searched word, the searched words marked. */
+function recitalExcerpt(text, words) {
+  const t = String(text || "");
+  const tokens = [...new Set(words.flatMap((w) => [w.trim(), ...w.split(/\s+/)]).map((w) => w.trim()).filter((w) => w.length >= 3))]
+    .sort((a, b) => b.length - a.length);
+  const lower = t.toLowerCase();
+  const hits = tokens.map((w) => lower.indexOf(w.toLowerCase())).filter((i) => i >= 0);
+  const at = hits.length ? Math.min(...hits) : 0;
+  const start = t.length <= RECITAL_EXCERPT ? 0 : Math.max(0, Math.min(at - 120, t.length - RECITAL_EXCERPT));
+  const cut = t.slice(start, start + RECITAL_EXCERPT);
+  let html = esc(cut);
+  if (tokens.length) {
+    const re = new RegExp(`(${tokens.map((w) => escapeRegExp(esc(w))).join("|")})`, "gi");
+    html = html.replace(re, "<mark>$1</mark>");
+  }
+  return `${start > 0 ? "… " : ""}${html}${start + RECITAL_EXCERPT < t.length ? " …" : ""}`;
+}
+
+/** Recitals of the Commission recommendations, with the text search (view=recitals of the CSRs tab). */
+async function renderRecitalList(p, seq, { title, country }) {
+  const page = pageOf(p);
+  const f = { country, q: p.get("q") || "", exact: p.get("exact") === "1" };
+  const rel = await searchTerms(f.q, f.exact);
+  if (stale(seq)) return;
+  f.terms = rel.terms;
+  const res = await fetchPage((opts) => recitalsQuery(f, opts), page);
+  if (stale(seq)) return;
+  if (res.redirectPage) return redirectToPage("csrs", p, res.redirectPage);
+  const intro = `<p class="muted">${esc(RECITALS_ABOUT)}</p>`;
+  const modes = csrsModeLinks("recitals", f);
+  if (res.error) {
+    if (relationMissing(res)) {
+      view(`${title}${intro}${modes}<p class="empty">Recitals are not available yet.</p>`);
+      return;
+    }
+    return showError(res.error, "Could not load the recitals");
+  }
+  const { data, count } = res;
+  const form = filterForm("csrs",
+    `<input type="hidden" name="view" value="recitals">` + (f.exact ? `<input type="hidden" name="exact" value="1">` : "")
+    + textField("q", "Search recital text", f.q, "e.g. water, wildfires, housing")
+    + countriesSelect(f.country));
+  const words = f.q ? [f.q, ...f.terms] : [];
+  const rows = data.map((r) => [
+    td(hashLink("csrdoc", r.doc_id || docIdOf(r.country, r.year), `${countryName(r.country)} ${r.year}`), "nowrap"),
+    td(`(${esc(r.number)})`, "num"),
+    td(`<span class="recital-text">${recitalExcerpt(r.text, words)}</span>`, "title-cell"),
+    td(r.source_url ? `<a href="${esc(r.source_url)}" target="_blank" rel="noopener">PDF</a>` : "—", "nowrap"),
+  ]);
+  view(`${title}${intro}${form}${relatedNotice("csrs", p, f.q, rel)}${modes}${pager("csrs", p, page, count)}`
+    + table(["Document", "Recital", "Text", "Source"], rows, "No recital matches these filters.")
+    + (data.length ? pager("csrs", p, page, count) : ""));
+  bindFilters();
+}
+
+/** All recitals of a document, in order; [] when there are none or the table is not available. */
+async function docRecitals(docId) {
+  try {
+    const res = await sb.from("csr_recitals").select("number,text").eq("doc_id", docId).order("number");
+    return res.error ? [] : res.data || [];
+  } catch {
+    return [];
+  }
+}
+
+/** Collapsed list of a document's recitals (the Commission's analysis before its recommendations). */
+function recitalsCard(recitals) {
+  if (!recitals?.length) return "";
+  const items = recitals.map((r) => `<li value="${esc(r.number)}"><p class="prose">${esc(r.text)}</p></li>`).join("");
+  return `<div class="card"><details class="recitals"><summary><h3 class="section-label">Recitals (${fmtN(recitals.length)}): `
+    + `the Commission's analysis</h3></summary><p class="muted small">${esc(RECITALS_ABOUT)} `
+    + `<a href="${esc(hrefFor("csrs", { view: "recitals" }))}">Search all recitals</a></p>`
+    + `<ol class="recital-list">${items}</ol></details></div>`;
+}
+
+/** Number of recitals matching a recommendation search (country filter kept); null when unknown or not applicable. */
+async function recitalMatchCount(f) {
+  if (!f.q || (f.year && f.year !== RECITALS_YEAR)) return null;
+  try {
+    let q = sb.from("csr_recitals").select("recital_id", { count: "exact", head: true }).or(recitalMatchFilter(f.q, f.terms || []));
+    if (f.country) q = q.eq("country", f.country);
+    const res = await q;
+    return res.error ? null : res.count ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function docCard(d, related = null) {
@@ -898,8 +1014,13 @@ function docCard(d, related = null) {
 }
 
 async function renderCsrs(p, seq) {
-  const recsMode = p.get("view") === "recs" || Boolean((p.get("q") || "").trim());
+  const recitalsMode = p.get("view") === "recitals";
+  const recsMode = !recitalsMode && (p.get("view") === "recs" || Boolean((p.get("q") || "").trim()));
   const country = pick(p.get("country"), COUNTRIES);
+  if (recitalsMode) {
+    const title = `<div class="title-row">${heading("Country-specific recommendations")}${infoButton("csrlevels", "About the three levels")}</div>`;
+    return renderRecitalList(p, seq, { title, country });
+  }
   const yrs = await fetchCsrYears();
   if (stale(seq)) return;
   if (yrs.error) return showError(yrs.error, "Could not load CSRs");
@@ -926,7 +1047,7 @@ async function renderCsrs(p, seq) {
     .map((y) => `<a href="${esc(hrefFor("csrs", { year: y, country }))}">${y}</a>`).join(" · ") : "";
   const head = `<h3 class="docs-head">${year} · ${fmtN(docs.length)} document${docs.length === 1 ? "" : "s"}`
     + ` · ${fmtN(nRecs)} recommendation${nRecs === 1 ? "" : "s"}${docs.length ? ` ${stageBadge(commission ? COMMISSION_STAGE : COUNCIL_STAGE)}` : ""}</h3>`;
-  view(`${title}${csrsIntro()}${form}${csrsModeLinks(false, { year: year === years[0] ? "" : year, country })}`
+  view(`${title}${csrsIntro()}${form}${csrsModeLinks("docs", { year: year === years[0] ? "" : year, country })}`
     + (res.derived ? `<p class="muted small" role="note">Documents rebuilt from the recommendations (document table not available yet).</p>` : "")
     + head + (commission ? `<p class="notice-few" role="note">${esc(`${year}: ${COMMISSION_NOTE}`)}</p>` : "")
     + (docs.length ? `<ul class="doc-grid">${docs.map((d) => docCard(d, related)).join("")}</ul>`
@@ -944,11 +1065,14 @@ async function renderCsrList(p, seq, { title, years, country, year }) {
   const rel = await searchTerms(f.q, f.exact);
   if (stale(seq)) return;
   f.terms = rel.terms;
-  const res = await fetchPage((opts) => csrsQuery(f, opts), page);
+  const [res, nRecitals] = await Promise.all([fetchPage((opts) => csrsQuery(f, opts), page), recitalMatchCount(f)]);
   if (stale(seq)) return;
   if (res.redirectPage) return redirectToPage("csrs", p, res.redirectPage);
   const { data, error, count } = res;
   if (error) return showError(error, "Could not load CSRs");
+  const recitalsNote = nRecitals ? `<p class="related-notice small">${fmtN(nRecitals)} recital${nRecitals === 1 ? "" : "s"} of the `
+    + `${RECITALS_YEAR} Commission documents also mention${nRecitals === 1 ? "s" : ""} this (the Commission's analysis before the recommendations). `
+    + `<a href="${esc(hrefFor("csrs", { view: "recitals", country: f.country, q: f.q, exact: f.exact ? "1" : "" }))}">Show the recitals</a></p>` : "";
 
   const form = filterForm("csrs",
     `<input type="hidden" name="view" value="recs">` + (f.exact ? `<input type="hidden" name="exact" value="1">` : "")
@@ -963,7 +1087,7 @@ async function renderCsrList(p, seq, { title, years, country, year }) {
     td(r.assessment ? `${esc(r.assessment)}${r.assessment_year ? ` <span class="muted">(${esc(r.assessment_year)})</span>` : ""}`
       : `<span class="muted">not yet assessed</span>`),
   ]);
-  view(`${title}${csrsIntro()}${form}${relatedNotice("csrs", p, f.q, rel)}${csrsModeLinks(true, f)}${pager("csrs", p, page, count)}`
+  view(`${title}${csrsIntro()}${form}${relatedNotice("csrs", p, f.q, rel)}${recitalsNote}${csrsModeLinks("recs", f)}${pager("csrs", p, page, count)}`
     + table(["Recommendation", "Document", "No.", "Title", "Latest assessment"], rows, "No recommendation matches these filters.")
     + (data.length ? pager("csrs", p, page, count) : ""));
   bindFilters();
@@ -1032,7 +1156,8 @@ async function renderCsrDoc(id, seq) {
   const year = num(d.year);
   const commission = isCommission(d.stage);
   const keys = partLinkKeys(arr(d.csrs).flatMap((c) => arr(c.csr_parts)));
-  const [, related] = await Promise.all([keys.length ? loadReviews(keys) : null, year >= RELATED_YEAR ? loadRelated() : null]);
+  const [, related, recitals] = await Promise.all([keys.length ? loadReviews(keys) : null,
+    year >= RELATED_YEAR ? loadRelated() : null, year === RECITALS_YEAR ? docRecitals(d.doc_id) : []]);
   if (stale(seq)) return;
   const recs = [...arr(d.csrs)].sort(csrNumber);
   const s = docStats(d);
@@ -1073,7 +1198,7 @@ async function renderCsrDoc(id, seq) {
     + `<dl class="facts">${facts}</dl>`
     + (commission ? `<p class="notice-few" role="note">${esc(COMMISSION_NOTE)}</p>` : "")
     + (d.derived ? `<p class="muted small" role="note">Document rebuilt from its recommendations (document table not available yet).</p>` : "")
-    + `${lineage}</div>` + relatedIntro
+    + `${lineage}</div>` + relatedIntro + recitalsCard(recitals)
     + (recBlocks || `<div class="card"><p class="empty">No recommendation in this document.</p></div>`));
 }
 
@@ -2845,7 +2970,13 @@ const GUIDE = [
     <li><strong>Document page</strong>: the numbered recommendations with their sub-parts, assessments and linked projects, and a
       link to the lineage network.</li>
     <li><strong>All recommendations</strong>: one row per recommendation, with the text search, country and year filters
-      (a text search always opens this list). Each row links to its recommendation page and to its document.</li>
+      (a text search always opens this list). Each row links to its recommendation page and to its document. When 2026 recitals
+      also match the search, a line above the list says how many and opens them.</li>
+    <li><strong>Recitals 2026</strong>: the numbered paragraphs ("Whereas: (1)…") that precede the recommendations in each 2026
+      Commission document, with the Commission's analysis of the country's challenges. Search them by word (with related terms,
+      like the other searches) and by country; each row shows the passage that matches and links to the document and its PDF.
+      They cover topics that the recommendations only mention briefly, such as water or wildfires. The 2026 document pages list
+      their recitals in a collapsed section, and the assistant can search them too.</li>
     <li><strong>Recommendation page</strong>: the full text, the sub-parts, their assessment, the linked projects, the document it
       belongs to (breadcrumb at the top) and a link to the lineage network.</li>
     <li><strong>2026: related past projects</strong>: each 2026 country card counts the past projects suggested by AI for its

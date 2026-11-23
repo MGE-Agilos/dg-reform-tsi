@@ -14,6 +14,8 @@ Texte absent pour des pays : `fetch_missing` telecharge leurs PDF anglais depuis
 poli, extraction pdfplumber des livrables) et `merge_texts` les ajoute a la copie locale.
 """
 
+from __future__ import annotations
+
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -53,6 +55,7 @@ class DocumentParse:
 class CommissionParse:
     csrs: list[Csr] = field(default_factory=list)
     documents: list[DocumentParse] = field(default_factory=list)
+    recitals: list[Recital] = field(default_factory=list)
 
     @property
     def missing_countries(self) -> list[str]:
@@ -61,7 +64,7 @@ class CommissionParse:
         return sorted(c for c in COUNTRIES if c not in found)
 
     def report(self) -> dict[str, Any]:
-        return {"documents": len(self.documents), "recommendations": len(self.csrs),
+        return {"documents": len(self.documents), "recommendations": len(self.csrs), "recitals": len(self.recitals),
                 "by_country": {d.country or d.document: d.n_recommendations for d in self.documents},
                 "alerts": [f"{d.country or d.document}: {d.problem}" for d in self.documents if d.problem],
                 "missing_countries": self.missing_countries}
@@ -84,20 +87,112 @@ def document_country(document: str, url: str, text: str) -> str | None:
     return None
 
 
-def _clean_page(page: str, refs: set[str]) -> list[str]:
+def _clean_page(page: str, refs: set[str], numbered: re.Pattern[str] = _NUMBERED) -> list[str]:
     """Lignes d'une page sans pied de page (« EN EN », numero) ni notes de bas de page finales.
 
     Note de bas de page : bloc final qui commence par « <n> <Majuscule> », n appele « (n) » dans le document, sans
-    paragraphe numerote apres lui sur la page."""
+    paragraphe numerote (`numbered`) apres lui sur la page."""
     lines = [line.strip() for line in page.split("\n")]
     while lines and (not lines[-1] or _FOOTER.match(lines[-1])):
         lines.pop()
     for i, line in enumerate(lines):
         note = _FOOTNOTE.match(line)
-        if note and note.group(1) in refs and not any(_NUMBERED.match(x) for x in lines[i:]):
+        if note and note.group(1) in refs and not any(numbered.match(x) for x in lines[i:]):
             lines = lines[:i]
             break
     return [line for line in lines if line]
+
+
+# Considerants (recitals) : paragraphes « (1) ... », « (2) ... » entre « Whereas: » et « HEREBY RECOMMENDS ». Ils
+# portent l'analyse de la Commission (defis, contexte) dont les recommandations sont la conclusion.
+_WHEREAS = re.compile(r"^Whereas:[ \t]*$", re.MULTILINE)
+_RECITAL = re.compile(r"^\((\d{1,3})\)\s+([A-Z0-9‘“'\"].*)$")
+
+
+@dataclass
+class Recital:
+    country: str
+    year: int
+    number: int
+    text: str
+    source_url: str
+
+    @property
+    def recital_id(self) -> str:
+        return f"rec-{self.country}-{self.year}-{self.number}"
+
+
+_PAREN_NOTE = re.compile(r"^\((\d{1,3})\)\s")
+_BODY_WIDTH = 95  # caracteres : les notes (petite police) font des lignes plus longues que le corps du texte
+_LOOSE_NOTE = re.compile(r"^(\d{1,3}) \S")
+
+
+def _drop_note_area(lines: list[str], refs: set[str]) -> list[str]:
+    """Zone des notes en bas de page restee apres _clean_page : suite d'une note commencee page precedente (ligne plus
+    large que le corps, sans numero) ou note « n <texte> » qui ne commence pas par une majuscule (« 17 27% ... »,
+    « 15 ‘Businesses... »). Coupe a la premiere de ces lignes si aucun considerant ne la suit sur la page."""
+    for i, line in enumerate(lines):
+        if _RECITAL.match(line) or any(_RECITAL.match(x) for x in lines[i + 1:]):
+            continue
+        note = _LOOSE_NOTE.match(line)
+        if len(line) > _BODY_WIDTH or (note and note.group(1) in refs):
+            return lines[:i]
+    return lines
+
+
+def _drop_paren_notes(lines: list[str], seen: int) -> tuple[list[str], int]:
+    """Notes de bas de page numerotees « (n) ... » (certains documents, comme l'Irlande) : bloc final de la page dont
+    la premiere ligne « (k) » n'est pas le considerant attendu, est appelee plus haut dans la meme page
+    (« ... Report (k) on ... ») et dont les lignes « (m) » suivent la suite k, k+1...
+
+    `seen` : considerants deja ouverts avant la page ; renvoie les lignes gardees et le nouveau compte."""
+    for i, line in enumerate(lines):
+        note = _RECITAL.match(line)
+        if note and int(note.group(1)) == seen + 1:
+            seen += 1
+            continue
+        note = _PAREN_NOTE.match(line)
+        if not note or not i:
+            continue
+        k = int(note.group(1))
+        if f"({k})" not in " ".join(lines[:i]):
+            continue
+        nums = [int(m.group(1)) for x in lines[i:] if (m := _PAREN_NOTE.match(x))]
+        if nums == list(range(k, k + len(nums))):
+            return lines[:i], seen
+    return lines, seen
+
+
+def recitals_text(text: str) -> str | None:
+    """Partie « Whereas: » -> « HEREBY RECOMMENDS », pieds de page et notes retires ; None si absente."""
+    start, end = _WHEREAS.search(text), _RECOMMENDS.search(text)
+    if not start or not end or end.start() <= start.end():
+        return None
+    rest = text[start.end():end.start()]
+    refs = set(_REF.findall(text))
+    paren_notes = not re.search(r"^\d{1,3} [A-Z]", text, re.MULTILINE)  # aucune note « n Texte » : notes « (n) »
+    pages = [_clean_page(page, refs, _RECITAL) for page in _PAGE.split(rest)]
+    if paren_notes:  # d'abord les notes « (n) », qui ressemblent a des considerants
+        seen, kept = 0, []
+        for lines in pages:
+            lines, seen = _drop_paren_notes(lines, seen)
+            kept.append(lines)
+        pages = kept
+    pages = [_drop_note_area(lines, refs) for lines in pages]
+    return "\n".join(line for lines in pages for line in lines)
+
+
+def split_recitals(section: str) -> list[tuple[int, str]]:
+    """(numero, texte) des considerants (1), (2)... dans l'ordre ; un « (n) » hors suite (renvoi a une note ou a une
+    recommandation en debut de ligne) reste du texte."""
+    out: list[tuple[int, list[str]]] = []
+    for line in section.split("\n"):
+        match = _RECITAL.match(line)
+        if match and int(match.group(1)) == len(out) + 1:
+            out.append((len(out) + 1, [match.group(2)]))
+        elif out:
+            out[-1][1].append(line)
+    return [(n, _join(lines)) for n, lines in out]
 
 
 def recommendations_text(text: str) -> str | None:
@@ -167,6 +262,8 @@ def parse_text(text: str, year: int = YEAR) -> CommissionParse:
         for number, rec_text in recs:
             part = Part(f"csr-{country}-{year}-{number}", rec_text, [], [])
             result.csrs.append(Csr(country, year, number, part, [], stage=COMMISSION_STAGE, source_url=url))
+        whereas = recitals_text(body)
+        result.recitals.extend(Recital(country, year, n, t, url) for n, t in split_recitals(whereas or ""))
     return result
 
 
