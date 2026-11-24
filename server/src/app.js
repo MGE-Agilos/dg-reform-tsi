@@ -18,8 +18,10 @@ const SESSION_COOKIE = "tsi_session";
 const PENDING_COOKIE = "tsi_signin";
 const BODY_MAX = 2 * 1024 * 1024;
 const REST_METHODS = new Set(["GET", "HEAD", "POST", "PATCH", "DELETE"]);
-// Request headers forwarded to PostgREST (everything else, cookies included, is dropped).
-const REST_IN = ["authorization", "content-type", "accept", "prefer", "range", "range-unit", "accept-profile", "content-profile"];
+// Request headers forwarded to PostgREST (everything else, cookies included, is dropped). Not Accept-Profile /
+// Content-Profile: the page always asks for the schema "public", while PostgREST serves the one schema of its
+// db-schemas setting (deploy/onprem/README.md, step 5), which may have another name.
+const REST_IN = ["authorization", "content-type", "accept", "prefer", "range", "range-unit"];
 const REST_OUT = ["content-type", "content-range", "preference-applied", "location"];
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
   ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".ico": "image/x-icon",

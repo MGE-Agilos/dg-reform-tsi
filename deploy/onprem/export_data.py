@@ -2,7 +2,7 @@
 PostgreSQL (deploy/onprem/README.md, "Transfer of the current data").
 
 Run by Agilos, from the root of the repository:
-    python deploy/onprem/export_data.py --out tsi-explorer-data.sql
+    python deploy/onprem/export_data.py --out tsi-explorer-data.sql [--schema tsi_explorer]
 Reads SUPABASE_URL and SUPABASE_SERVICE_KEY from the environment or from .env (never from a file in Git).
 
 The SQL file is loaded on the target database, after deploy/onprem/sql/000_compat.sql and supabase/migrations/001
@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import sys
 import urllib.request
@@ -75,7 +76,7 @@ def fetch(url: str, key: str, table: str, order: str) -> list[dict]:
             return rows
 
 
-def inserts(table: str, rows: list[dict], skip: tuple[str, ...]) -> list[str]:
+def inserts(table: str, rows: list[dict], skip: tuple[str, ...], schema: str = "public") -> list[str]:
     cols = [c for c in rows[0] if c not in skip]
     col_list = ", ".join(f'"{c}"' for c in cols)
     overriding = " overriding system value" if table in IDENTITY else ""
@@ -85,15 +86,19 @@ def inserts(table: str, rows: list[dict], skip: tuple[str, ...]) -> list[str]:
         tag = "tsi"
         while f"${tag}$" in payload:
             tag = "tsi_" + secrets.token_hex(4)
-        out.append(f"insert into public.{table} ({col_list}){overriding}\n  select {col_list} from "
-                   f"json_populate_recordset(null::public.{table}, ${tag}${payload}${tag}$);")
+        out.append(f"insert into {schema}.{table} ({col_list}){overriding}\n  select {col_list} from "
+                   f"json_populate_recordset(null::{schema}.{table}, ${tag}${payload}${tag}$);")
     return out
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", required=True, help="SQL file to write (not in the repository)")
+    parser.add_argument("--schema", default="public", help="schema of the tables on the target database (default public)")
     args = parser.parse_args()
+    if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", args.schema):
+        sys.exit("The schema name must be lower case letters, digits and _")
+    sc = args.schema
     url, key = settings()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     names = [t for t, _, _ in TABLES]
@@ -104,19 +109,19 @@ def main() -> None:
                 "--   psql -v ON_ERROR_STOP=1 -f <this file>\n"
                 "-- Replaces all the explorer's rows. Contains personal data (e-mail addresses): keep it private.\n\n"
                 "\\set ON_ERROR_STOP on\nbegin;\n"
-                f"truncate table {', '.join('public.' + n for n in names)};\n\n")
+                f"truncate table {', '.join(f'{sc}.{n}' for n in names)};\n\n")
         for table, order, skip in TABLES:
             rows = fetch(url, key, table, order)
             counts[table] = len(rows)
             print(f"{table:28} {len(rows):>7} rows", file=sys.stderr)
             if rows:
-                f.write(f"-- {table}: {len(rows)} rows\n" + "\n".join(inserts(table, rows, skip)) + "\n\n")
+                f.write(f"-- {table}: {len(rows)} rows\n" + "\n".join(inserts(table, rows, skip, sc)) + "\n\n")
         for table in sorted(IDENTITY):
-            f.write(f"select setval(pg_get_serial_sequence('public.{table}', 'id'), "
-                    f"coalesce(max(id), 1), max(id) is not null) from public.{table};\n")
-        f.write("commit;\n" + "".join(f"analyze public.{n};\n" for n in names) + "\n-- Row counts after loading (expected values in the comments).\n")
+            f.write(f"select setval(pg_get_serial_sequence('{sc}.{table}', 'id'), "
+                    f"coalesce(max(id), 1), max(id) is not null) from {sc}.{table};\n")
+        f.write("commit;\n" + "".join(f"analyze {sc}.{n};\n" for n in names) + "\n-- Row counts after loading (expected values in the comments).\n")
         f.write("\nunion all\n".join(f"select '{t}' as table_name, count(*) as rows, {counts[t]} as expected "
-                                     f"from public.{t}" for t in names) + ";\n")
+                                     f"from {sc}.{t}" for t in names) + ";\n")
     print(f"written {args.out}: {sum(counts.values())} rows in {len(names)} tables", file=sys.stderr)
 
 

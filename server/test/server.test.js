@@ -128,7 +128,8 @@ test("data requests: forwarded to PostgREST with allowed headers only (no cookie
   const s = await serve({}, { fetchImpl: pg.impl });
   try {
     const res = await fetch(`${s.base}/api/rest/v1/projects?select=project_id&limit=1`, {
-      headers: { Authorization: "Bearer abc", apikey: "server", cookie: "tsi_session=x", Prefer: "count=exact" } });
+      headers: { Authorization: "Bearer abc", apikey: "server", cookie: "tsi_session=x", Prefer: "count=exact",
+        "Accept-Profile": "public" } }); // schema chosen by PostgREST's db-schemas, not by the page
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("content-range"), "0-0/1");
     assert.equal(res.headers.get("set-cookie"), null);

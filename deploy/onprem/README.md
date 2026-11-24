@@ -76,6 +76,8 @@ recommendations, recitals, country reports).
 | Sign-in | OpenID Connect with your identity provider (for example EU Login or Microsoft Entra ID): users sign in with their usual account. | Windows integrated sign-in (Kerberos) through nginx; heavier on Linux. |
 | Authorised users | A list of e-mail addresses in the database, managed by the explorer's administrators. | An identity-provider group. |
 | Database role names | `anon`, `authenticated`, `service_role` (the names used by the schema). | Other names, if they clash with roles already in your PostgreSQL cluster (roles are cluster-wide). |
+| Schema of the tables | `public`. | Another schema, for example `tsi_explorer`: adapted copies of the scripts ([step 4](#step-4--install-the-database-schema)). |
+| `service_role` attribute `BYPASSRLS` | Given by a superuser. | Without a superuser: one rule per table gives the same access ([step 4](#step-4--install-the-database-schema), `900_service_role.sql`). |
 
 ## Values used in this procedure
 
@@ -86,6 +88,7 @@ Replace them with yours.
 | `<dns>` | `tsi-explorer.example.eu` | DNS name of the site |
 | `<db-host>` | `pg01.example.eu` | PostgreSQL server |
 | `<db-owner>` | `tsi_owner` | owner account of the database |
+| `<schema>` | `public` or `tsi_explorer` | schema of the explorer's tables |
 | `<release>` | `v2026.12.0` | release tag of the code |
 
 Secrets (database passwords, token secret, GPT@EC key, OpenID Connect client secret) are only written in files
@@ -133,6 +136,13 @@ create database tsi_explorer owner tsi_owner;
 Allow the application server in `pg_hba.conf` for `tsi_authenticator` and `tsi_owner` on `tsi_explorer`
 (`hostssl` preferred), then reload PostgreSQL.
 
+`bypassrls` needs a superuser. On a managed PostgreSQL without one, create `service_role` without it
+(`create role service_role nologin;`) and run `900_service_role.sql` at step 4: it gives the same access. If the
+attribute is added later (`alter role service_role bypassrls;`), nothing else changes.
+
+If the tables must be in a schema other than `public` (for example `tsi_explorer`), create it now, owned by the
+owner account: `create schema tsi_explorer authorization tsi_owner;`, then follow the variant of step 4.
+
 ## Step 3 — Get the code
 
 As `tsi` on the application server:
@@ -159,8 +169,24 @@ psql -v ON_ERROR_STOP=1 -f deploy/onprem/sql/000_compat.sql         # see below
 for f in supabase/migrations/0*.sql; do
   echo "== $f"; psql -v ON_ERROR_STOP=1 -f "$f" || break
 done
+psql -v ON_ERROR_STOP=1 -f deploy/onprem/sql/900_service_role.sql   # only if service_role has no BYPASSRLS
 psql -c "notify pgrst, 'reload schema';"
 ```
+
+**Variant: schema other than `public`.** The scripts are written for `public`. Write adapted copies (only the
+schema references change; the script stops if it meets one it does not know), then run the copies instead:
+
+```bash
+python3 deploy/onprem/set_schema.py tsi_explorer --out ~/tsi-sql
+for f in ~/tsi-sql/0*.sql; do
+  echo "== $f"; psql -v ON_ERROR_STOP=1 -f "$f" || break
+done
+psql -v ON_ERROR_STOP=1 -f ~/tsi-sql/900_service_role.sql   # only if service_role has no BYPASSRLS
+psql -c "notify pgrst, 'reload schema';"
+```
+
+Do not replace `public` by hand: the grants also name the role `PUBLIC` (`revoke ... from public`), which must
+stay. In step 5, set `db-schemas` to the same schema.
 
 `000_compat.sql` provides, on a plain PostgreSQL, the few objects the schema expects from the cloud service: the
 `auth` schema with `auth.uid()`, `auth.jwt()` and `auth.role()` (read from the token claims that PostgREST sets
@@ -169,8 +195,12 @@ for each request) and an `auth.users` view of the signed-in user. The migrations
 Check:
 
 ```bash
-psql -c "select count(*) from information_schema.tables where table_schema = 'public';"   # 15 or more
+psql -c "select count(*) from information_schema.tables where table_schema = '<schema>';"   # 15 or more
+psql -c "select count(*) from pg_policies where schemaname = '<schema>' and policyname = 'service_role_all';"
+# 14 if 900_service_role.sql was run, 0 otherwise
 ```
+
+`900_service_role.sql` must be run again after every upgrade that adds tables (see [Operations](#operations)).
 
 ### Step 4b — Load the current data
 
@@ -184,6 +214,15 @@ As `tsi`, with the owner account (same `PG*` variables as above):
 ```bash
 psql -v ON_ERROR_STOP=1 -f tsi-explorer-data.sql
 ```
+
+With a schema other than `public`, adapt the file first and load the copy:
+
+```bash
+python3 deploy/onprem/set_schema.py tsi_explorer --out ~/tsi-sql --data tsi-explorer-data.sql
+psql -v ON_ERROR_STOP=1 -f ~/tsi-sql/tsi-explorer-data.sql
+```
+
+Do not use a plain search and replace on this file: the texts of some projects contain "public.", which must stay.
 
 It runs in one transaction (about 10 seconds): it empties the explorer's tables, loads every row, sets the id
 counters and ends with a table of row counts, where `rows` must equal `expected` on every line. It can be run
@@ -218,7 +257,7 @@ sudo chmod 600 /etc/tsi-explorer/jwt-secret /etc/tsi-explorer/session-secret
 
 ```ini
 db-uri = "postgres://tsi_authenticator:<authenticator-password>@<db-host>:5432/tsi_explorer?sslmode=require"
-db-schemas = "public"
+db-schemas = "<schema>"
 db-anon-role = "anon"
 server-host = "127.0.0.1"
 server-port = 3001
@@ -471,7 +510,8 @@ backed up with the server. `output/` and `.cache/` can be rebuilt by the update.
 ```bash
 cd /opt/tsi-explorer/app
 git fetch --tags && git checkout <new-release>
-# new migrations only, as listed in the release notes:
+# new migrations only, as listed in the release notes (schema other than public: from the copies of
+# set_schema.py, written again after the checkout); then 900_service_role.sql if service_role has no BYPASSRLS:
 psql -v ON_ERROR_STOP=1 -f supabase/migrations/0NN_<name>.sql && psql -c "notify pgrst, 'reload schema';"
 (cd server && npm ci --omit=dev)
 .venv/bin/pip install -e .
