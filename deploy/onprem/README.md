@@ -1,9 +1,11 @@
 # TSI × CSR Explorer — self-hosted installation (Linux)
 
 > **Status: first release, steps 1 to 9 ready and tested.** Database, data transfer, PostgREST, application service,
-> web page and users work as described (tested end to end on PostgreSQL 16, PostgREST 12.2.3 and Node.js 22).
-> Still **(planned)**: the assistant on GPT@EC and the automatic monthly data update (steps 10 and 11); the explorer
-> works without them in the meantime. Sign-in with your identity provider is tested at the installation.
+> web page, users and the assistant on GPT@EC work as described (tested end to end on PostgreSQL 16, PostgREST 12.2.3
+> and Node.js 22). The assistant is tested with a simulated gateway: check the real one with your key
+> (`npm run assistant-check`, step 6).
+> Still **(planned)**: the automatic monthly data update (steps 10 and 11); the explorer works without it in the
+> meantime. Sign-in with your identity provider is tested at the installation.
 >
 > The repository is public: no GitHub account is needed. The server only needs HTTPS access to `github.com`
 > (or download the code as a ZIP and copy it to the server).
@@ -42,7 +44,7 @@ Server preparation (to do first): [REQUIREMENTS.md](REQUIREMENTS.md).
 | Database schema (`deploy/onprem/sql/000_compat.sql`, then `supabase/migrations/001` to `010`) | Ready. Tested on PostgreSQL 16: schema, row-level security, search and dashboard functions. |
 | Transfer of the current data (SQL file provided by Agilos) | Ready. Tested: same rows and same content as the cloud database. |
 | Application service (`server/`): sign-in, data API, administration | Ready. Tested end to end with e-mail + password (`AUTH_MODE=password`) and with the test sign-in; OpenID Connect tested against a simulated identity provider only. |
-| Assistant on GPT@EC (questions, impact analyses, briefings, related search terms) | **(planned)**. Until then the page works without it (the assistant answers "not available yet"). |
+| Assistant on GPT@EC (questions, impact analyses, briefings, related search terms) | Ready, in the application service. Tested with a simulated gateway; check the real one with `npm run assistant-check` (step 6). Without `LLM_BASE_URL` the assistant answers "not available yet". |
 | Data load into a self-hosted database (`supabase-sync` to a local PostgREST) | **(planned)** |
 | Linux update script and service files (`deploy/onprem/`) | **(planned)** |
 | Export to Haystack Enterprise (`prod-export`, `deploy/prod/`) | Ready. |
@@ -294,9 +296,8 @@ curl -s http://127.0.0.1:3001/projects?limit=1     # [] or 401: PostgREST answer
 
 ## Step 6 — Install the application service (Node.js)
 
-The service is in `server/` of the repository (Node.js, one dependency: `openid-client`). It signs users in with
-your identity provider (OpenID Connect, authorization code with PKCE), keeps the session in an HttpOnly cookie,
-gives the page a token valid 15 minutes for its data requests and forwards them to PostgREST.
+The service is in `server/` of the repository (Node.js, two dependencies: `openid-client` and `undici`). It signs users in with your
+identity provider (OpenID Connect, authorization code with PKCE), keeps the session in an HttpOnly cookie, gives the page a token valid 15 minutes for its data requests and forwards them to PostgREST.
 
 As `tsi`:
 
@@ -326,11 +327,17 @@ OIDC_CLIENT_SECRET=<client secret>
 # OR, until the identity provider is ready: e-mail + one password per user (needs an https:// PUBLIC_URL)
 # AUTH_MODE=password
 
-# Assistant (planned): address of the assistant service once installed
-# ASSISTANT_URL=http://127.0.0.1:3002
+# Assistant on GPT@EC (leave LLM_BASE_URL out to run the explorer without assistant)
+LLM_BASE_URL=https://api.tech.ec.europa.eu/ecgpt/v1   # gateway address up to /v1
+LLM_API_KEY_FILE=/etc/tsi-explorer/llm-key           # file holding the GPT@EC key only (owner tsi, mode 600)
+LLM_MODEL=gpt-5.1                                    # a model with function calling
+# LLM_EXPAND_MODEL=                                  # model of the related search terms (default: LLM_MODEL)
+# LLM_REASONING=off                                  # if the gateway refuses the reasoning_effort parameter
 
-# Outbound proxy, if any
+# Outbound proxy, if any (used for GPT@EC only; the database stays direct)
 # HTTPS_PROXY=http://<proxy>:<port>
+# NO_PROXY=localhost,127.0.0.1
+# NODE_EXTRA_CA_CERTS=/etc/pki/tls/certs/proxy-ca.pem   # if the proxy inspects HTTPS with its own certificate
 ```
 
 `/etc/systemd/system/tsi-explorer.service`:
@@ -345,7 +352,7 @@ Wants=network-online.target
 User=tsi
 WorkingDirectory=/opt/tsi-explorer/app/server
 EnvironmentFile=/etc/tsi-explorer/server.env
-ExecStart=/usr/bin/node index.js
+ExecStart=/usr/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning index.js
 Restart=always
 RestartSec=5
 
@@ -356,8 +363,36 @@ WantedBy=multi-user.target
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now tsi-explorer
-curl -s http://127.0.0.1:3000/api/health      # {"ok":true,"database":true,"assistant":false,"auth":"oidc"}
+curl -s http://127.0.0.1:3000/api/health      # {"ok":true,"database":true,"assistant":true,"auth":"oidc"}
 ```
+
+Node 22.6 or later: `--experimental-strip-types` lets Node read the assistant's TypeScript file without
+compiling it. `"assistant":false` means that `LLM_BASE_URL` is not set.
+
+Notes on the assistant:
+
+- Only the calls to the gateway use `HTTPS_PROXY` / `HTTP_PROXY` (`NO_PROXY` is honoured). The calls to PostgREST
+  stay direct. If the proxy re-signs HTTPS traffic, give its CA certificate in `NODE_EXTRA_CA_CERTS`.
+- The service refuses to start if `POSTGREST_URL` is under `LLM_BASE_URL`.
+- Only signed-in users can use the assistant (otherwise `401`).
+- The related search terms wait for the gateway for 9 seconds at most (the page gives up after 10 seconds); the
+  search then runs without terms. If the default model is slow, put a small, fast model in `LLM_EXPAND_MODEL`.
+  The briefing waits up to 120 seconds.
+- The impact analysis on GPT@EC uses the explorer's data only (the project, its linked CSRs and assessments, the
+  recitals and the country reports). It says that no web search was made and does not give a high confidence.
+
+Check the gateway with the key, before the users (one call with a tool, one in JSON mode):
+
+```bash
+cd /opt/tsi-explorer/app/server
+set -a; . /etc/tsi-explorer/server.env; set +a
+npm run assistant-check
+```
+
+The first line shows the gateway address (without credentials), the model, whether `reasoning_effort` is sent, and
+the proxy settings. Then expect two `OK` lines. A `FAIL` line gives the gateway's HTTP status and message; if it is
+about `reasoning_effort`, set `LLM_REASONING=off`. Exit code: `0` all `OK`, `1` a call failed, `2` the settings are
+wrong or missing.
 
 ### Sign-in with e-mail and password (`AUTH_MODE=password`)
 
@@ -391,7 +426,9 @@ application service (`/api` on the same site) instead of the cloud service:
 sudo cp /opt/tsi-explorer/app/deploy/onprem/config.js /var/www/tsi-explorer/config.js
 ```
 
-The page holds no key and no secret: it signs in through the application service.
+This `config.js` also sets `AI_NAME` (the page names "GPT@EC, European Commission") and `AI_WEB_SEARCH = false`
+(the page no longer mentions web search). The page holds no key and no secret: it signs in through the application
+service.
 
 ## Step 8 — Configure nginx
 
@@ -530,6 +567,7 @@ As `tsi`, `crontab -e`:
 | **Projects** tab: search `wildfire` | results, with related terms |
 | **CSRs** tab: views *Recitals 2026* and *Country reports 2026* | results for `water` |
 | Assistant: "Which projects support energy efficiency in Romania?" | an answer citing projects |
+| **Impact analysis** of a project | a report with a score, citing CSRs or country reports, saying that no web search was made |
 | **Admin** menu (administrator) | user list and usage statistics |
 
 ## Operations
@@ -545,7 +583,7 @@ git fetch --tags && git checkout <new-release>
 # new migrations only, as listed in the release notes (schema other than public: from the copies of
 # set_schema.py, written again after the checkout); then 900_service_role.sql if service_role has no BYPASSRLS:
 psql -v ON_ERROR_STOP=1 -f supabase/migrations/0NN_<name>.sql && psql -c "notify pgrst, 'reload schema';"
-(cd server && npm ci --omit=dev)
+(cd server && npm ci --omit=dev)     # also installs undici
 .venv/bin/pip install -e .
 ```
 
@@ -556,7 +594,7 @@ and `sudo systemctl restart tsi-explorer`.
 
 | What | Where |
 |---|---|
-| Application service | `journalctl -u tsi-explorer` |
+| Application service and assistant (sign-ins, errors, gateway errors with their status; never the content of a question) | `journalctl -u tsi-explorer` |
 | PostgREST | `journalctl -u tsi-postgrest` |
 | nginx | `/var/log/nginx/` |
 | Data update | `/opt/tsi-explorer/app/logs/` |
