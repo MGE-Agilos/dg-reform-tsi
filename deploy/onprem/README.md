@@ -4,8 +4,9 @@
 > web page, users and the assistant on GPT@EC work as described (tested end to end on PostgreSQL 16, PostgREST 12.2.3
 > and Node.js 22). The assistant is tested with a simulated gateway: check the real one with your key
 > (`npm run assistant-check`, step 6).
-> Still **(planned)**: the automatic monthly data update (steps 10 and 11); the explorer works without it in the
-> meantime. Sign-in with your identity provider is tested at the installation.
+> The monthly data update (steps 10 and 11: `update.sh`, `db-sync`, updater container for Docker or Podman) is
+> ready; it was tested against PostgreSQL 16 without BYPASSRLS, and the container image is built at the installation.
+> Sign-in with your identity provider is tested at the installation.
 >
 > The repository is public: no GitHub account is needed. The server only needs HTTPS access to `github.com`
 > (or download the code as a ZIP and copy it to the server).
@@ -45,8 +46,8 @@ Server preparation (to do first): [REQUIREMENTS.md](REQUIREMENTS.md).
 | Transfer of the current data (SQL file provided by Agilos) | Ready. Tested: same rows and same content as the cloud database. |
 | Application service (`server/`): sign-in, data API, administration | Ready. Tested end to end with e-mail + password (`AUTH_MODE=password`) and with the test sign-in; OpenID Connect tested against a simulated identity provider only. |
 | Assistant on GPT@EC (questions, impact analyses, briefings, related search terms) | Ready, in the application service. Tested with a simulated gateway; check the real one with `npm run assistant-check` (step 6). Without `LLM_BASE_URL` the assistant answers "not available yet". |
-| Data load into a self-hosted database (`supabase-sync` to a local PostgREST) | **(planned)** |
-| Linux update script and service files (`deploy/onprem/`) | **(planned)** |
+| Data load into the database (`python -m tsi_agent db-sync`: direct connection, one transaction) | Ready. Tested on PostgreSQL 16 (schema `public` and another schema, `service_role` without BYPASSRLS): same rows as the cloud database, users' data kept, nothing changed when a load fails. |
+| Monthly update (`deploy/onprem/update.sh`, updater container `deploy/onprem/docker/`) | Ready. Script tested (steps, errors, lock). The container image is built on your server (Docker or Podman), not at Agilos. |
 | Export to Haystack Enterprise (`prod-export`, `deploy/prod/`) | Ready. |
 
 ## Architecture
@@ -55,7 +56,7 @@ Server preparation (to do first): [REQUIREMENTS.md](REQUIREMENTS.md).
  Users' browsers ──HTTPS 443──▶ Linux application server ──TCP 5432──▶ PostgreSQL server (tsi_explorer)
                                  │  nginx: web page (static files), /api ──▶ application service (Node.js, 127.0.0.1:3000)
                                  │  application service ──▶ PostgREST (127.0.0.1:3001) ──▶ database
-                                 │  monthly data update (Python, cron) ──▶ PostgREST ──▶ database
+                                 │  monthly data update (Python, cron or container) ──TCP 5432──▶ database
                                  └──HTTPS 443──▶ *.europa.eu (data sources), GPT@EC (AI model)
 ```
 
@@ -522,7 +523,8 @@ The same command helps when no administrator can sign in any more.
 ## Step 10 — First data load
 
 As `tsi`. The first load takes about 3 to 4 hours (polite download of the Commission's pages, at least 2 seconds
-between two requests); the monthly updates take a few minutes to half an hour.
+between two requests); the monthly updates take a few minutes to half an hour. With containers, see
+[the container variant](#variant-updater-container-docker-or-podman) of step 11 instead of the virtual environment.
 
 ```bash
 cd /opt/tsi-explorer/app
@@ -536,43 +538,120 @@ cp deploy/updater/settings.updater.yaml config/settings.yaml   # llm_provider: o
 
 ```ini
 OPENAI_API_KEY=<GPT@EC key>
-# Database load through the local PostgREST (planned settings)
-TSI_REST_URL=http://127.0.0.1:3001
-TSI_JWT_SECRET_FILE=/etc/tsi-explorer/jwt-secret
+TSI_DATABASE_URL=postgresql://<login>:<password>@<db-host>:5432/tsi_explorer?sslmode=require
+TSI_DB_SCHEMA=<schema>
+TSI_DB_ROLE=service_role
 ```
 
-Check the AI model, then run the steps in this order:
+- **`TSI_DATABASE_URL`**: the account PostgREST logs in with (its `db-uri`) is the simplest choice. A password with
+  special characters (`@ : / ? # % $`) is percent-encoded (`@` → `%40`, `$` → `%24`).
+- **`TSI_DB_ROLE=service_role`**: the load writes as `service_role`, which may write every row (BYPASSRLS, or the
+  rules of `900_service_role.sql`). The login account must be a member of that role; the DBA runs once, as the owner
+  or a superuser (in psql or a query tool):
+  ```sql
+  grant service_role to <login>;
+  ```
+  The `tsi_authenticator` account of step 2 already is. With the owner account, leave `TSI_DB_ROLE` empty.
+- `db-sync` never touches the users (`testers`, `user_passwords`), their reviews, the usage data (`page_views`) or
+  the impact analyses run from the page: it replaces the public data only, in **one transaction**. If anything fails,
+  the database keeps its previous content and the command says why (exit code 1).
+
+Check the AI model and the database, then run the steps in this order:
 
 ```bash
 .venv/bin/python -m tsi_agent llm-check                 # one short call to GPT@EC
+.venv/bin/python -m tsi_agent db-sync --dry-run         # tables present and writable; nothing written
 .venv/bin/python -m tsi_agent run --recheck-all         # projects (about 2 hours the first time)
 .venv/bin/python -m tsi_agent deliverables              # publications (about 1 hour the first time)
 .venv/bin/python -m tsi_agent csr-fetch                 # recommendations (ECFIN database)
-.venv/bin/python -m tsi_agent csr-build                 # recommendation files and 2026 recitals
-.venv/bin/python -m tsi_agent country-reports           # 2026 country reports
+.venv/bin/python -m tsi_agent csr-build --fetch-missing # recommendation files, Commission recommendations and recitals
+.venv/bin/python -m tsi_agent country-reports           # country reports
 .venv/bin/python -m tsi_agent csr-link                  # policy areas, then project -> recommendation links
 .venv/bin/python -m tsi_agent anomalies
-.venv/bin/python -m tsi_agent supabase-sync             # load into the database (planned: through TSI_REST_URL)
+.venv/bin/python -m tsi_agent db-sync                   # load into the database (one transaction)
 ```
 
 Each step can be run again: it resumes where it stopped and only processes what changed. Logs are in `logs/`.
+`db-sync --dry-run` prints the tables that are missing (wrong `TSI_DB_SCHEMA`, migrations not run) or not writable
+(role, grants, row-level security) and the rows it would load.
 
 If the database was loaded from Agilos's file (step 4b), the database is already complete; the update still needs
 its working files (`output/`) to know what is new. Agilos provides them with the data file (unpack them in
-`/opt/tsi-explorer/app/output/`), or run the steps above once: they rebuild the files and reload the same data.
+`/opt/tsi-explorer/app/output/`, or into the volume of the container), or run the steps above once: they rebuild the
+files and reload the same data.
+
+**Semester years.** Nothing has to be changed each year. The update takes the adopted recommendations up to the
+latest year of the ECFIN database; the Commission's recommendations and recitals of the current year as soon as
+the Commission publishes them (usually from May or June; before that, the previous year stays); the country report
+of the current year when the country page publishes it (the previous one is kept until then). The page shows the
+latest year found in the data. The assistant's instructions still describe the 2026 documents: they will be updated
+with the 2027 release.
 
 ## Step 11 — Monthly update
 
-**(planned)** `deploy/onprem/update.sh` runs the steps of step 10 in order (without `--recheck-all`), stops on
-errors that would publish incomplete data, and writes a summary in `logs/`. It is the Linux version of the
-Windows updater described in [deploy/updater/README.md](../updater/README.md).
+`deploy/onprem/update.sh` runs the steps of step 10 in order and ends with `db-sync`. It is the Linux version of the
+Windows updater described in [deploy/updater/README.md](../updater/README.md):
+
+```bash
+deploy/onprem/update.sh                      # incremental update
+deploy/onprem/update.sh --scheduled          # from cron: full check in January, April, July and October
+deploy/onprem/update.sh --recheck-all        # full check: every detail and publication page read again
+# other options: --skip-deliverables --skip-csr --detail-only --no-sync --prod-export --settings <file>
+```
+
+- Exit code `0` done; `1` warning (LLM quota, or a step to redo: `csr-fetch`, `country-reports`, `db-sync` after a
+  second attempt); `3` the site's sitemap could not be read (run again later); `2` stopped (configuration error, or
+  `csr-build`, `anomalies` failed): nothing is loaded into the database; `75` another update is running.
+- Warnings do not stop the update. A failed `db-sync` leaves the database as it was; the next run loads everything.
+- Each run writes `logs/update-YYYYMMDD-HHMM.log` with a summary (steps, new or updated projects and publications,
+  LLM calls and cost).
 
 As `tsi`, `crontab -e`:
 
 ```cron
 # First Sunday of the month, 02:00
-0 2 1-7 * * [ "$(date +\%u)" = 7 ] && /opt/tsi-explorer/app/deploy/onprem/update.sh >> /opt/tsi-explorer/app/logs/cron.log 2>&1
+0 2 1-7 * * [ "$(date +\%u)" = 7 ] && /opt/tsi-explorer/app/deploy/onprem/update.sh --scheduled >> /opt/tsi-explorer/app/logs/cron.log 2>&1
 ```
+
+### Variant: updater container (Docker or Podman)
+
+When the explorer runs in containers, the update runs in its own container, started by the host's cron only (never by
+`up`). Files: [docker/updater.Dockerfile](docker/updater.Dockerfile), [docker/compose.updater.yaml](docker/compose.updater.yaml)
+and [docker/updater.env.example](docker/updater.env.example). The examples use `podman-compose`; with Docker, replace
+it by `docker compose`.
+
+1. Settings, next to `compose.updater.yaml` (owner of the containers only, `chmod 600`): copy
+   `updater.env.example` to `updater.env` and fill in `OPENAI_API_KEY`, `TSI_DATABASE_URL` (same account and password
+   as PostgREST), `TSI_DB_SCHEMA`, `TSI_DB_ROLE` and the proxy (`HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` with the
+   internal hosts). One `NAME=value` per line, no quotes.
+2. Build the image (from the folder of `compose.updater.yaml`; `context` in that file points to the repository):
+   ```bash
+   podman-compose -f compose.updater.yaml build
+   ```
+3. Start from the current state rather than from nothing (otherwise the first run reads everything, about 3 hours):
+   put `tsi-output-state.zip` (Agilos's data file, or the latest `data-*` release of the repository) next to the
+   compose file, then
+   ```bash
+   podman-compose -f compose.updater.yaml run --rm -v "$PWD/tsi-output-state.zip:/tmp/state.zip:ro" \
+     --entrypoint python updater -m zipfile -e /tmp/state.zip /app/output
+   ```
+4. Check, then a first run:
+   ```bash
+   podman-compose -f compose.updater.yaml run --rm --entrypoint python updater -m tsi_agent llm-check
+   podman-compose -f compose.updater.yaml run --rm --entrypoint python updater -m tsi_agent db-sync --dry-run
+   podman-compose -f compose.updater.yaml run --rm updater
+   ```
+5. Cron of the account that runs the containers (`crontab -e`):
+   ```cron
+   0 2 1-7 * * [ "$(date +\%u)" = 7 ] && cd ~/tsi-docker/updater && podman-compose -f compose.updater.yaml run --rm updater --scheduled >> ~/tsi-docker/updater/cron.log 2>&1
+   ```
+   With rootless Podman, the account must be allowed to run containers without being logged in
+   (`loginctl enable-linger <account>`, once, by an administrator).
+
+The state of the update (`output/`, `.cache/`, `logs/`) is kept in the volumes `tsi-update-output`, `tsi-update-cache`
+and `tsi-update-logs`. To read the last log:
+`podman-compose -f compose.updater.yaml run --rm --entrypoint bash updater -c 'tail -n 60 "$(ls -t logs/update-*.log | head -n 1)"'`.
+After an upgrade of the code, build the image again (step 2).
 
 ## Step 12 — Final checks
 
@@ -615,7 +694,7 @@ and `sudo systemctl restart tsi-explorer`.
 | Application service and assistant (sign-ins, errors, and one line per assistant request with its service, status, duration and token counts; never the content of a question) | `journalctl -u tsi-explorer` |
 | PostgREST | `journalctl -u tsi-postgrest` |
 | nginx | `/var/log/nginx/` |
-| Data update | `/opt/tsi-explorer/app/logs/` |
+| Data update | `/opt/tsi-explorer/app/logs/` (container: volume `tsi-update-logs`) |
 
 ## Local test (Agilos)
 
