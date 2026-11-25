@@ -5319,7 +5319,7 @@ async function renderOverview(kind, p, seq) {
 
 const BRIEFING_PAGE = 1000; // PostgREST max rows per request
 const BRIEFING_IN = 100; // ids per in.() filter (URL length)
-const BRIEFING_AI_TIMEOUT_MS = 90000; // one model call without tools (the function allows 60 s)
+const BRIEFING_AI_TIMEOUT_MS = 130000; // one model call without tools (the function allows 60 s, 120 s on GPT@EC)
 const BRIEFING_PROJECT_COLS = "project_id,title,programme,year,countries,policy_area,results,deliverables,url,detail_page";
 const BRIEFING_STEPS = [["data", "Collecting data…"], ["ai", "Writing the scene setter and speaking points (AI)…"], ["doc", "Building the document…"]];
 const BRIEFING_OCCASION_KEY = "tsi-briefing-occasion"; // occasion fields kept (sessionStorage) until a briefing is downloaded

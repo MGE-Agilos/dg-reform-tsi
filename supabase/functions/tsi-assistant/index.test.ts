@@ -1373,9 +1373,10 @@ test("openai: truncated briefing is logged without content and gives 502", async
   assert.ok(!logs.join("").includes("partial"));
 });
 
-test("timeouts: openai briefing 120 s and expand 30 s, anthropic unchanged", async () => {
+test("timeouts: openai briefing 120 s and expand 9 s (under the page's 10 s), anthropic unchanged", async () => {
   assert.equal(OPENAI_BRIEFING_TIMEOUT_MS, 120000);
-  assert.equal(OPENAI_EXPAND_TIMEOUT_MS, 30000);
+  assert.ok(OPENAI_EXPAND_TIMEOUT_MS < 10000, "the page gives up on related terms at 10 s");
+  assert.equal(OPENAI_EXPAND_TIMEOUT_MS, 9000);
   assert.ok(OPENAI_BRIEFING_TIMEOUT_MS < DEADLINE_MS);
   const seen: number[] = [];
   const orig = AbortSignal.timeout;
@@ -1386,7 +1387,7 @@ test("timeouts: openai briefing 120 s and expand 30 s, anthropic unchanged", asy
     await handle(post(briefingBody), ENV, fakeFetch({ model: [textReply(JSON.stringify(BRIEFING_JSON))] }).impl);
     await handle(post({ service: "expand", query: "wildfire" }), ENV, fakeFetch({ model: [textReply("{}")] }).impl);
   } finally { AbortSignal.timeout = orig; }
-  assert.deepEqual(seen.filter((m) => [120000, 30000, 60000, 15000].includes(m)), [120000, 30000, 60000, 15000]);
+  assert.deepEqual(seen.filter((m) => [120000, 9000, 60000, 15000].includes(m)), [120000, 9000, 60000, 15000]);
 });
 
 test("openai: expand tolerates a fenced JSON answer", async () => {
