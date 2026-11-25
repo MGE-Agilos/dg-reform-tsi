@@ -1,6 +1,7 @@
 """CLI : `python -m tsi_agent run ...` et `python -m tsi_agent export-yaml pipeline.yaml`."""
 
 import argparse
+from datetime import date
 import json
 import logging
 import sys
@@ -110,7 +111,8 @@ def main(argv: list[str] | None = None) -> int:
     batch.add_argument("--verbose", action="store_true", help="afficher les étapes de chaque analyse")
     related = sub.add_parser("csr-related", help="projets passés sur le même sujet que chaque recommandation de la "
                                                  "Commission (CLI Claude, souscription ; cache, reprise sur quota)")
-    related.add_argument("--year", type=int, help="année des recommandations (défaut : 2026)")
+    related.add_argument("--year", type=int,
+                         help="année des recommandations (défaut : la plus récente publiée par la Commission)")
     related.add_argument("--country", help="codes ISO ou noms, séparés par des virgules, ex. LT,LV")
     related.add_argument("--limit", type=int, help="recommandations envoyées au LLM au plus")
     related.add_argument("--redo", action="store_true", help="refaire les recommandations déjà traitées")
@@ -295,16 +297,20 @@ def main(argv: list[str] | None = None) -> int:
         result: dict = {"rows": len(rows)}
         if not args.skip_commission:
             from tsi_agent import csr_commission
-            commission = _commission(settings, args.fetch_missing)
-            if commission is None:
+            got = _commission(settings, args.fetch_missing)
+            if got is None:
                 return 1
-            csrs = csr_commission.with_commission(csrs, commission.csrs)
+            commission, cyear = got
+            adopted = {(c.country, c.year) for c in csrs}
+            csrs = csr_commission.with_commission(csrs, csr_commission.commission_csrs(Path(settings.output_dir)))
             report = commission.report()
-            result["commission"] = report
+            # Pays dont les CSR adoptees de l'annee sont deja dans la base ECFIN : rien ne manque pour eux.
+            report["missing_countries"] = [c for c in report["missing_countries"] if (c, cyear) not in adopted]
+            result["commission"] = {"year": cyear, **report}
             for alert in report["alerts"]:
-                print(f"ATTENTION (CSR {csr_commission.YEAR}) : {alert}", file=sys.stderr)
+                print(f"ATTENTION (CSR {cyear}) : {alert}", file=sys.stderr)
             if report["missing_countries"]:
-                print(f"ATTENTION (CSR {csr_commission.YEAR}) : aucune recommandation pour "
+                print(f"ATTENTION (CSR {cyear}) : aucune recommandation pour "
                       f"{', '.join(report['missing_countries'])}"
                       + ("" if args.fetch_missing else " — relancer avec --fetch-missing pour télécharger leurs PDF"),
                       file=sys.stderr)
@@ -326,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             from tsi_agent import csr_commission
             csrs = csr_commission.with_commission(build_csrs(read_rows(source)),
-                                                  csr_commission.load(Path(settings.output_dir)).csrs)
+                                                  csr_commission.commission_csrs(Path(settings.output_dir)))
         except Exception as exc:
             print(f"ERREUR : lecture de {source} impossible : {exc!r}", file=sys.stderr)
             return 2
@@ -617,7 +623,7 @@ def _csr_related(settings: Settings, args: argparse.Namespace) -> int:
     from tsi_agent import csr_related, runlog
     from tsi_agent.chat.generator import LoggedChatGenerator
     from tsi_agent.components.claude_cli import ClaudeCliChatGenerator
-    from tsi_agent.csr_commission import YEAR
+    from tsi_agent.csr_commission import latest_year
     from tsi_agent.impact.batch import country_iso
     from tsi_agent.impact.catalog import load_project_records
     countries = None
@@ -626,7 +632,7 @@ def _csr_related(settings: Settings, args: argparse.Namespace) -> int:
         if None in countries:
             _err(f"ERREUR : pays inconnu dans {args.country}")
             return 2
-    year = args.year or YEAR
+    year = args.year or latest_year(Path(settings.output_dir))
     recs = csr_related.load_recommendations(settings.output_dir, year, countries)
     if not recs:
         _err(f"ERREUR : aucune recommandation {year} dans {Path(settings.output_dir) / 'csr'} "
@@ -665,26 +671,44 @@ def _csr_related(settings: Settings, args: argparse.Namespace) -> int:
 
 
 def _commission(settings: Settings, fetch_missing: bool):
-    """Recommandations de la Commission (texte local) ; `fetch_missing` : PDF des pays manquants telecharges (fetcher
-    poli) et ajoutes a la copie locale. None (message d'erreur affiche) si le telechargement echoue."""
+    """(recommandations de la Commission, annee) : annee la plus recente dont le texte est local. Avec `fetch_missing` :
+    la publication de l'annee en cours est essayee si elle manque (pas encore parue : annee precedente gardee, sans
+    erreur), puis les PDF anglais des pays manquants sont telecharges et ajoutes a la copie locale. None (message
+    d'erreur affiche) si le telechargement des pays manquants echoue."""
     from tsi_agent import csr_commission
+    from tsi_agent.countries import COUNTRIES
     from tsi_agent.http import FetchError, shared_fetcher
     output_dir = Path(settings.output_dir)
-    commission = csr_commission.load(output_dir)
-    if not fetch_missing or not commission.missing_countries:
-        return commission
-    try:
+    year = csr_commission.latest_year(output_dir)
+    current = date.today().year
+    fetcher = None
+    if fetch_missing and current > year:
         fetcher = shared_fetcher(settings.cache_dir, settings.min_interval_s, settings.user_agent)
-        added = csr_commission.fetch_missing(fetcher, commission.missing_countries)
+        try:
+            added = csr_commission.fetch_missing(fetcher, list(COUNTRIES),
+                                                 page_url=csr_commission.publication_url(current))
+        except (FetchError, OSError) as exc:
+            print(f"(CSR {current} : publication de la Commission pas encore disponible : {exc})", file=sys.stderr)
+            added = ""
+        if added:
+            csr_commission.save_source(output_dir, csr_commission.merge_texts(None, added, current), current)
+            year = current
+    commission = csr_commission.load(output_dir, year)
+    if not fetch_missing or not commission.missing_countries:
+        return commission, year
+    try:
+        fetcher = fetcher or shared_fetcher(settings.cache_dir, settings.min_interval_s, settings.user_agent)
+        added = csr_commission.fetch_missing(fetcher, commission.missing_countries,
+                                             page_url=csr_commission.publication_url(year))
     except (FetchError, OSError) as exc:
         print(f"ERREUR : téléchargement des PDF CSR impossible : {exc}", file=sys.stderr)
         return None
     if added:
-        path = csr_commission.find_source(output_dir)
+        path = csr_commission.find_source(output_dir, year)
         existing = path.read_text(encoding="utf-8") if path else None
-        csr_commission.save_source(output_dir, csr_commission.merge_texts(existing, added))
-        commission = csr_commission.load(output_dir)
-    return commission
+        csr_commission.save_source(output_dir, csr_commission.merge_texts(existing, added, year), year)
+        commission = csr_commission.load(output_dir, year)
+    return commission, year
 
 
 EXIT_SITEMAP_UNAVAILABLE = 3

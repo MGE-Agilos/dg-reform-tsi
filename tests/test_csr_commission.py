@@ -252,3 +252,26 @@ def test_adopted_csrs_replace_commission_recommendations_per_country():
     adopted = [Csr("HR", 2026, "1", Part("csr-HR-2026-1", "Adopted.", [], []), [])]
     merged = with_commission(adopted, commission)
     assert [(c.country, c.stage == COMMISSION_STAGE) for c in merged] == [("HR", False), ("NL", True)]
+
+
+def test_publication_ids_per_year():
+    from tsi_agent import csr_commission as cc
+    assert cc.publication_id(2027) == "2027-european-semester-country-specific-recommendations-commission-recommendations"
+    assert cc.publication_url(2027) == f"https://reforms-investments.ec.europa.eu/publications-0/{cc.publication_id(2027)}_en"
+    assert (PUBLICATION_ID, PUBLICATION_URL) == (cc.publication_id(2026), cc.publication_url(2026))
+
+
+def test_every_published_year_is_read_and_the_latest_is_the_default(tmp_path):
+    from tsi_agent import csr_commission as cc
+    assert cc.source_years(tmp_path, today=2027) == [] and cc.latest_year(tmp_path, today=2027) == 2026
+    cc.save_source(tmp_path, TEXT, 2026)
+    cc.save_source(tmp_path, cc.merge_texts(None, f"## Commission Recommendation - Netherlands\n\nSource: {NL_URL}\n\n{NL}",
+                                            2027), 2027)
+    assert (tmp_path / "csr" / "publications" / f"{cc.publication_id(2027)}.md").read_text(
+        encoding="utf-8").startswith(f"# {cc.publication_id(2027)}")
+    assert cc.source_years(tmp_path, today=2027) == [2026, 2027]
+    assert cc.source_years(tmp_path, today=2026) == [2026]
+    assert cc.latest_year(tmp_path, today=2027) == 2027
+    ids = [c.csr_id for c in cc.commission_csrs(tmp_path, today=2027)]
+    assert "csr-HR-2026-1" in ids and "csr-NL-2027-1" in ids and "csr-NL-2026-1" in ids
+    assert [c.csr_id for c in cc.load(tmp_path, 2027).csrs] == ["csr-NL-2027-1", "csr-NL-2027-2"]

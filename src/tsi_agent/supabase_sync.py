@@ -29,7 +29,7 @@ from tsi_agent.anomalies import detect, load_csr_links, load_projects, load_publ
 from tsi_agent.chunking import INTRO, SUMMARY, split_sections
 from tsi_agent.ids import clean_text
 from tsi_agent.csr import build_documents, document_id
-from tsi_agent.csr_commission import load as load_commission, load_all_csrs
+from tsi_agent.csr_commission import all_recitals, load_all_csrs
 from tsi_agent.csr_related import load_related_rows
 from tsi_agent.countries import name_from_iso
 from tsi_agent.country_reports import chunks as report_chunks, load_reports
@@ -197,7 +197,7 @@ def build_rows(output_dir: Path, current_year: int | None = None) -> dict[str, l
     related = [r for r in load_related_rows(output_dir) if r["csr_id"] in csr_ids and r["project_id"] in project_ids]
     recitals = [{"recital_id": r.recital_id, "country": r.country, "year": r.year, "number": r.number, "text": r.text,
                  "source_url": r.source_url, "doc_id": document_id(r.country, r.year)}
-                for r in load_commission(output_dir).recitals]
+                for r in all_recitals(output_dir)]
     reports = load_reports(output_dir)
     report_rows = [{"report_id": r.report_id, "country": r.country, "year": r.year,
                     "title": f"{name_from_iso(r.country)} — {r.year} country report", "source_url": r.source_url or None,

@@ -1,7 +1,9 @@
-"""CSR de l'annee en cours proposees par la Commission (2026), analysees sans LLM depuis le texte des 27 PDF.
+"""CSR proposees par la Commission (depuis 2026), analysees sans LLM depuis le texte des 27 PDF de chaque annee.
 
-La base ECFIN s'arrete aux CSR adoptees (2025). Les recommandations 2026 viennent de la publication
-PUBLICATION_URL : un PDF anglais par Etat membre. Son texte integral (un `## <document>` par PDF, ligne
+La base ECFIN ne contient que les CSR adoptees par le Conseil. Les recommandations de la Commission d'une annee (2026,
+2027...) viennent de sa publication `publication_url(annee)` : un PDF anglais par Etat membre. Chaque annee dont le
+texte est present localement est lue (`source_years`) ; une fois les CSR adoptees d'un pays publiees par ECFIN, elles
+remplacent celles de la Commission (`with_commission`), mais les considerants restent (ils n'existent que la). Son texte integral (un `## <document>` par PDF, ligne
 `Source: <url>`, marqueurs `--- page N ---`) a ete extrait par l'etage livrables ; il est lu dans
 output/csr/publications/<id>.md (copie gardee par l'exclusion des livrables), a defaut output/deliverables/<id>.md.
 
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from datetime import date
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,9 +28,20 @@ from typing import Any
 from tsi_agent.countries import COUNTRIES, iso_from_name, name_from_iso
 from tsi_agent.csr import COMMISSION_STAGE, Csr, Part, build_csrs, read_rows
 
-YEAR = 2026
-PUBLICATION_ID = "2026-european-semester-country-specific-recommendations-commission-recommendations"
-PUBLICATION_URL = f"https://reforms-investments.ec.europa.eu/publications-0/{PUBLICATION_ID}_en"
+FIRST_YEAR = 2026  # premiere publication de la Commission dans ce format (avant : base ECFIN seulement)
+YEAR = FIRST_YEAR  # annee par defaut des fonctions a annee explicite (compatibilite)
+
+
+def publication_id(year: int) -> str:
+    return f"{year}-european-semester-country-specific-recommendations-commission-recommendations"
+
+
+def publication_url(year: int) -> str:
+    return f"https://reforms-investments.ec.europa.eu/publications-0/{publication_id(year)}_en"
+
+
+PUBLICATION_ID = publication_id(YEAR)
+PUBLICATION_URL = publication_url(YEAR)
 PUBLICATIONS_DIR = "publications"  # sous-dossier de output/csr : non indexe (glob *.md non recursif)
 
 _DOCUMENT = re.compile(r"^## (.+?)[ \t]*\n\nSource: (.*?)[ \t]*$", re.MULTILINE)
@@ -267,20 +281,43 @@ def parse_text(text: str, year: int = YEAR) -> CommissionParse:
     return result
 
 
-def source_paths(output_dir: Path) -> list[Path]:
-    """Emplacements du texte integral, par priorite : copie de output/csr, puis texte de l'etage livrables."""
-    return [output_dir / "csr" / PUBLICATIONS_DIR / f"{PUBLICATION_ID}.md",
-            output_dir / "deliverables" / f"{PUBLICATION_ID}.md"]
+def source_paths(output_dir: Path, year: int = YEAR) -> list[Path]:
+    """Emplacements du texte integral d'une annee, par priorite : copie de output/csr, puis texte de l'etage livrables."""
+    return [output_dir / "csr" / PUBLICATIONS_DIR / f"{publication_id(year)}.md",
+            output_dir / "deliverables" / f"{publication_id(year)}.md"]
 
 
-def find_source(output_dir: Path) -> Path | None:
-    return next((p for p in source_paths(output_dir) if p.exists()), None)
+def find_source(output_dir: Path, year: int = YEAR) -> Path | None:
+    return next((p for p in source_paths(output_dir, year) if p.exists()), None)
 
 
-def load(output_dir: Path, year: int = YEAR) -> CommissionParse:
-    """Analyse du texte local (vide s'il n'existe pas)."""
-    path = find_source(output_dir)
+def source_years(output_dir: Path, today: int | None = None) -> list[int]:
+    """Annees dont le texte de la publication est present localement, de FIRST_YEAR a l'annee en cours."""
+    last = today or date.today().year
+    return [y for y in range(FIRST_YEAR, last + 1) if find_source(output_dir, y)]
+
+
+def latest_year(output_dir: Path, today: int | None = None) -> int:
+    """Annee la plus recente au texte local (FIRST_YEAR s'il n'y en a aucune)."""
+    years = source_years(output_dir, today)
+    return years[-1] if years else FIRST_YEAR
+
+
+def load(output_dir: Path, year: int | None = None) -> CommissionParse:
+    """Analyse du texte local d'une annee (defaut : la plus recente ; vide s'il n'existe pas)."""
+    year = year or latest_year(output_dir)
+    path = find_source(output_dir, year)
     return parse_text(path.read_text(encoding="utf-8"), year) if path else CommissionParse()
+
+
+def commission_csrs(output_dir: Path, today: int | None = None) -> list[Csr]:
+    """Recommandations de la Commission de toutes les annees au texte local."""
+    return [c for y in source_years(output_dir, today) for c in load(output_dir, y).csrs]
+
+
+def all_recitals(output_dir: Path, today: int | None = None) -> list[Recital]:
+    """Considerants de toutes les annees au texte local (gardes meme quand les CSR adoptees sont publiees)."""
+    return [r for y in source_years(output_dir, today) for r in load(output_dir, y).recitals]
 
 
 def with_commission(csrs: list[Csr], commission: list[Csr]) -> list[Csr]:
@@ -294,13 +331,13 @@ def load_all_csrs(output_dir: Path, include_commission: bool = True) -> list[Csr
     """CSR de la base ECFIN (export xlsx, s'il existe) et, sauf demande contraire, recommandations de la Commission."""
     xlsx = output_dir / "csr" / "csr_full.xlsx"
     csrs = build_csrs(read_rows(xlsx)) if xlsx.exists() else []
-    return with_commission(csrs, load(output_dir).csrs) if include_commission else csrs
+    return with_commission(csrs, commission_csrs(output_dir)) if include_commission else csrs
 
 
-def save_source(output_dir: Path, text: str) -> Path:
-    """Copie locale du texte integral (output/csr/publications/<id>.md), ecriture atomique."""
+def save_source(output_dir: Path, text: str, year: int = YEAR) -> Path:
+    """Copie locale du texte integral d'une annee (output/csr/publications/<id>.md), ecriture atomique."""
     import os
-    path = source_paths(output_dir)[0]
+    path = source_paths(output_dir, year)[0]
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8", newline="\n")
@@ -344,12 +381,12 @@ def fetch_missing(fetcher: Any, countries: list[str], page_url: str = PUBLICATIO
     return "\n\n".join(sections)
 
 
-def merge_texts(existing: str | None, added: str) -> str:
+def merge_texts(existing: str | None, added: str, year: int = YEAR) -> str:
     """Copie locale completee : documents ajoutes a la suite du texte existant (front matter garde)."""
     if not added:
         return existing or ""
     if not existing:
-        return f"# {PUBLICATION_ID}\n\n{added}\n"
+        return f"# {publication_id(year)}\n\n{added}\n"
     return existing.rstrip("\n") + "\n\n" + added + "\n"
 
 

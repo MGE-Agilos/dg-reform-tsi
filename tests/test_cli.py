@@ -409,3 +409,40 @@ def test_db_sync_load_and_dry_run(monkeypatch, capsys):
     monkeypatch.setattr(db_sync, "check", lambda url, schema, role: report)
     assert cli.main(["db-sync", "--dry-run"]) == 1
     assert "non modifiables ['csrs']" in capsys.readouterr().err
+
+
+def test_csr_build_tries_the_current_years_publication(tmp_path, capsys, monkeypatch):
+    import datetime as dt
+
+    from tsi_agent import csr_commission, http
+    out, settings = _csr_build_setup(tmp_path)
+
+    class Today(dt.date):
+        @classmethod
+        def today(cls):
+            return cls(2027, 6, 15)
+
+    monkeypatch.setattr(cli, "date", Today)
+    monkeypatch.setattr(csr_commission, "date", Today)
+    monkeypatch.setattr(http, "shared_fetcher", lambda *a: object())
+
+    def not_yet(fetcher, countries, page_url=None, **kw):   # 2027 page absent: previous year kept, no error
+        if page_url == csr_commission.publication_url(2027):
+            raise http.FetchError(page_url, "HTTP 404", 404)
+        return ""
+
+    monkeypatch.setattr(csr_commission, "fetch_missing", not_yet)
+    assert cli.main(["--settings", str(settings), "csr-build", "--fetch-missing"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["commission"]["year"] == 2026 and "pas encore disponible" in captured.err
+
+    def published(fetcher, countries, page_url=None, **kw):
+        assert page_url == csr_commission.publication_url(2027)   # new year, then its missing countries
+        return COMMISSION_TEXT.split("\n\n", 1)[1]
+
+    monkeypatch.setattr(csr_commission, "fetch_missing", published)
+    assert cli.main(["--settings", str(settings), "csr-build", "--fetch-missing"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["commission"]["year"] == 2027 and result["commission"]["recommendations"] == 2
+    assert (out / "csr" / "publications" / f"{csr_commission.publication_id(2027)}.md").exists()
+    assert list((out / "csr").glob("csr-HR-2027-1.md"))
