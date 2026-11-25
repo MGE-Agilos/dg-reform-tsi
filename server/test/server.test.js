@@ -11,6 +11,11 @@ import { loadConfig, ConfigError } from "../src/config.js";
 import { createApp, safeNext, parseCookies } from "../src/app.js";
 import { oidcProvider } from "../src/auth.js";
 import { runAdmin, validate, HttpError } from "../src/admin.js";
+import { assistantEnv, routedFetch, createAssistant, proxyFetch } from "../src/assistant.js";
+import { llmConfig } from "../src/config.js";
+import { checkGateway } from "../assistant-check.js";
+import { request as httpRequest } from "node:http";
+import { connect as netConnect } from "node:net";
 
 const SECRET = "s".repeat(40);
 const SESSION = "k".repeat(40);
@@ -225,4 +230,184 @@ test("OpenID Connect: redirect with PKCE, state checked at the callback, session
 
 test("parseCookies", () => {
   assert.deepEqual(parseCookies("a=1; tsi_session=x%3Dy"), { a: "1", tsi_session: "x=y" });
+});
+
+// ---------- assistant on an OpenAI-compatible gateway (GPT@EC) ----------
+
+const LLM_ENV = { LLM_BASE_URL: "https://gateway.example/v1/", LLM_API_KEY: "gw-key" };
+
+test("assistant settings: off without LLM_BASE_URL, key required, key file, defaults, reasoning on/off", () => {
+  assert.equal(loadConfig(BASE_ENV).llm, null);
+  assert.throws(() => loadConfig({ ...BASE_ENV, LLM_BASE_URL: "https://gateway.example/v1" }), /LLM_API_KEY/);
+  assert.throws(() => loadConfig({ ...BASE_ENV, ...LLM_ENV, LLM_BASE_URL: "gateway" }), /LLM_BASE_URL/);
+  assert.throws(() => loadConfig({ ...BASE_ENV, ...LLM_ENV, LLM_REASONING: "maybe" }), /LLM_REASONING/);
+  assert.deepEqual(loadConfig({ ...BASE_ENV, ...LLM_ENV }).llm,
+    { baseUrl: "https://gateway.example/v1", apiKey: "gw-key", model: "gpt-5.1", expandModel: "gpt-5.1", reasoning: true });
+  const dir = mkdtempSync(join(tmpdir(), "tsi-llm-"));
+  writeFileSync(join(dir, "key"), "file-key\n");
+  assert.deepEqual(llmConfig({ LLM_BASE_URL: "https://g/v1", LLM_API_KEY_FILE: join(dir, "key"), LLM_MODEL: "m", LLM_EXPAND_MODEL: "s", LLM_REASONING: "OFF" }),
+    { baseUrl: "https://g/v1", apiKey: "file-key", model: "m", expandModel: "s", reasoning: false });
+});
+
+test("assistant environment and routing: gateway calls through the proxy-aware fetch, the others direct", async () => {
+  const cfg = loadConfig({ ...BASE_ENV, ...LLM_ENV });
+  const env = assistantEnv(cfg);
+  assert.equal(env.TSI_LLM_PROVIDER, "openai");
+  assert.equal(env.TSI_OPENAI_BASE_URL, "https://gateway.example/v1");
+  assert.equal(env.TSI_OPENAI_API_KEY, "gw-key");
+  assert.equal(env.TSI_MODEL, "gpt-5.1");
+  assert.equal(env.TSI_OPENAI_REASONING, "on");
+  assert.equal(env.TSI_REST_URL, "http://pgrst");
+  const claims = verifyJwt(env.SUPABASE_SERVICE_ROLE_KEY, SECRET);
+  assert.equal(claims.role, "service_role");
+  assert.ok(claims.exp - Math.floor(Date.now() / 1000) >= 290);
+  const seen = [];
+  const route = routedFetch("https://gateway.example/v1", async (u) => { seen.push("llm"); return new Response("{}"); },
+    async (u) => { seen.push("direct"); return new Response("{}"); });
+  await route("https://gateway.example/v1/chat/completions", {});
+  await route("http://pgrst/projects?x", {});
+  await route("https://gateway.example/v10/other", {});
+  assert.deepEqual(seen, ["llm", "direct", "direct"]);
+});
+
+test("assistant in the service: user token to PostgREST, gateway key, impact saved with a service token; health", async () => {
+  const dbCalls = [];
+  const db = async (url, init = {}) => {
+    const u = new URL(url);
+    dbCalls.push({ u, init });
+    if (u.pathname === "/rpc/is_tester") return Response.json(true);
+    if (u.pathname === "/projects") return Response.json([{ project_id: "p1", title: "Health reform in Croatia", url: "https://reform.example/p1" }]);
+    if (u.pathname === "/impact_reports") return new Response(null, { status: 201 });
+    return Response.json([]);
+  };
+  const REPORT_TEXT = "Report\n\nImpact score: 6/10 (moderate) — Confidence: low";
+  const replies = [
+    { choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "get_project", arguments: "{\"project_id\":\"p1\"}" } }] }, finish_reason: "tool_calls" }] },
+    { choices: [{ message: { content: REPORT_TEXT }, finish_reason: "stop" }] },
+  ];
+  const llmCalls = [];
+  const llm = async (url, init) => { llmCalls.push({ url, init }); return Response.json(replies.shift()); };
+  const assistant = await createAssistant(loadConfig({ ...BASE_ENV, ...LLM_ENV }), { fetchImpl: db, llmFetch: llm });
+  const s = await serve(LLM_ENV, { fetchImpl: db, assistant });
+  try {
+    const cookie = await devSignIn(s.base, "user@x.eu");
+    const { access_token } = await (await fetch(`${s.base}/api/auth/session`, { headers: { cookie } })).json();
+    const res = await fetch(`${s.base}/api/assistant`, { method: "POST",
+      headers: { authorization: `Bearer ${access_token}`, "content-type": "application/json" },
+      body: JSON.stringify({ service: "impact", messages: [{ role: "user", content: "Project: Health reform in Croatia (id p1; TSI 2023; countries HR)" }] }) });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { answer: REPORT_TEXT, saved: true });
+    assert.equal(llmCalls.length, 2);
+    assert.equal(llmCalls[0].url, "https://gateway.example/v1/chat/completions");
+    assert.equal(new Headers(llmCalls[0].init.headers).get("authorization"), "Bearer gw-key");
+    const tester = dbCalls.find((c) => c.u.pathname === "/rpc/is_tester");
+    assert.equal(new Headers(tester.init.headers).get("authorization"), `Bearer ${access_token}`);
+    const save = dbCalls.find((c) => c.u.pathname === "/impact_reports");
+    assert.equal(verifyJwt(new Headers(save.init.headers).get("authorization").slice(7), SECRET).role, "service_role");
+    assert.equal(JSON.parse(save.init.body).model, "gpt-5.1");
+    assert.deepEqual(await (await fetch(`${s.base}/api/health`)).json(), { ok: true, database: true, assistant: true, auth: "dev" });
+    assert.equal((await fetch(`${s.base}/api/assistant`, { method: "POST", body: "{}" })).status, 401);
+  } finally { await s.close(); }
+});
+
+test("assistant-check: tool and JSON calls; gateway errors shown with status and excerpt", async () => {
+  const llm = { baseUrl: "https://g/v1", apiKey: "k", model: "m", expandModel: "m", reasoning: false };
+  const bodies = [];
+  const good = async (url, init) => {
+    assert.equal(url, "https://g/v1/chat/completions");
+    const b = JSON.parse(init.body);
+    bodies.push(b);
+    return Response.json(b.tools
+      ? { choices: [{ message: { tool_calls: [{ id: "1", type: "function", function: { name: "ping", arguments: "{\"ok\":true}" } }] } }] }
+      : { choices: [{ message: { content: "{\"ok\": true}" } }] });
+  };
+  assert.deepEqual((await checkGateway(llm, good)).map((r) => r.ok), [true, true]);
+  assert.ok(bodies.every((b) => b.model === "m" && !("reasoning_effort" in b)));
+  assert.deepEqual(bodies[1].response_format, { type: "json_object" });
+  const bad = async () => new Response("{\"error\":{\"message\":\"Unrecognized request argument supplied: reasoning_effort\"}}", { status: 400 });
+  const r = await checkGateway({ ...llm, reasoning: true }, bad);
+  assert.deepEqual(r.map((x) => x.ok), [false, false]);
+  assert.match(r[0].detail, /^HTTP 400: .*reasoning_effort/);
+  const noTool = async () => Response.json({ choices: [{ message: { content: "pong" } }] });
+  assert.match((await checkGateway(llm, noTool))[0].detail, /without calling the tool/);
+  const down = async () => { throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }); };
+  assert.match((await checkGateway(llm, down))[0].detail, /no answer \(ECONNREFUSED\)/);
+});
+
+// ---------- hardening of the assistant ----------
+
+test("proxyFetch: goes through HTTP_PROXY / HTTPS_PROXY, direct when NO_PROXY matches", async () => {
+  const viaProxy = [];
+  const targetSeen = [];
+  const target = createServer((req, res) => { targetSeen.push(req.headers.authorization || ""); res.setHeader("content-type", "application/json"); res.end("{\"ok\":true}"); });
+  await new Promise((r) => target.listen(0, "127.0.0.1", r));
+  const targetPort = target.address().port;
+  const proxy = createServer((req, res) => { // absolute-form request (plain http target)
+    viaProxy.push(`GET ${req.url}`);
+    const up = httpRequest(req.url, { method: req.method, headers: req.headers }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
+    req.pipe(up);
+  });
+  proxy.on("connect", (req, socket, head) => { // tunnel (CONNECT)
+    viaProxy.push(`CONNECT ${req.url}`);
+    const [host, port] = req.url.split(":");
+    const up = netConnect(Number(port), host, () => { socket.write("HTTP/1.1 200 Connection Established\r\n\r\n"); up.write(head); up.pipe(socket); socket.pipe(up); });
+    up.on("error", () => socket.destroy()); socket.on("error", () => up.destroy());
+  });
+  await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
+  const saved = {};
+  const names = ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"];
+  for (const k of names) { saved[k] = process.env[k]; delete process.env[k]; }
+  const url = `http://127.0.0.1:${targetPort}/v1/ping`;
+  try {
+    process.env.HTTP_PROXY = `http://127.0.0.1:${proxy.address().port}`;
+    process.env.HTTPS_PROXY = process.env.HTTP_PROXY;
+    const viaFetch = await proxyFetch();
+    const res = await viaFetch(url, { headers: { authorization: "Bearer gw-key" } });
+    assert.deepEqual(await res.json(), { ok: true });
+    assert.equal(viaProxy.length, 1);
+    assert.ok(viaProxy[0].includes(`127.0.0.1:${targetPort}`));
+    assert.equal(targetSeen[0], "Bearer gw-key");
+    process.env.NO_PROXY = "127.0.0.1";
+    const direct = await proxyFetch();
+    assert.deepEqual(await (await direct(url, {})).json(), { ok: true });
+    assert.equal(viaProxy.length, 1, "NO_PROXY: the request must not go through the proxy");
+    assert.equal(targetSeen.length, 2);
+  } finally {
+    for (const k of names) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    await new Promise((r) => proxy.close(r)); await new Promise((r) => target.close(r));
+  }
+});
+
+test("assistant route: the token is verified in the service before anything is called", async () => {
+  const pg = fakePostgrest();
+  const assistant = async () => Response.json({ answer: "x" });
+  const s = await serve(LLM_ENV, { fetchImpl: pg.impl, assistant });
+  try {
+    const post = (headers) => fetch(`${s.base}/api/assistant`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: "{}" });
+    const bad = await post({ authorization: "Bearer garbage" });
+    assert.equal(bad.status, 401);
+    assert.deepEqual(await bad.json(), { error: "Invalid or expired session" });
+    assert.equal((await post({})).status, 401);
+    assert.equal((await post({ authorization: `Bearer ${signJwt({ role: "service_role", exp: Math.floor(Date.now() / 1000) + 60 }, SECRET)}` })).status, 401);
+    assert.equal(pg.calls.length, 0);
+  } finally { await s.close(); }
+});
+
+test("config: POSTGREST_URL must not be under LLM_BASE_URL", () => {
+  assert.throws(() => loadConfig({ ...BASE_ENV, ...LLM_ENV, LLM_BASE_URL: "http://pgrst/v1", POSTGREST_URL: "http://pgrst/v1/db" }), /POSTGREST_URL must not be under LLM_BASE_URL/);
+  assert.ok(loadConfig({ ...BASE_ENV, ...LLM_ENV, LLM_BASE_URL: "http://pgrst/v1", POSTGREST_URL: "http://pgrst/v10" }));
+});
+
+test("assistant-check: error excerpts never show the key or token-like strings", async () => {
+  const llm = { baseUrl: "https://g/v1", apiKey: "sk-secret-key", model: "m", expandModel: "m", reasoning: false };
+  const long = "Ab3".repeat(12) + "-" + "x9".repeat(5);
+  const leak = async () => new Response(`bad key sk-secret-key, token ${long}, see reasoning, `
+    + `max_completion_tokens_is_unsupported at api.tech.ec.europa.eu.example`, { status: 401 });
+  const r = await checkGateway(llm, leak);
+  for (const x of r) {
+    assert.ok(!x.detail.includes("sk-secret-key"));
+    assert.ok(!x.detail.includes("Ab3Ab3Ab3"));
+    assert.match(x.detail, /^HTTP 401: bad key …, token …, see reasoning/);
+    assert.match(x.detail, /max_completion_tokens_is_unsupported at api\.tech\.ec\.europa\.eu\.example/, "words stay readable");
+  }
 });

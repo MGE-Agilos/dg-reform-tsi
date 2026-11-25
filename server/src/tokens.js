@@ -74,7 +74,7 @@ export function userToken(user, secret, minutes) {
   return { token: signJwt({ sub: user.id, email: user.email, role: "authenticated", aud: "authenticated", exp }, secret), exp };
 }
 
-/** Token of the service itself (role service_role: bypasses row-level security), for the administration actions. */
-export function serviceToken(secret) {
-  return signJwt({ role: "service_role", aud: "authenticated", exp: nowS() + 120 }, secret);
+/** Token of the service itself (role service_role: bypasses row-level security), for the administration actions and the impact save. */
+export function serviceToken(secret, seconds = 120) {
+  return signJwt({ role: "service_role", aud: "authenticated", exp: nowS() + seconds }, secret);
 }

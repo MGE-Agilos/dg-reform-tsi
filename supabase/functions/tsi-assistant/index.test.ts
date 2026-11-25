@@ -5,10 +5,11 @@ import assert from "node:assert/strict";
 import {
   handle, agentLoop, runTool, validate, allowedOrigins, corsHeaders, answerText, csrMatches, normalizeCsr, canonicalCsrId,
   canonicalDocId, docIdOf,
-  HttpError, CHAT_SYSTEM, impactSystem, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
+  HttpError, CHAT_SYSTEM, impactSystem, impactDataSystem, TOOLS_IMPACT_DATA, OPENAI_BRIEFING_TIMEOUT_MS, OPENAI_MODEL_TIMEOUT_MS, OPENAI_EXPAND_TIMEOUT_MS, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
   withCacheBreakpoint, emptyStats, parseImpact, extractVerdict, extractProject, jwtSub, SAVE_TIMEOUT_MS,
   validateBriefing, validateOccasion, OCCASION_FORMATS, parseBriefing, runBriefing, BRIEFING_SYSTEM, BRIEFING_SCHEMA, BRIEFING_FIELDS, briefingUserMessage, numbersIn, unverifiedTexts, MAX_FACTS, MAX_TOKENS,
   validateExpand, cleanTerms, EXPAND_MODEL, EXPAND_MAX_QUERY, EXPAND_SCHEMA,
+  providerOf, modelOf, OPENAI_DEFAULT_MODEL,
 } from "./index.ts";
 
 const ORIGIN = "https://mge-agilos.github.io";
@@ -19,10 +20,10 @@ const ENV: Record<string, string> = {
 };
 
 type Call = { url: string; init: RequestInit };
-type Reply = { status?: number; body: unknown };
+type Reply = { status?: number; body: unknown; headers?: Record<string, string> };
 
-const json = (body: unknown, status = 200) =>
-  new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
+  new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
 
 const textReply = (text: string): Reply => ({ body: { content: [{ type: "text", text }], stop_reason: "end_turn" } });
 const toolReply = (name: string, input: unknown, id = "toolu_1"): Reply =>
@@ -34,33 +35,34 @@ const PROJECTS = [
   { project_id: "p3", title: "Pension reform", programme: "SRSP", year: 2019, countries: ["PT"], policy_area: null, detail_page: true, url: null, csrs: [] },
 ];
 
-function fakeFetch({ tester = true as unknown, testerStatus = 200, model = [] as Reply[], projects = PROJECTS as unknown[], dbStatus = 200, rpc = {} as Record<string, unknown> } = {}) {
+function fakeFetch({ tester = true as unknown, testerStatus = 200, model = [] as Reply[], projects = PROJECTS as unknown[], dbStatus = 200, rpc = {} as Record<string, unknown>, modelUrl = "https://api.anthropic.com/v1/messages" } = {}) {
   const calls: Call[] = [];
   const queue = [...model];
+  const isDb = (url: string) => url.includes("/rest/v1/") || url.startsWith("http://127.0.0.1:3001/");
   const impl = async (url: string, init: RequestInit) => {
     calls.push({ url, init });
-    if (url.endsWith("/rest/v1/rpc/is_tester")) return json(tester, testerStatus);
-    if (url.includes("/rest/v1/")) {
+    if (url.endsWith("/rpc/is_tester")) return json(tester, testerStatus);
+    if (isDb(url)) {
       if (dbStatus !== 200) return json({ message: "db error" }, dbStatus);
       const rpcName = /\/rpc\/([a-z_]+)/.exec(url)?.[1];
       if (rpcName) return json(rpc[rpcName] ?? []);
-      if (url.includes("/rest/v1/projects?")) {
+      if (url.includes("/projects?")) {
         const offset = Number(/offset=(\d+)/.exec(url)?.[1] ?? 0);
         return json(offset ? [] : projects);
       }
       return json([]);
     }
-    if (url === "https://api.anthropic.com/v1/messages") {
+    if (url === modelUrl) {
       const next = queue.length > 1 ? queue.shift()! : queue[0];
       if (!next) return json({ content: [{ type: "text", text: "default answer" }], stop_reason: "end_turn" });
-      return json(next.body, next.status ?? 200);
+      return json(next.body, next.status ?? 200, next.headers);
     }
     throw new Error("unexpected URL " + url);
   };
   return {
     impl, calls,
-    modelCalls: () => calls.filter((c) => c.url.startsWith("https://api.anthropic.com")),
-    dbCalls: () => calls.filter((c) => c.url.includes("/rest/v1/") && !c.url.endsWith("/rpc/is_tester")),
+    modelCalls: () => calls.filter((c) => c.url === modelUrl),
+    dbCalls: () => calls.filter((c) => isDb(c.url) && !c.url.endsWith("/rpc/is_tester")),
   };
 }
 
@@ -76,7 +78,7 @@ function post(body: unknown, { token = "user-jwt", origin = ORIGIN } = {}) {
 
 const chatBody = { service: "chat", messages: [{ role: "user", content: "How many TSI projects does Croatia have?" }] };
 const impactBody = { service: "impact", messages: [{ role: "user", content: "Project: Health reform in Croatia (id p1; TSI 2023; countries HR)" }] };
-const CTX = { supabaseUrl: ENV.SUPABASE_URL, apikey: "anon-test", userAuth: "Bearer user-jwt" };
+const CTX = { restUrl: ENV.SUPABASE_URL + "/rest/v1", apikey: "anon-test", userAuth: "Bearer user-jwt" };
 
 // ---------- HTTP contract (same as haystack-proxy) ----------
 
@@ -656,7 +658,7 @@ const USER_JWT = `${b64url({ alg: "HS256", typ: "JWT" })}.${b64url({ sub: USER_I
 const SAVE_ENV = { ...ENV, SUPABASE_SERVICE_ROLE_KEY: "service-role-test" };
 const REPORT = "**Project overview** The project.\n\n**Overall verdict:** The reform was adopted and is used.\n\n"
   + "Impact score: 7/10 (strong) — Confidence: medium";
-const saveCalls = (f: ReturnType<typeof fakeFetch>) => f.calls.filter((c) => c.url.endsWith("/rest/v1/impact_reports"));
+const saveCalls = (f: ReturnType<typeof fakeFetch>) => f.calls.filter((c) => c.url.endsWith("/impact_reports"));
 
 test("parseImpact: final score line, dash variants, case and spaces; null otherwise", () => {
   assert.deepEqual(parseImpact("Report\n\nImpact score: 5/10 (moderate) — Confidence: medium"), { score: 5, level: "moderate", confidence: "medium" });
@@ -1148,3 +1150,263 @@ test("search_country_reports calls its RPC and links each passage to its PDF pag
   assert.match(CHAT_SYSTEM, /search_country_reports/);
 });
 
+
+// ---------- self-hosted PostgREST (TSI_REST_URL) ----------
+
+const LOCAL_ENV: Record<string, string> = { SUPABASE_ANON_KEY: "server", TSI_REST_URL: "http://127.0.0.1:3001/", ANTHROPIC_API_KEY: "k", SUPABASE_SERVICE_ROLE_KEY: "service-jwt" };
+const LOCAL_CTX = { restUrl: "http://127.0.0.1:3001", apikey: "server", userAuth: "Bearer user-jwt" };
+
+test("TSI_REST_URL: tools, is_tester and the impact save use it; SUPABASE_URL is not needed", async () => {
+  const f = fakeFetch({ model: [toolReply("get_project", { project_id: "p1" }), textReply(REPORT)] });
+  const res = await handle(post(impactBody, { token: USER_JWT }), LOCAL_ENV, f.impl);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { answer: REPORT, saved: true });
+  const db = f.calls.filter((c) => !c.url.startsWith("https://api.anthropic.com")).map((c) => c.url);
+  assert.ok(db.length >= 4, db.join("\n"));
+  assert.ok(db.every((u) => u.startsWith("http://127.0.0.1:3001/") && !u.includes("/rest/v1/") && !u.includes("3001//")), db.join("\n"));
+  assert.ok(db.includes("http://127.0.0.1:3001/rpc/is_tester"));
+  assert.ok(db.includes("http://127.0.0.1:3001/impact_reports"));
+});
+
+test("neither SUPABASE_URL nor TSI_REST_URL: 500 before any call", async () => {
+  const f = fakeFetch({ model: [textReply("x")] });
+  const res = await handle(post(chatBody), { SUPABASE_ANON_KEY: "a", ANTHROPIC_API_KEY: "k" }, f.impl);
+  assert.equal(res.status, 500);
+  assert.deepEqual(await res.json(), { error: "SUPABASE_URL or TSI_REST_URL not configured" });
+  assert.equal(f.calls.length, 0);
+});
+
+// ---------- OpenAI-compatible connector (GPT@EC) ----------
+
+const OA_ENV: Record<string, string> = { SUPABASE_ANON_KEY: "server", TSI_REST_URL: "http://127.0.0.1:3001", TSI_LLM_PROVIDER: "openai", TSI_OPENAI_BASE_URL: "https://gateway.example/v1/", TSI_OPENAI_API_KEY: "gw-secret-test" };
+const OA_URL = "https://gateway.example/v1/chat/completions";
+const oaText = (text: string | null, finish = "stop"): Reply => ({ body: { choices: [{ message: { role: "assistant", content: text }, finish_reason: finish }], usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 60 } } } });
+const oaTools = (...calls: [string, unknown, string?][]): Reply => ({ body: { choices: [{ message: { role: "assistant", content: null,
+  tool_calls: calls.map(([name, args, id], i) => ({ id: id ?? `call_${i + 1}`, type: "function", function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args) } })) }, finish_reason: "tool_calls" }] } });
+
+test("providerOf and modelOf: anthropic by default, openai models and defaults", () => {
+  assert.equal(providerOf({}), "anthropic");
+  assert.equal(providerOf({ TSI_LLM_PROVIDER: " OpenAI " }), "openai");
+  assert.throws(() => providerOf({ TSI_LLM_PROVIDER: "mistral" }), /TSI_LLM_PROVIDER/);
+  assert.equal(modelOf({}, "chat"), DEFAULT_MODEL);
+  assert.equal(modelOf({}, "expand"), EXPAND_MODEL);
+  assert.equal(modelOf(OA_ENV, "chat"), OPENAI_DEFAULT_MODEL);
+  assert.equal(modelOf(OA_ENV, "expand"), OPENAI_DEFAULT_MODEL);
+  assert.equal(modelOf({ ...OA_ENV, TSI_MODEL: "gpt-x" }, "expand"), "gpt-x");
+  assert.equal(modelOf({ ...OA_ENV, TSI_MODEL: "gpt-x", TSI_EXPAND_MODEL: "gpt-s" }, "expand"), "gpt-s");
+});
+
+test("openai: chat loop with tool_calls and tool messages, user token on the local PostgREST, Bearer key, key never returned", async () => {
+  const f = fakeFetch({ modelUrl: OA_URL, model: [oaTools(["list_projects", { countries: ["HR"], programme: "TSI" }]), oaText("Croatia has **2** projects.")] });
+  const res = await handle(post(chatBody), OA_ENV, f.impl);
+  assert.equal(res.status, 200);
+  const text = await res.text();
+  assert.deepEqual(JSON.parse(text), { answer: "Croatia has **2** projects.", saved: false });
+  assert.ok(!text.includes("gw-secret-test"));
+  const [first, second] = f.modelCalls();
+  const h = new Headers(first.init.headers);
+  assert.equal(h.get("authorization"), "Bearer gw-secret-test");
+  assert.equal(h.get("x-api-key"), null);
+  assert.ok(first.init.signal);
+  const b1 = sent(first);
+  assert.equal(b1.model, "gpt-5.1");
+  assert.equal(b1.max_completion_tokens, 16000);
+  assert.equal(b1.reasoning_effort, "low");
+  assert.equal(b1.tool_choice, undefined);
+  assert.deepEqual(b1.messages, [{ role: "system", content: CHAT_SYSTEM }, chatBody.messages[0]]);
+  assert.deepEqual(b1.tools.map((t: any) => t.function.name), TOOLS_CHAT.map((t) => t.name));
+  assert.deepEqual(b1.tools[0], { type: "function", function: { name: "search_projects", description: (TOOLS_CHAT[0] as any).description, parameters: (TOOLS_CHAT[0] as any).input_schema } });
+  const b2 = sent(second);
+  assert.equal(b2.messages.length, 4);
+  assert.deepEqual(b2.messages[2], { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "list_projects", arguments: JSON.stringify({ countries: ["HR"], programme: "TSI" }) } }] });
+  assert.equal(b2.messages[3].role, "tool");
+  assert.equal(b2.messages[3].tool_call_id, "call_1");
+  assert.match(b2.messages[3].content, /Total matching projects: 3/);
+  const [db] = f.dbCalls();
+  assert.match(db.url, /^http:\/\/127\.0\.0\.1:3001\/projects\?select=/);
+  assert.equal(new Headers(db.init.headers).get("Authorization"), "Bearer user-jwt");
+});
+
+test("openai: parallel tool calls answered in order; unknown tool and invalid JSON arguments become tool errors", async () => {
+  const f = fakeFetch({ modelUrl: OA_URL, model: [oaTools(["list_projects", {}, "a"], ["web_search", { query: "x" }, "b"], ["search_csrs", "{not json", "c"]), oaText("Done.")] });
+  const res = await handle(post(chatBody), OA_ENV, f.impl);
+  assert.equal(res.status, 200);
+  const tools = sent(f.modelCalls()[1]).messages.filter((m: any) => m.role === "tool");
+  assert.deepEqual(tools.map((m: any) => m.tool_call_id), ["a", "b", "c"]);
+  assert.match(tools[0].content, /Total matching projects: 3/);
+  assert.equal(tools[1].content, "Tool error: unknown tool web_search");
+  assert.equal(tools[2].content, "Tool error: the arguments are not valid JSON");
+});
+
+test("openai: after MAX_STEPS rounds the last call sends tool_choice none; reasoning off; TSI_MODEL", async () => {
+  const replies = [...Array(MAX_STEPS)].map(() => oaTools(["list_projects", {}]));
+  replies.push(oaText("Final."));
+  const f = fakeFetch({ modelUrl: OA_URL, model: replies });
+  const res = await handle(post(chatBody), { ...OA_ENV, TSI_OPENAI_REASONING: "off", TSI_MODEL: "gpt-test" }, f.impl);
+  assert.deepEqual(await res.json(), { answer: "Final.", saved: false });
+  const calls = f.modelCalls();
+  assert.equal(calls.length, MAX_STEPS + 1);
+  assert.equal(sent(calls[0]).tool_choice, undefined);
+  assert.equal(sent(calls[MAX_STEPS]).tool_choice, "none");
+  assert.ok(calls.every((c) => !("reasoning_effort" in sent(c)) && sent(c).model === "gpt-test"));
+});
+
+test("openai: length keeps the text with a note; content_filter and refusal 422; HTTP error 502 logged without content", async () => {
+  const cut = fakeFetch({ modelUrl: OA_URL, model: [oaText("Long answer", "length")] });
+  assert.deepEqual(await (await handle(post(chatBody), OA_ENV, cut.impl)).json(), { answer: "Long answer\n\n[answer truncated]", saved: false });
+  const filtered = fakeFetch({ modelUrl: OA_URL, model: [oaText("", "content_filter")] });
+  assert.equal((await handle(post(chatBody), OA_ENV, filtered.impl)).status, 422);
+  const refused = fakeFetch({ modelUrl: OA_URL, model: [{ body: { choices: [{ message: { content: null, refusal: "I can't help with that." }, finish_reason: "stop" }] } }] });
+  assert.equal((await handle(post(chatBody), OA_ENV, refused.impl)).status, 422);
+  const empty = fakeFetch({ modelUrl: OA_URL, model: [{ body: { choices: [] } }] });
+  assert.equal((await handle(post(chatBody), OA_ENV, empty.impl)).status, 502);
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (s: string) => { logs.push(String(s)); };
+  try {
+    const failing = fakeFetch({ modelUrl: OA_URL, model: [{ status: 401, headers: { "x-request-id": "req-123" }, body: { error: { message: "token not from a valid issuer secret-detail", type: "invalid_request_error", code: "invalid_issuer" } } }] });
+    const res = await handle(post(chatBody), OA_ENV, failing.impl);
+    assert.equal(res.status, 502);
+    assert.deepEqual(await res.json(), { error: "Model service error 401" });
+  } finally { console.log = orig; }
+  assert.ok(logs.some((l) => l.includes('"llmStatus":401') && l.includes('"llmError":"invalid_issuer"')), logs.join("\n"));
+  assert.ok(logs.some((l) => l.includes('"requestId":"req-123"')), logs.join("\n"));
+  assert.ok(!logs.join("").includes("secret-detail") && !logs.join("").includes("gw-secret-test"));
+});
+
+test("openai: missing gateway settings and unknown provider 500; usage summed with cached tokens", async () => {
+  const f = fakeFetch({ modelUrl: OA_URL, model: [oaText("x")] });
+  const noKey = await handle(post(chatBody), { ...OA_ENV, TSI_OPENAI_API_KEY: "" }, f.impl);
+  assert.equal(noKey.status, 500);
+  assert.deepEqual(await noKey.json(), { error: "TSI_OPENAI_BASE_URL and TSI_OPENAI_API_KEY not configured" });
+  assert.equal((await handle(post(chatBody), { ...OA_ENV, TSI_LLM_PROVIDER: "mistral" }, f.impl)).status, 500);
+  const g = fakeFetch({ modelUrl: OA_URL, model: [oaTools(["list_projects", {}]), oaText("ok")] });
+  const stats = emptyStats();
+  await agentLoop("chat", chatBody.messages as any, OA_ENV, g.impl, Date.now, LOCAL_CTX, stats);
+  assert.deepEqual([stats.steps, stats.input_tokens, stats.output_tokens, stats.cache_read_tokens], [1, 100, 20, 60]);
+});
+
+test("openai: tool calls are sent back with the API's fields only", async () => {
+  const reply: Reply = { body: { choices: [{ message: { role: "assistant", content: null,
+    tool_calls: [{ index: 0, id: "call_x", type: "function", function: { name: "list_projects", arguments: "{}", extra: "no" } }] }, finish_reason: "tool_calls" }] } };
+  const f = fakeFetch({ modelUrl: OA_URL, model: [reply, oaText("ok")] });
+  await agentLoop("chat", chatBody.messages as any, OA_ENV, f.impl, Date.now, LOCAL_CTX);
+  const msgs = sent(f.modelCalls()[1]).messages;
+  const a = msgs.find((m: any) => m.role === "assistant");
+  assert.deepEqual(a.tool_calls, [{ id: "call_x", type: "function", function: { name: "list_projects", arguments: "{}" } }]);
+});
+
+test("impact prompt without web search: data tools, no web tool names, same report format and score line", () => {
+  const p = impactDataSystem();
+  assert.doesNotMatch(p, /web_search|web_fetch/);
+  assert.match(p, /No web search was made/);
+  assert.match(p, /get_csr/);
+  assert.match(p, /search_country_reports/);
+  assert.match(p, /2 to 4 key words/);
+  const format = impactSystem().slice(impactSystem().indexOf("Answer with a Markdown report"));
+  assert.ok(format.length > 500 && p.endsWith(format));
+  assert.deepEqual(TOOLS_IMPACT_DATA.map((t) => t.name), ["get_project", "search_projects", "get_csr", "search_csrs", "search_recitals", "search_country_reports"]);
+});
+
+test("openai: impact with the data tools and their prompt, effort high, 32000 tokens; saved through TSI_REST_URL with the gateway model", async () => {
+  const f = fakeFetch({ modelUrl: OA_URL, model: [oaTools(["get_project", { project_id: "p1" }]), oaText(REPORT)] });
+  const res = await handle(post(impactBody, { token: USER_JWT }), { ...OA_ENV, SUPABASE_SERVICE_ROLE_KEY: "service-jwt" }, f.impl);
+  assert.deepEqual(await res.json(), { answer: REPORT, saved: true });
+  const b = sent(f.modelCalls()[0]);
+  assert.equal(b.messages[0].content, impactDataSystem());
+  assert.deepEqual(b.tools.map((t: any) => t.function.name), TOOLS_IMPACT_DATA.map((t) => t.name));
+  assert.equal(b.reasoning_effort, "high");
+  assert.equal(b.max_completion_tokens, 32000);
+  const save = f.calls.find((c) => c.url === "http://127.0.0.1:3001/impact_reports")!;
+  assert.equal(sent(save).model, "gpt-5.1");
+  assert.equal(sent(save).source, "web");
+  assert.equal(new Headers(save.init.headers).get("Authorization"), "Bearer service-jwt");
+});
+
+test("openai: briefing in JSON mode with the schema in the system prompt; expand with its model", async () => {
+  const f = fakeFetch({ modelUrl: OA_URL, model: [oaText(JSON.stringify(BRIEFING_JSON))] });
+  const res = await handle(post(briefingBody), OA_ENV, f.impl);
+  assert.deepEqual(await res.json(), { briefing: BRIEFING_JSON, unverified: [], saved: false });
+  const b = sent(f.modelCalls()[0]);
+  assert.deepEqual(b.response_format, { type: "json_object" });
+  assert.equal(b.tools, undefined);
+  assert.equal(b.tool_choice, undefined);
+  assert.equal(b.model, "gpt-5.1");
+  assert.equal(b.max_completion_tokens, 16000);
+  assert.equal(b.reasoning_effort, "low");
+  assert.equal(b.messages.length, 2);
+  assert.deepEqual(b.messages[0], { role: "system", content: `${BRIEFING_SYSTEM}\n\nAnswer with a single JSON object that conforms to this JSON schema: ${JSON.stringify(BRIEFING_SCHEMA)}` });
+  assert.equal(b.messages[1].role, "user");
+  assert.match(b.messages[1].content, /^OCCASION\n/);
+
+  const e = fakeFetch({ modelUrl: OA_URL, model: [oaText(JSON.stringify({ terms: ["rural fires"] }))] });
+  const r2 = await handle(post({ service: "expand", query: "wildfire" }), { ...OA_ENV, TSI_EXPAND_MODEL: "gpt-small" }, e.impl);
+  assert.deepEqual(await r2.json(), { terms: ["rural fires"], saved: false });
+  const eb = sent(e.modelCalls()[0]);
+  assert.equal(eb.model, "gpt-small");
+  assert.equal(eb.max_completion_tokens, 4000);
+  assert.deepEqual(eb.response_format, { type: "json_object" });
+  assert.match(eb.messages[0].content, /conforms to this JSON schema/);
+  assert.match(eb.messages[1].content, /"wildfire"/);
+});
+
+test("openai: briefing refused 422, unreadable 502; expand refused or unreadable gives no terms", async () => {
+  const refused = fakeFetch({ modelUrl: OA_URL, model: [oaText("", "content_filter")] });
+  assert.equal((await handle(post(briefingBody), OA_ENV, refused.impl)).status, 422);
+  const bad = fakeFetch({ modelUrl: OA_URL, model: [oaText("not json")] });
+  assert.equal((await handle(post(briefingBody), OA_ENV, bad.impl)).status, 502);
+  const e1 = fakeFetch({ modelUrl: OA_URL, model: [oaText("", "content_filter")] });
+  assert.deepEqual(await (await handle(post({ service: "expand", query: "wildfire" }), OA_ENV, e1.impl)).json(), { terms: [], saved: false });
+  const e2 = fakeFetch({ modelUrl: OA_URL, model: [oaText("terms: fires")] });
+  assert.deepEqual(await (await handle(post({ service: "expand", query: "wildfire" }), OA_ENV, e2.impl)).json(), { terms: [], saved: false });
+});
+
+test("openai: truncated briefing is logged without content and gives 502", async () => {
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (s: string) => { logs.push(String(s)); };
+  try {
+    const f = fakeFetch({ modelUrl: OA_URL, model: [oaText('{"headline": "partial', "length")] });
+    assert.equal((await handle(post(briefingBody), OA_ENV, f.impl)).status, 502);
+  } finally { console.log = orig; }
+  assert.ok(logs.some((l) => l.includes('"stop":"max_tokens"')), logs.join("\n"));
+  assert.ok(!logs.join("").includes("partial"));
+});
+
+test("timeouts: openai briefing 110 s and expand 9 s (under the page's 10 s), anthropic unchanged", async () => {
+  assert.equal(OPENAI_BRIEFING_TIMEOUT_MS, 110000);
+  assert.ok(OPENAI_EXPAND_TIMEOUT_MS < 10000, "the page gives up on related terms at 10 s");
+  assert.equal(OPENAI_EXPAND_TIMEOUT_MS, 9000);
+  assert.ok(OPENAI_BRIEFING_TIMEOUT_MS < DEADLINE_MS);
+  const seen: number[] = [];
+  const orig = AbortSignal.timeout;
+  AbortSignal.timeout = ((ms: number) => { seen.push(ms); return orig.call(AbortSignal, ms); }) as typeof AbortSignal.timeout;
+  try {
+    await handle(post(briefingBody), OA_ENV, fakeFetch({ modelUrl: OA_URL, model: [oaText(JSON.stringify(BRIEFING_JSON))] }).impl);
+    await handle(post({ service: "expand", query: "wildfire" }), OA_ENV, fakeFetch({ modelUrl: OA_URL, model: [oaText("{}")] }).impl);
+    await handle(post(briefingBody), ENV, fakeFetch({ model: [textReply(JSON.stringify(BRIEFING_JSON))] }).impl);
+    await handle(post({ service: "expand", query: "wildfire" }), ENV, fakeFetch({ model: [textReply("{}")] }).impl);
+  } finally { AbortSignal.timeout = orig; }
+  assert.deepEqual(seen.filter((m) => [110000, 9000, 60000, 15000].includes(m)), [110000, 9000, 60000, 15000]);
+});
+
+test("chat: one gateway call may take 120 s with openai, anthropic keeps 60 s", async () => {
+  assert.equal(OPENAI_MODEL_TIMEOUT_MS, 120000);
+  const seen: number[] = [];
+  const orig = AbortSignal.timeout;
+  AbortSignal.timeout = ((ms: number) => { seen.push(ms); return orig.call(AbortSignal, ms); }) as typeof AbortSignal.timeout;
+  try {
+    await handle(post(chatBody), OA_ENV, fakeFetch({ modelUrl: OA_URL, model: [oaText("ok")] }).impl);
+    assert.equal(seen.find((m) => m === 120000 || m === 60000), 120000);
+    seen.length = 0;
+    await handle(post(chatBody), ENV, fakeFetch({ model: [textReply("ok")] }).impl);
+    assert.equal(seen.find((m) => m === 120000 || m === 60000), 60000);
+  } finally { AbortSignal.timeout = orig; }
+});
+
+test("openai: expand tolerates a fenced JSON answer", async () => {
+  const fenced = "```json\n" + JSON.stringify({ terms: ["rural fires"] }) + "\n```";
+  const f = fakeFetch({ modelUrl: OA_URL, model: [oaText(fenced)] });
+  const res = await handle(post({ service: "expand", query: "wildfire" }), OA_ENV, f.impl);
+  assert.deepEqual(await res.json(), { terms: ["rural fires"], saved: false });
+});

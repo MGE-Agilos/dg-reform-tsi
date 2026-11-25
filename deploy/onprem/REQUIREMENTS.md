@@ -25,7 +25,7 @@ application; we only need the server ready and the access below.
 | Operating system | Ubuntu 24.04 LTS (or Debian 12 / RHEL 9). A virtual machine is fine. |
 | Resources | 2 vCPU, 4 GB RAM and 20 GB disk available. A server shared with other applications is fine. |
 | Web server | nginx (or Apache), with TLS. |
-| Node.js | 22 LTS. |
+| Node.js | 22.12 or later (22 LTS). |
 | Python | 3.12 or later, with `python3-venv`. It runs the monthly update. |
 | Tools | `git`, `curl`, `tar`, and the PostgreSQL client `psql` (to install the schema). |
 | Time | Time synchronisation (NTP) enabled. |
@@ -71,6 +71,8 @@ application; we only need the server ready and the access below.
 
 - A GPT@EC API key for a service account, and the endpoint URL (today `https://api.tech.ec.europa.eu/ecgpt/v1`).
 - A model with function calling and structured (JSON schema) output, for example `gpt-5.1`.
+- The assistant needs function calling (tools) and JSON mode (`response_format: json_object`);
+  `npm run assistant-check` tests both.
 - Quota: the monthly update uses about 5 to 20 million tokens, depending on the number of changed projects; the
   assistant uses about 20,000 to 100,000 tokens per question, briefing or impact analysis.
 

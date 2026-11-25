@@ -12,6 +12,25 @@ function secretFrom(env, name) {
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
+export const DEFAULT_LLM_MODEL = "gpt-5.1";
+const LLM_URL_HELP = "LLM_BASE_URL must be the gateway address up to /v1, e.g. https://api.tech.ec.europa.eu/ecgpt/v1";
+
+/** Assistant on an OpenAI-compatible gateway (GPT@EC); null when LLM_BASE_URL is not set (assistant off). */
+export function llmConfig(env = process.env) {
+  const baseUrl = (env.LLM_BASE_URL || "").trim().replace(/\/+$/, "");
+  if (!baseUrl) return null;
+  let url;
+  try { url = new URL(baseUrl); } catch { throw new ConfigError(LLM_URL_HELP); }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new ConfigError(LLM_URL_HELP);
+  const file = env.LLM_API_KEY_FILE;
+  const apiKey = file ? readFileSync(file, "utf8").trim() : (env.LLM_API_KEY || "").trim();
+  if (!apiKey) throw new ConfigError("LLM_API_KEY (or LLM_API_KEY_FILE) is required when LLM_BASE_URL is set");
+  const reasoning = (env.LLM_REASONING || "on").trim().toLowerCase();
+  if (reasoning !== "on" && reasoning !== "off") throw new ConfigError("LLM_REASONING must be on or off");
+  const model = (env.LLM_MODEL || "").trim() || DEFAULT_LLM_MODEL;
+  return { baseUrl, apiKey, model, expandModel: (env.LLM_EXPAND_MODEL || "").trim() || model, reasoning: reasoning === "on" };
+}
+
 export function loadConfig(env = process.env) {
   const publicUrl = (env.PUBLIC_URL || "").replace(/\/+$/, "");
   let pub;
@@ -43,7 +62,7 @@ export function loadConfig(env = process.env) {
     authMode,
     oidc: null,
     staticDir: env.STATIC_DIR || "",
-    assistantUrl: (env.ASSISTANT_URL || "").replace(/\/+$/, ""),
+    llm: llmConfig(env),
   };
   if (authMode === "oidc") {
     for (const k of ["OIDC_ISSUER", "OIDC_CLIENT_ID"]) if (!env[k]) throw new ConfigError(`${k} is required (AUTH_MODE=oidc)`);
@@ -56,5 +75,6 @@ export function loadConfig(env = process.env) {
       redirectUri: `${publicUrl}/api/auth/callback`,
     };
   }
+  if (cfg.llm && (cfg.postgrestUrl + "/").startsWith(cfg.llm.baseUrl + "/")) throw new ConfigError("POSTGREST_URL must not be under LLM_BASE_URL");
   return cfg;
 }
