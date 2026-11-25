@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   handle, agentLoop, runTool, validate, allowedOrigins, corsHeaders, answerText, csrMatches, normalizeCsr, canonicalCsrId,
   canonicalDocId, docIdOf,
-  HttpError, CHAT_SYSTEM, impactSystem, impactDataSystem, TOOLS_IMPACT_DATA, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
+  HttpError, CHAT_SYSTEM, impactSystem, impactDataSystem, TOOLS_IMPACT_DATA, OPENAI_BRIEFING_TIMEOUT_MS, OPENAI_EXPAND_TIMEOUT_MS, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
   withCacheBreakpoint, emptyStats, parseImpact, extractVerdict, extractProject, jwtSub, SAVE_TIMEOUT_MS,
   validateBriefing, validateOccasion, OCCASION_FORMATS, parseBriefing, runBriefing, BRIEFING_SYSTEM, BRIEFING_SCHEMA, BRIEFING_FIELDS, briefingUserMessage, numbersIn, unverifiedTexts, MAX_FACTS, MAX_TOKENS,
   validateExpand, cleanTerms, EXPAND_MODEL, EXPAND_MAX_QUERY, EXPAND_SCHEMA,
@@ -20,10 +20,10 @@ const ENV: Record<string, string> = {
 };
 
 type Call = { url: string; init: RequestInit };
-type Reply = { status?: number; body: unknown };
+type Reply = { status?: number; body: unknown; headers?: Record<string, string> };
 
-const json = (body: unknown, status = 200) =>
-  new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
+  new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
 
 const textReply = (text: string): Reply => ({ body: { content: [{ type: "text", text }], stop_reason: "end_turn" } });
 const toolReply = (name: string, input: unknown, id = "toolu_1"): Reply =>
@@ -55,7 +55,7 @@ function fakeFetch({ tester = true as unknown, testerStatus = 200, model = [] as
     if (url === modelUrl) {
       const next = queue.length > 1 ? queue.shift()! : queue[0];
       if (!next) return json({ content: [{ type: "text", text: "default answer" }], stop_reason: "end_turn" });
-      return json(next.body, next.status ?? 200);
+      return json(next.body, next.status ?? 200, next.headers);
     }
     throw new Error("unexpected URL " + url);
   };
@@ -1264,13 +1264,13 @@ test("openai: length keeps the text with a note; content_filter and refusal 422;
   const orig = console.log;
   console.log = (s: string) => { logs.push(String(s)); };
   try {
-    const failing = fakeFetch({ modelUrl: OA_URL, model: [{ status: 401, body: { error: { message: "token not from a valid issuer secret-detail", type: "invalid_request_error", code: "invalid_issuer" } } }] });
+    const failing = fakeFetch({ modelUrl: OA_URL, model: [{ status: 401, headers: { "x-request-id": "req-123" }, body: { error: { message: "token not from a valid issuer secret-detail", type: "invalid_request_error", code: "invalid_issuer" } } }] });
     const res = await handle(post(chatBody), OA_ENV, failing.impl);
     assert.equal(res.status, 502);
     assert.deepEqual(await res.json(), { error: "Model service error 401" });
   } finally { console.log = orig; }
   assert.ok(logs.some((l) => l.includes('"llmStatus":401') && l.includes('"llmError":"invalid_issuer"')), logs.join("\n"));
-  assert.ok(logs.some((l) => l.includes('"requestId"')), logs.join("\n"));
+  assert.ok(logs.some((l) => l.includes('"requestId":"req-123"')), logs.join("\n"));
   assert.ok(!logs.join("").includes("secret-detail") && !logs.join("").includes("gw-secret-test"));
 });
 
@@ -1302,6 +1302,7 @@ test("impact prompt without web search: data tools, no web tool names, same repo
   assert.match(p, /No web search was made/);
   assert.match(p, /get_csr/);
   assert.match(p, /search_country_reports/);
+  assert.match(p, /2 to 4 key words/);
   const format = impactSystem().slice(impactSystem().indexOf("Answer with a Markdown report"));
   assert.ok(format.length > 500 && p.endsWith(format));
   assert.deepEqual(TOOLS_IMPACT_DATA.map((t) => t.name), ["get_project", "search_projects", "get_csr", "search_csrs", "search_recitals", "search_country_reports"]);
@@ -1358,4 +1359,39 @@ test("openai: briefing refused 422, unreadable 502; expand refused or unreadable
   assert.deepEqual(await (await handle(post({ service: "expand", query: "wildfire" }), OA_ENV, e1.impl)).json(), { terms: [], saved: false });
   const e2 = fakeFetch({ modelUrl: OA_URL, model: [oaText("terms: fires")] });
   assert.deepEqual(await (await handle(post({ service: "expand", query: "wildfire" }), OA_ENV, e2.impl)).json(), { terms: [], saved: false });
+});
+
+test("openai: truncated briefing is logged without content and gives 502", async () => {
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (s: string) => { logs.push(String(s)); };
+  try {
+    const f = fakeFetch({ modelUrl: OA_URL, model: [oaText('{"headline": "partial', "length")] });
+    assert.equal((await handle(post(briefingBody), OA_ENV, f.impl)).status, 502);
+  } finally { console.log = orig; }
+  assert.ok(logs.some((l) => l.includes('"stop":"max_tokens"')), logs.join("\n"));
+  assert.ok(!logs.join("").includes("partial"));
+});
+
+test("timeouts: openai briefing 120 s and expand 30 s, anthropic unchanged", async () => {
+  assert.equal(OPENAI_BRIEFING_TIMEOUT_MS, 120000);
+  assert.equal(OPENAI_EXPAND_TIMEOUT_MS, 30000);
+  assert.ok(OPENAI_BRIEFING_TIMEOUT_MS < DEADLINE_MS);
+  const seen: number[] = [];
+  const orig = AbortSignal.timeout;
+  AbortSignal.timeout = ((ms: number) => { seen.push(ms); return orig.call(AbortSignal, ms); }) as typeof AbortSignal.timeout;
+  try {
+    await handle(post(briefingBody), OA_ENV, fakeFetch({ modelUrl: OA_URL, model: [oaText(JSON.stringify(BRIEFING_JSON))] }).impl);
+    await handle(post({ service: "expand", query: "wildfire" }), OA_ENV, fakeFetch({ modelUrl: OA_URL, model: [oaText("{}")] }).impl);
+    await handle(post(briefingBody), ENV, fakeFetch({ model: [textReply(JSON.stringify(BRIEFING_JSON))] }).impl);
+    await handle(post({ service: "expand", query: "wildfire" }), ENV, fakeFetch({ model: [textReply("{}")] }).impl);
+  } finally { AbortSignal.timeout = orig; }
+  assert.deepEqual(seen.filter((m) => [120000, 30000, 60000, 15000].includes(m)), [120000, 30000, 60000, 15000]);
+});
+
+test("openai: expand tolerates a fenced JSON answer", async () => {
+  const fenced = "```json\n" + JSON.stringify({ terms: ["rural fires"] }) + "\n```";
+  const f = fakeFetch({ modelUrl: OA_URL, model: [oaText(fenced)] });
+  const res = await handle(post({ service: "expand", query: "wildfire" }), OA_ENV, f.impl);
+  assert.deepEqual(await res.json(), { terms: ["rural fires"], saved: false });
 });
