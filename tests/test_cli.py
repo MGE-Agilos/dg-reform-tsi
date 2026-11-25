@@ -388,3 +388,24 @@ def test_csr_build_fetch_missing_completes_the_local_copy(tmp_path, capsys, monk
     monkeypatch.setattr(csr_commission, "fetch_missing", boom)
     assert cli.main(["--settings", str(settings), "csr-build", "--fetch-missing"]) == 1
     assert "téléchargement des PDF CSR impossible" in capsys.readouterr().err
+
+
+def test_db_sync_without_url_is_exit_1(monkeypatch, capsys):
+    monkeypatch.delenv("TSI_DATABASE_URL", raising=False)
+    monkeypatch.setattr("tsi_agent.db_sync.read_dotenv", lambda path: {})
+    assert cli.main(["db-sync", "--dry-run"]) == 1
+    assert "TSI_DATABASE_URL" in capsys.readouterr().err
+
+
+def test_db_sync_load_and_dry_run(monkeypatch, capsys):
+    from tsi_agent import db_sync, supabase_sync
+    monkeypatch.setenv("TSI_DATABASE_URL", "postgresql://u:p@h/db")
+    monkeypatch.setattr(supabase_sync, "build_rows", lambda out: {"projects": [{"project_id": "p"}]})
+    monkeypatch.setattr(db_sync, "load", lambda rows, url, schema, role, backup=None: {"projects": 1, "warnings": ["w"]})
+    assert cli.main(["db-sync"]) == 0
+    captured = capsys.readouterr()
+    assert '"projects": 1' in captured.out and "ATTENTION : w" in captured.err
+    report = {"schema": "public", "role": "r", "missing": [], "missing_optional": [], "not_writable": ["csrs"]}
+    monkeypatch.setattr(db_sync, "check", lambda url, schema, role: report)
+    assert cli.main(["db-sync", "--dry-run"]) == 1
+    assert "non modifiables ['csrs']" in capsys.readouterr().err

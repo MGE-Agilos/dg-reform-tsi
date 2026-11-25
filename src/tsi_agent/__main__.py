@@ -183,6 +183,10 @@ def main(argv: list[str] | None = None) -> int:
     reports.add_argument("--country", action="append", dest="countries", help="code ISO (répétable ; défaut : les 27)")
     reports.add_argument("--force", action="store_true", help="retélécharger les rapports déjà présents")
     sub.add_parser("supabase-sync", help="publier projets, CSR, liens et anomalies dans Supabase (explorateur web)")
+    dbs = sub.add_parser("db-sync", help="charger projets, CSR, liens et anomalies dans la base PostgreSQL d'une "
+                                         "installation auto-hébergée (connexion directe, une transaction)")
+    dbs.add_argument("--dry-run", action="store_true",
+                     help="vérifier connexion, tables et droits d'écriture sans rien écrire (code 1 si un problème)")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
@@ -404,6 +408,28 @@ def main(argv: list[str] | None = None) -> int:
             summary = push(rows, url, key, backup=Path(settings.output_dir) / "state" / "supabase_rows.json")
         except (SyncError, httpx.HTTPError, OSError) as exc:
             print(f"ERREUR : {exc} — relancer supabase-sync (les tables peuvent etre partielles)", file=sys.stderr)
+            return 1
+        for warning in summary.get("warnings") or []:
+            print(f"ATTENTION : {warning}", file=sys.stderr)
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        return 0
+    if args.command == "db-sync":
+        from tsi_agent.db_sync import check, database_settings, load
+        from tsi_agent.supabase_sync import SyncError, build_rows
+        try:
+            url, schema, role = database_settings()
+            rows = build_rows(Path(settings.output_dir))
+            if args.dry_run:
+                report = {**check(url, schema, role), "rows": {t: len(v) for t, v in rows.items()}}
+                print(json.dumps(report, indent=2, ensure_ascii=False))
+                problems = report["missing"] or report["not_writable"]
+                if problems:
+                    print(f"ERREUR : tables absentes {report['missing']} ou non modifiables {report['not_writable']} "
+                          f"(schema {schema}, role {report['role']})", file=sys.stderr)
+                return 1 if problems else 0
+            summary = load(rows, url, schema, role, backup=Path(settings.output_dir) / "state" / "db_rows.json")
+        except (SyncError, OSError) as exc:
+            print(f"ERREUR : {exc} — base inchangée (transaction annulée)", file=sys.stderr)
             return 1
         for warning in summary.get("warnings") or []:
             print(f"ATTENTION : {warning}", file=sys.stderr)
