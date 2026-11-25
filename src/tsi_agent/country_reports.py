@@ -1,10 +1,11 @@
-"""Country reports du Semestre europeen (2026) : un document de travail de la Commission (SWD) par Etat membre.
+"""Country reports du Semestre europeen (depuis 2026) : un document de travail de la Commission (SWD) par Etat membre.
 
 Chaque rapport (une centaine de pages, PDF anglais) analyse la situation economique et sociale du pays ; les
 recommandations et leurs considerants en sont la conclusion. Source : la page pays d'ECFIN (PAGE_URL), dont le premier
 lien de telechargement anglais du rapport de l'annee (nom de fichier « .._SWD_<annee>_... ») est le rapport.
 
-`fetch_reports` telecharge les rapports absents (fetcher poli, extraction pdfplumber des livrables) et ecrit
+`fetch_reports` telecharge les rapports absents (fetcher poli, extraction pdfplumber des livrables) : celui de
+l'annee en cours s'il est publie, sinon celui de l'annee precedente (jamais avant YEAR) ; il ecrit
 output/country_reports/<ISO>-<annee>.md : front matter (pays, annee, liens, pages) puis le texte, page par page
 (marqueurs `--- page N ---`). Sans LLM.
 
@@ -18,6 +19,7 @@ import html
 import os
 import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
@@ -26,7 +28,7 @@ import yaml
 from tsi_agent.countries import COUNTRIES, name_from_iso
 from tsi_agent.render import parse_front_matter
 
-YEAR = 2026
+YEAR = 2026  # premiers rapports repris (les plus anciens ne sont pas telecharges)
 DIR = "country_reports"
 PAGE_URL = ("https://economy-finance.ec.europa.eu/economic-surveillance-eu-member-states/"
             "country-pages-including-country-reports/country-report-{slug}_en")
@@ -140,48 +142,70 @@ def write_report(output_dir: Path, report: Report) -> Path:
 
 
 def load_reports(output_dir: Path) -> list[Report]:
-    out = []
+    """Rapport le plus recent de chaque pays (la page et l'assistant decrivent une annee par pays)."""
+    latest: dict[str, Report] = {}
     for path in sorted((output_dir / DIR).glob("*.md")):
         try:
             fm, body = parse_front_matter(path.read_text(encoding="utf-8").replace("\r\n", "\n"))
         except ValueError:
             continue
         if isinstance(fm, dict) and fm.get("country") in COUNTRIES and isinstance(fm.get("year"), int):
-            out.append(Report(fm["country"], fm["year"], str(fm.get("source_url") or ""), str(fm.get("page_url") or ""),
-                              int(fm.get("pages") or 0), body))
-    return out
+            report = Report(fm["country"], fm["year"], str(fm.get("source_url") or ""), str(fm.get("page_url") or ""),
+                            int(fm.get("pages") or 0), body)
+            if fm["country"] not in latest or report.year > latest[fm["country"]].year:
+                latest[fm["country"]] = report
+    return [latest[c] for c in sorted(latest)]
 
 
-def fetch_reports(output_dir: Path, fetcher: Any, countries: list[str] | None = None, year: int = YEAR,
-                  reader: Callable[[bytes], tuple[int, str]] | None = None, force: bool = False) -> dict[str, Any]:
-    """Telecharge les rapports absents (ou tous avec `force`) ; resume {fetched, skipped, failed: {pays: raison}}."""
+def fetch_reports(output_dir: Path, fetcher: Any, countries: list[str] | None = None, year: int | None = None,
+                  reader: Callable[[bytes], tuple[int, str]] | None = None, force: bool = False,
+                  today: int | None = None) -> dict[str, Any]:
+    """Telecharge les rapports absents (ou tous avec `force`) ; resume {fetched, skipped, failed: {pays: raison}}.
+
+    Sans `year` : l'annee en cours si la page du pays publie son rapport, sinon l'annee precedente ; un rapport deja
+    present pour l'une de ces annees est garde (skipped). Jamais avant YEAR.
+    """
     from tsi_agent.http import FetchError
 
     reader = reader or pdf_text_columns
+    last = today or date.today().year
+    years = [year] if year else [y for y in (last, last - 1) if y >= YEAR]
     summary: dict[str, Any] = {"fetched": [], "skipped": [], "failed": {}}
     for country in countries or list(COUNTRIES):
-        if not force and report_path(output_dir, country, year).exists():
-            summary["skipped"].append(country)
-            continue
         url = page_url(country)
-        try:
-            pdf = find_pdf(fetcher.get(url).content.decode("utf-8", "replace"), year)
-            if not pdf:
-                summary["failed"][country] = f"no {year} English report link on {url}"
-                continue
-            data = fetcher.get(pdf, cache=False).content
-            if not data.startswith(b"%PDF"):
-                summary["failed"][country] = "download is not a PDF"
-                continue
-            pages, text = reader(data)
-        except FetchError as exc:
-            summary["failed"][country] = str(exc)
-            continue
-        except Exception as exc:  # pdfplumber leve des types varies sur un fichier abime
-            summary["failed"][country] = f"{type(exc).__name__}: {exc}"
-            continue
-        write_report(output_dir, Report(country, year, pdf, url, pages, text))
-        summary["fetched"].append(country)
+        page_html: str | None = None
+        outcome: str | None = None
+        for y in years:
+            if not force and report_path(output_dir, country, y).exists():
+                outcome = "skipped"
+                break
+            try:
+                if page_html is None:
+                    page_html = fetcher.get(url).content.decode("utf-8", "replace")
+                pdf = find_pdf(page_html, y)
+                if not pdf:
+                    continue
+                data = fetcher.get(pdf, cache=False).content
+                if not data.startswith(b"%PDF"):
+                    summary["failed"][country] = "download is not a PDF"
+                    outcome = "failed"
+                    break
+                pages, text = reader(data)
+            except FetchError as exc:
+                summary["failed"][country] = str(exc)
+                outcome = "failed"
+                break
+            except Exception as exc:  # pdfplumber leve des types varies sur un fichier abime
+                summary["failed"][country] = f"{type(exc).__name__}: {exc}"
+                outcome = "failed"
+                break
+            write_report(output_dir, Report(country, y, pdf, url, pages, text))
+            outcome = "fetched"
+            break
+        if outcome is None:
+            summary["failed"][country] = f"no {' or '.join(map(str, years))} English report link on {url}"
+        elif outcome != "failed":
+            summary[outcome].append(country)
     return summary
 
 

@@ -75,3 +75,27 @@ def test_sync_rows_for_reports_and_passages(tmp_path):
                                         "page_url": page_url("PT"), "pages": 3}]
     first = rows["country_report_passages"][0]
     assert first["passage_id"] == "cr-PT-2026-p2-1" and first["report_id"] == "cr-PT-2026" and first["page"] == 2
+
+
+PAGE_2027 = PAGE.replace("PT_SWD_2026_222", "PT_SWD_2027_111")
+PDF_2027 = PDF_URL.replace("PT_SWD_2026_222", "PT_SWD_2027_111")
+
+
+def test_fetch_reports_keeps_the_previous_year_until_the_new_report_is_out(tmp_path):
+    fetcher = FakeFetcher({page_url("PT"): PAGE.encode(), PDF_URL: b"%PDF-1.7 ..."})
+    assert fetch_reports(tmp_path, fetcher, ["PT"], reader=lambda d: (3, TEXT), today=2026)["fetched"] == ["PT"]
+    later = fetch_reports(tmp_path, fetcher, ["PT"], reader=lambda d: (3, TEXT), today=2027)
+    assert later == {"fetched": [], "skipped": ["PT"], "failed": {}}   # 2027 not published yet: 2026 kept
+    fetcher.pages.update({page_url("PT"): PAGE_2027.encode(), PDF_2027: b"%PDF-1.7 ..."})
+    fetcher.calls.clear()
+    out = fetch_reports(tmp_path, fetcher, ["PT"], reader=lambda d: (5, TEXT), today=2027)
+    assert out["fetched"] == ["PT"] and (PDF_2027, False) in fetcher.calls
+    assert report_path(tmp_path, "PT", 2026).exists() and report_path(tmp_path, "PT", 2027).exists()
+    [report] = load_reports(tmp_path)   # latest year per country only
+    assert (report.report_id, report.pages) == ("cr-PT-2027", 5)
+
+
+def test_fetch_reports_failure_names_the_years_tried(tmp_path):
+    fetcher = FakeFetcher({page_url("ES"): b"<html></html>"})
+    out = fetch_reports(tmp_path, fetcher, ["ES"], today=2027)
+    assert out["failed"]["ES"].startswith("no 2027 or 2026 English report link")
