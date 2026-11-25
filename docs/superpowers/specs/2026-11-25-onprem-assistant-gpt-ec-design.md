@@ -44,9 +44,10 @@ limits, statistics). What depends on the API moves behind a small connector inte
 - **Request.** Anthropic: as today. OpenAI: `POST {base}/chat/completions` with `Authorization: Bearer <key>`,
   `model`, the system prompt as the first message, `tools` as `{type: "function", function: {name, description,
   parameters}}` built from the same tool schemas, `tool_choice: "none"` on the last call, `max_completion_tokens`
-  from `MAX_TOKENS`, and `reasoning_effort` unless turned off. No cache markers (the gateway caches on its own).
+  from `OPENAI_MAX_TOKENS` (larger than `MAX_TOKENS`: they include the reasoning tokens), and `reasoning_effort` unless turned off. No cache markers (the gateway caches on its own).
 - **Reading the answer.** OpenAI `finish_reason`: `tool_calls` is a tool round, `stop` is the final answer, `length`
-  is truncation (same note as `max_tokens`), `content_filter` is a refusal (422). Tool arguments are parsed from JSON;
+  is truncation (same note as `max_tokens`; during a tool round the content is empty, so the answer is
+  the usual "Empty response" 502), `content_filter` is a refusal (422). Tool arguments are parsed from JSON;
   unreadable arguments give a `Tool error:` result to the model, never an exception.
 - **Conversation.** The assistant message is sent back as received (`content`, `tool_calls`); each tool call gets one
   `{role: "tool", tool_call_id, content}` message, unknown tools included (the API refuses a call left unanswered).
