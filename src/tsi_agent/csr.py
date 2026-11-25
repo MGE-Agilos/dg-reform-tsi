@@ -10,6 +10,7 @@ Cycle (June)") : texte et domaines de la derniere version, historique des evalua
 
 import re
 from collections import defaultdict
+from datetime import date
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,7 +18,8 @@ from tsi_agent.countries import iso_from_name, name_from_iso
 from tsi_agent.render import render
 
 SOURCE_URL = "https://ec.europa.eu/economy_finance/country-specific-recommendations-database/"
-YEAR_FROM, YEAR_TO = 2016, 2025  # SRSP (2017) et TSI (2021) : CSR des annees precedant les demandes
+YEAR_FROM = 2016  # SRSP (2017) et TSI (2021) : CSR des annees precedant les demandes
+# Derniere annee : la plus recente de l'export ECFIN (les CSR adoptees y arrivent d'elles-memes), au plus l'annee en cours.
 COLUMNS = ("Country", "Year", "CSR Nbr", "Version", "Text", "Policy Area(s)", "EAR(s)", "MIP",
            "Annual/Multiannual", "Assessment")
 _VERSION_YEAR = re.compile(r"^\s*(\d{4})")
@@ -173,8 +175,11 @@ def _part(part_id: str, versions: list[dict]) -> Part:
                 [(y, a) for y, a in assessments if a])
 
 
-def build_csrs(rows: list[dict], year_from: int = YEAR_FROM, year_to: int = YEAR_TO) -> list[Csr]:
-    """CSR des Etats membres (pays inconnus, dont le Royaume-Uni, ignores) adoptees entre year_from et year_to."""
+def build_csrs(rows: list[dict], year_from: int = YEAR_FROM, year_to: int | None = None) -> list[Csr]:
+    """CSR des Etats membres (pays inconnus, dont le Royaume-Uni, ignores) adoptees entre year_from et year_to
+    (defaut : toutes celles de l'export jusqu'a l'annee en cours ; une annee future serait une erreur de saisie)."""
+    if year_to is None:
+        year_to = date.today().year
     grouped: dict[tuple[str, int, str], dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for r in rows:
         iso = iso_from_name(_clean(r.get("Country")))

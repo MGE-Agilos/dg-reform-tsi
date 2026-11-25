@@ -157,7 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     csrb = sub.add_parser("csr-build", help="fiches Markdown des CSR (output/csr) : export ECFIN, recommandations 2026 "
                                             "de la Commission (texte des PDF) et un document par pays et par an")
     csrb.add_argument("--year-from", type=int, default=2016)
-    csrb.add_argument("--year-to", type=int, default=2025)
+    csrb.add_argument("--year-to", type=int, default=None,
+                      help="dernière année (défaut : la plus récente de l'export, au plus l'année en cours)")
     csrb.add_argument("--skip-commission", action="store_true",
                       help="ne pas inclure les recommandations 2026 de la Commission")
     csrb.add_argument("--fetch-missing", action="store_true",

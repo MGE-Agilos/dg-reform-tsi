@@ -242,3 +242,13 @@ def test_recitals_parenthesised_footnotes():
 
 def test_recitals_absent_without_whereas():
     assert parse_text(_doc("Netherlands", NL)).recitals == []
+
+
+def test_adopted_csrs_replace_commission_recommendations_per_country():
+    from tsi_agent.csr import Csr, Part
+    from tsi_agent.csr_commission import with_commission
+    commission = [Csr(c, 2026, "1", Part(f"csr-{c}-2026-1", "Text.", [], []), [], stage=COMMISSION_STAGE)
+                  for c in ("HR", "NL")]
+    adopted = [Csr("HR", 2026, "1", Part("csr-HR-2026-1", "Adopted.", [], []), [])]
+    merged = with_commission(adopted, commission)
+    assert [(c.country, c.stage == COMMISSION_STAGE) for c in merged] == [("HR", False), ("NL", True)]

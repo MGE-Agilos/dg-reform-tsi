@@ -284,10 +284,10 @@ def load(output_dir: Path, year: int = YEAR) -> CommissionParse:
 
 
 def with_commission(csrs: list[Csr], commission: list[Csr]) -> list[Csr]:
-    """CSR de la base ECFIN suivies des recommandations de la Commission d'une annee absente de la base (jamais en
-    double : une fois les CSR adoptees publiees par ECFIN, la base l'emporte)."""
-    known = {c.year for c in csrs}
-    return [*csrs, *(c for c in commission if c.year not in known)]
+    """CSR de la base ECFIN suivies des recommandations de la Commission d'un pays et d'une annee absents de la base
+    (jamais en double : des que les CSR adoptees d'un pays sont publiees par ECFIN, la base l'emporte pour ce pays)."""
+    known = {(c.country, c.year) for c in csrs}
+    return [*csrs, *(c for c in commission if (c.country, c.year) not in known)]
 
 
 def load_all_csrs(output_dir: Path, include_commission: bool = True) -> list[Csr]:

@@ -24,7 +24,7 @@ ROWS = [
     row(country="Czech Republic", year="2019", nbr="2.1", text="Reduce red tape.", areas="-", assessment="-"),
     row(country="United Kingdom", year="2018", nbr="1"),
     row(year="2015", nbr="1"),
-    row(year="2026", nbr="1"),
+    row(year="2099", nbr="1"),  # future year: a typing error, outside the default window
 ]
 
 
@@ -47,7 +47,13 @@ def test_csr_without_full_row_uses_subpart_texts():
 
 
 def test_year_window_is_configurable():
-    assert {c.year for c in build_csrs(ROWS, year_from=2015, year_to=2026)} == {2015, 2019, 2023, 2026}
+    assert {c.year for c in build_csrs(ROWS, year_from=2015, year_to=2099)} == {2015, 2019, 2023, 2099}
+    assert {c.year for c in build_csrs(ROWS, year_to=2020)} == {2019}
+
+
+def test_default_window_ends_with_the_latest_year_of_the_export():
+    rows = ROWS + [row(year="2025", nbr="1"), row(year="2026", nbr="1")]
+    assert {c.year for c in build_csrs(rows)} == {2019, 2023, 2025, 2026}  # 2015 before 2016, 2099 in the future
 
 
 def test_render_front_matter_and_sections():
