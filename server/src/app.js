@@ -7,7 +7,7 @@
 //   POST /api/auth/logout         ends the session
 //   *    /api/rest/v1/...         data requests of the page, forwarded to PostgREST (row-level security applies)
 //   POST /api/admin               administration of the users (administrators only)
-//   POST /api/assistant           assistant (forwarded to ASSISTANT_URL when configured)
+//   POST /api/assistant           assistant (tsi-assistant on GPT@EC, when LLM_BASE_URL is set)
 import { readFile, stat } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { seal, unseal, uuidV5, userToken, verifyJwt, serviceToken } from "./tokens.js";
@@ -76,7 +76,7 @@ function send(res, status, body, headers = {}) {
   res.end(isText ? body : JSON.stringify(body));
 }
 
-export function createApp(cfg, { fetchImpl = fetch, provider = null, log = console.log } = {}) {
+export function createApp(cfg, { fetchImpl = fetch, provider = null, log = console.log, assistant = null } = {}) {
   const db = store(cfg, fetchImpl);
 
   const session = (req) => unseal(parseCookies(req.headers.cookie)[SESSION_COOKIE], cfg.sessionSecret);
@@ -185,17 +185,10 @@ export function createApp(cfg, { fetchImpl = fetch, provider = null, log = conso
     res.end(req.method === "HEAD" ? undefined : Buffer.from(await up.arrayBuffer()));
   }
 
-  async function forwardAssistant(req, res) {
-    if (!cfg.assistantUrl) return send(res, 503, { error: "The assistant is not available yet on this installation" });
-    const body = await readBody(req);
-    let up;
-    try {
-      up = await fetchImpl(cfg.assistantUrl, { method: "POST", body, signal: AbortSignal.timeout(170000),
-        headers: { "content-type": "application/json", authorization: req.headers.authorization || "" } });
-    } catch {
-      return send(res, 502, { error: "The assistant service is unreachable" });
-    }
-    send(res, up.status, Buffer.from(await up.arrayBuffer()), { "Content-Type": up.headers.get("content-type") || "application/json" });
+  async function runAssistant(req, res) {
+    if (!assistant) return send(res, 503, { error: "The assistant is not available yet on this installation" });
+    const out = await assistant(req, await readBody(req));
+    send(res, out.status, Buffer.from(await out.arrayBuffer()), { "Content-Type": out.headers.get("content-type") || "application/json" });
   }
 
   async function serveStatic(req, res, pathname) {
@@ -227,7 +220,7 @@ export function createApp(cfg, { fetchImpl = fetch, provider = null, log = conso
             { headers: { Authorization: `Bearer ${serviceToken(cfg.jwtSecret)}` }, signal: AbortSignal.timeout(5000) });
           database = r.ok;
         } catch { /* unreachable */ }
-        return send(res, database ? 200 : 503, { ok: database, database, assistant: Boolean(cfg.assistantUrl), auth: cfg.authMode });
+        return send(res, database ? 200 : 503, { ok: database, database, assistant: Boolean(assistant), auth: cfg.authMode });
       }
 
       if (p === "/api/auth/config" && req.method === "GET") return send(res, 200, { mode: cfg.authMode });
@@ -303,7 +296,7 @@ export function createApp(cfg, { fetchImpl = fetch, provider = null, log = conso
         return send(res, 200, out);
       }
 
-      if (p === "/api/assistant" && req.method === "POST") return await forwardAssistant(req, res);
+      if (p === "/api/assistant" && req.method === "POST") return await runAssistant(req, res);
 
       return send(res, 404, { error: "Not found" });
     } catch (e) {

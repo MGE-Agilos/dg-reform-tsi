@@ -5,12 +5,16 @@
   "description": "TSI x CSR Explorer: application service of the self-hosted installation (sign-in, data API, administration)",
   "type": "module",
   "main": "index.js",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22.6"
+  },
   "scripts": {
-    "start": "node index.js",
-    "test": "node --test"
+    "start": "node --experimental-strip-types --disable-warning=ExperimentalWarning index.js",
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test",
+    "assistant-check": "node --disable-warning=ExperimentalWarning assistant-check.js"
   },
   "dependencies": {
-    "openid-client": "6.9.1"
+    "openid-client": "6.9.1",
+    "undici": "7.16.0"
   }
 }

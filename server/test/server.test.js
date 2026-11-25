@@ -11,6 +11,8 @@ import { loadConfig, ConfigError } from "../src/config.js";
 import { createApp, safeNext, parseCookies } from "../src/app.js";
 import { oidcProvider } from "../src/auth.js";
 import { runAdmin, validate, HttpError } from "../src/admin.js";
+import { assistantEnv, routedFetch, createAssistant } from "../src/assistant.js";
+import { llmConfig } from "../src/config.js";
 
 const SECRET = "s".repeat(40);
 const SESSION = "k".repeat(40);
@@ -225,4 +227,82 @@ test("OpenID Connect: redirect with PKCE, state checked at the callback, session
 
 test("parseCookies", () => {
   assert.deepEqual(parseCookies("a=1; tsi_session=x%3Dy"), { a: "1", tsi_session: "x=y" });
+});
+
+// ---------- assistant on an OpenAI-compatible gateway (GPT@EC) ----------
+
+const LLM_ENV = { LLM_BASE_URL: "https://gateway.example/v1/", LLM_API_KEY: "gw-key" };
+
+test("assistant settings: off without LLM_BASE_URL, key required, key file, defaults, reasoning on/off", () => {
+  assert.equal(loadConfig(BASE_ENV).llm, null);
+  assert.throws(() => loadConfig({ ...BASE_ENV, LLM_BASE_URL: "https://gateway.example/v1" }), /LLM_API_KEY/);
+  assert.throws(() => loadConfig({ ...BASE_ENV, ...LLM_ENV, LLM_BASE_URL: "gateway" }), /LLM_BASE_URL/);
+  assert.throws(() => loadConfig({ ...BASE_ENV, ...LLM_ENV, LLM_REASONING: "maybe" }), /LLM_REASONING/);
+  assert.deepEqual(loadConfig({ ...BASE_ENV, ...LLM_ENV }).llm,
+    { baseUrl: "https://gateway.example/v1", apiKey: "gw-key", model: "gpt-5.1", expandModel: "gpt-5.1", reasoning: true });
+  const dir = mkdtempSync(join(tmpdir(), "tsi-llm-"));
+  writeFileSync(join(dir, "key"), "file-key\n");
+  assert.deepEqual(llmConfig({ LLM_BASE_URL: "https://g/v1", LLM_API_KEY_FILE: join(dir, "key"), LLM_MODEL: "m", LLM_EXPAND_MODEL: "s", LLM_REASONING: "OFF" }),
+    { baseUrl: "https://g/v1", apiKey: "file-key", model: "m", expandModel: "s", reasoning: false });
+});
+
+test("assistant environment and routing: gateway calls through the proxy-aware fetch, the others direct", async () => {
+  const cfg = loadConfig({ ...BASE_ENV, ...LLM_ENV });
+  const env = assistantEnv(cfg);
+  assert.equal(env.TSI_LLM_PROVIDER, "openai");
+  assert.equal(env.TSI_OPENAI_BASE_URL, "https://gateway.example/v1");
+  assert.equal(env.TSI_OPENAI_API_KEY, "gw-key");
+  assert.equal(env.TSI_MODEL, "gpt-5.1");
+  assert.equal(env.TSI_OPENAI_REASONING, "on");
+  assert.equal(env.TSI_REST_URL, "http://pgrst");
+  const claims = verifyJwt(env.SUPABASE_SERVICE_ROLE_KEY, SECRET);
+  assert.equal(claims.role, "service_role");
+  assert.ok(claims.exp - Math.floor(Date.now() / 1000) >= 290);
+  const seen = [];
+  const route = routedFetch("https://gateway.example/v1", async (u) => { seen.push("llm"); return new Response("{}"); },
+    async (u) => { seen.push("direct"); return new Response("{}"); });
+  await route("https://gateway.example/v1/chat/completions", {});
+  await route("http://pgrst/projects?x", {});
+  await route("https://gateway.example/v10/other", {});
+  assert.deepEqual(seen, ["llm", "direct", "direct"]);
+});
+
+test("assistant in the service: user token to PostgREST, gateway key, impact saved with a service token; health", async () => {
+  const dbCalls = [];
+  const db = async (url, init = {}) => {
+    const u = new URL(url);
+    dbCalls.push({ u, init });
+    if (u.pathname === "/rpc/is_tester") return Response.json(true);
+    if (u.pathname === "/projects") return Response.json([{ project_id: "p1", title: "Health reform in Croatia", url: "https://reform.example/p1" }]);
+    if (u.pathname === "/impact_reports") return new Response(null, { status: 201 });
+    return Response.json([]);
+  };
+  const REPORT_TEXT = "Report\n\nImpact score: 6/10 (moderate) — Confidence: low";
+  const replies = [
+    { choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "get_project", arguments: "{\"project_id\":\"p1\"}" } }] }, finish_reason: "tool_calls" }] },
+    { choices: [{ message: { content: REPORT_TEXT }, finish_reason: "stop" }] },
+  ];
+  const llmCalls = [];
+  const llm = async (url, init) => { llmCalls.push({ url, init }); return Response.json(replies.shift()); };
+  const assistant = await createAssistant(loadConfig({ ...BASE_ENV, ...LLM_ENV }), { fetchImpl: db, llmFetch: llm });
+  const s = await serve(LLM_ENV, { fetchImpl: db, assistant });
+  try {
+    const cookie = await devSignIn(s.base, "user@x.eu");
+    const { access_token } = await (await fetch(`${s.base}/api/auth/session`, { headers: { cookie } })).json();
+    const res = await fetch(`${s.base}/api/assistant`, { method: "POST",
+      headers: { authorization: `Bearer ${access_token}`, "content-type": "application/json" },
+      body: JSON.stringify({ service: "impact", messages: [{ role: "user", content: "Project: Health reform in Croatia (id p1; TSI 2023; countries HR)" }] }) });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { answer: REPORT_TEXT, saved: true });
+    assert.equal(llmCalls.length, 2);
+    assert.equal(llmCalls[0].url, "https://gateway.example/v1/chat/completions");
+    assert.equal(new Headers(llmCalls[0].init.headers).get("authorization"), "Bearer gw-key");
+    const tester = dbCalls.find((c) => c.u.pathname === "/rpc/is_tester");
+    assert.equal(new Headers(tester.init.headers).get("authorization"), `Bearer ${access_token}`);
+    const save = dbCalls.find((c) => c.u.pathname === "/impact_reports");
+    assert.equal(verifyJwt(new Headers(save.init.headers).get("authorization").slice(7), SECRET).role, "service_role");
+    assert.equal(JSON.parse(save.init.body).model, "gpt-5.1");
+    assert.deepEqual(await (await fetch(`${s.base}/api/health`)).json(), { ok: true, database: true, assistant: true, auth: "dev" });
+    assert.equal((await fetch(`${s.base}/api/assistant`, { method: "POST", body: "{}" })).status, 401);
+  } finally { await s.close(); }
 });
