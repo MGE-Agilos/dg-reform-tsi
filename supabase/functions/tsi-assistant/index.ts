@@ -29,7 +29,7 @@ type ApiMessage = { role: "user" | "assistant"; content: string | Block[] };
 type Usage = { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
 type ModelResponse = { content: Block[]; stop_reason: string | null; usage?: Usage };
 /** deadline: absolute time (same clock as now) after which no database call may run. */
-export type ToolContext = { supabaseUrl: string; apikey: string; userAuth: string; fetchImpl: FetchImpl; deadline?: number; now?: () => number };
+export type ToolContext = { restUrl: string; apikey: string; userAuth: string; fetchImpl: FetchImpl; deadline?: number; now?: () => number };
 /** Run statistics, filled in place (also when the run fails) and logged without any content. */
 export type RunStats = { steps: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; web_searches: number; web_fetches: number };
 
@@ -71,6 +71,13 @@ export class HttpError extends Error {
 }
 
 class ToolError extends Error {}
+
+/** Base URL of the PostgREST API: TSI_REST_URL (self-hosted PostgREST, e.g. http://127.0.0.1:3001), else SUPABASE_URL/rest/v1. */
+export function restUrl(env: Env): string {
+  const url = env.TSI_REST_URL || (env.SUPABASE_URL ? `${env.SUPABASE_URL}/rest/v1` : "");
+  if (!url) throw new HttpError(500, "SUPABASE_URL not configured");
+  return url.replace(/\/+$/, "");
+}
 
 // ---------- prompts ----------
 
@@ -395,7 +402,7 @@ async function db(ctx: ToolContext, path: string, body?: unknown): Promise<unkno
   if (remaining <= 0) throw new ToolError("time limit reached");
   let res: Response;
   try {
-    res = await ctx.fetchImpl(`${ctx.supabaseUrl}/rest/v1/${path}`, {
+    res = await ctx.fetchImpl(`${ctx.restUrl}/${path}`, {
       method: body === undefined ? "GET" : "POST",
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -818,7 +825,7 @@ async function modelRequest(service: ServiceName, body: Record<string, unknown>,
 
 export async function agentLoop(
   service: AgentService, messages: Message[], env: Env, fetchImpl: FetchImpl, now: () => number = Date.now,
-  ctx?: { supabaseUrl: string; apikey: string; userAuth: string }, stats: RunStats = emptyStats(),
+  ctx?: { restUrl: string; apikey: string; userAuth: string }, stats: RunStats = emptyStats(),
 ): Promise<{ answer: string; steps: number; stats: RunStats }> {
   // Cle propre au projet TSI d'abord (le secret ANTHROPIC_API_KEY est partage avec une autre application).
   const key = env.TSI_ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY;
@@ -827,7 +834,7 @@ export async function agentLoop(
   const started = now();
   const deadline = started + DEADLINE_MS;
   const toolCtx: ToolContext = {
-    supabaseUrl: ctx?.supabaseUrl ?? env.SUPABASE_URL ?? "", apikey: ctx?.apikey ?? "", userAuth: ctx?.userAuth ?? "",
+    restUrl: ctx?.restUrl ?? (env.TSI_REST_URL || env.SUPABASE_URL ? restUrl(env) : ""), apikey: ctx?.apikey ?? "", userAuth: ctx?.userAuth ?? "",
     fetchImpl, deadline, now,
   };
   const model = env.TSI_MODEL || DEFAULT_MODEL;
@@ -958,15 +965,15 @@ export const SAVE_DEADLINE_MS = 145000; // from the start of the request: the pa
  * line and the project exists for the user (checked with the user's token; the stored title is the database's).
  * Each call is bounded by min(SAVE_TIMEOUT_MS, time left before handlerStart + SAVE_DEADLINE_MS), at least 1 s.
  * Never throws; failures are logged without content. Returns whether the row was saved. */
-async function saveImpact(answer: string, messages: Message[], env: Env, fetchImpl: FetchImpl, authorization: string,
+async function saveImpact(answer: string, messages: Message[], env: Env, rest: string, fetchImpl: FetchImpl, authorization: string,
   apikey: string, handlerStart: number, now: () => number): Promise<boolean> {
   const key = env.SUPABASE_SERVICE_ROLE_KEY;
   const project = extractProject(messages);
   const impact = parseImpact(answer);
-  if (!key || !env.SUPABASE_URL || !project || !impact) return false;
+  if (!key || !project || !impact) return false;
   const timeout = () => Math.max(1000, Math.min(SAVE_TIMEOUT_MS, handlerStart + SAVE_DEADLINE_MS - now()));
   try {
-    const check = await fetchImpl(`${env.SUPABASE_URL}/rest/v1/projects?project_id=${eq(project.project_id)}&select=title`, {
+    const check = await fetchImpl(`${rest}/projects?project_id=${eq(project.project_id)}&select=title`, {
       method: "GET", headers: { "apikey": apikey, "Authorization": authorization, "Accept": "application/json" },
       signal: AbortSignal.timeout(timeout()),
     });
@@ -992,7 +999,7 @@ async function saveImpact(answer: string, messages: Message[], env: Env, fetchIm
     model: env.TSI_MODEL || DEFAULT_MODEL, source: "web", created_by: jwtSub(authorization),
   };
   try {
-    const res = await fetchImpl(`${env.SUPABASE_URL}/rest/v1/impact_reports`, {
+    const res = await fetchImpl(`${rest}/impact_reports`, {
       method: "POST", headers, body: JSON.stringify(row), signal: AbortSignal.timeout(timeout()),
     });
     if (!res.ok) {
@@ -1410,9 +1417,9 @@ export function validate(body: unknown): { service: AgentService; messages: Mess
   return { service, messages: clean };
 }
 
-async function checkTester(authorization: string, apikey: string, env: Env, fetchImpl: FetchImpl): Promise<boolean> {
+async function checkTester(rest: string, authorization: string, apikey: string, fetchImpl: FetchImpl): Promise<boolean> {
   try {
-    const res = await fetchImpl(`${env.SUPABASE_URL}/rest/v1/rpc/is_tester`, {
+    const res = await fetchImpl(`${rest}/rpc/is_tester`, {
       method: "POST",
       headers: { "apikey": apikey, "Authorization": authorization, "Content-Type": "application/json" },
       body: "{}",
@@ -1447,10 +1454,10 @@ export async function handle(req: Request, env: Env, fetchImpl: FetchImpl, now: 
   let status = 500;
   const stats = emptyStats();
   try {
-    if (!env.SUPABASE_URL) throw new HttpError(500, "SUPABASE_URL not configured");
+    const rest = restUrl(env);
     const apikey = env.SUPABASE_ANON_KEY || req.headers.get("apikey") || "";
     if (!apikey) throw new HttpError(500, "SUPABASE_ANON_KEY not configured");
-    if (!(await checkTester(authorization, apikey, env, fetchImpl))) {
+    if (!(await checkTester(rest, authorization, apikey, fetchImpl))) {
       status = 403;
       return reply(403, { error: "Access not authorised" });
     }
@@ -1476,9 +1483,9 @@ export async function handle(req: Request, env: Env, fetchImpl: FetchImpl, now: 
     const valid = validate(body);
     service = valid.service;
     const result = await agentLoop(valid.service, valid.messages, env, fetchImpl, now,
-      { supabaseUrl: env.SUPABASE_URL, apikey, userAuth: authorization }, stats);
+      { restUrl: rest, apikey, userAuth: authorization }, stats);
     const saved = valid.service === "impact"
-      ? await saveImpact(result.answer, valid.messages, env, fetchImpl, authorization, apikey, handlerStart, now)
+      ? await saveImpact(result.answer, valid.messages, env, rest, fetchImpl, authorization, apikey, handlerStart, now)
       : false;
     status = 200;
     return reply(200, { answer: result.answer, saved });

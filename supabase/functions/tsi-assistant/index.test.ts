@@ -34,23 +34,24 @@ const PROJECTS = [
   { project_id: "p3", title: "Pension reform", programme: "SRSP", year: 2019, countries: ["PT"], policy_area: null, detail_page: true, url: null, csrs: [] },
 ];
 
-function fakeFetch({ tester = true as unknown, testerStatus = 200, model = [] as Reply[], projects = PROJECTS as unknown[], dbStatus = 200, rpc = {} as Record<string, unknown> } = {}) {
+function fakeFetch({ tester = true as unknown, testerStatus = 200, model = [] as Reply[], projects = PROJECTS as unknown[], dbStatus = 200, rpc = {} as Record<string, unknown>, modelUrl = "https://api.anthropic.com/v1/messages" } = {}) {
   const calls: Call[] = [];
   const queue = [...model];
+  const isDb = (url: string) => url.includes("/rest/v1/") || url.startsWith("http://127.0.0.1:3001/");
   const impl = async (url: string, init: RequestInit) => {
     calls.push({ url, init });
-    if (url.endsWith("/rest/v1/rpc/is_tester")) return json(tester, testerStatus);
-    if (url.includes("/rest/v1/")) {
+    if (url.endsWith("/rpc/is_tester")) return json(tester, testerStatus);
+    if (isDb(url)) {
       if (dbStatus !== 200) return json({ message: "db error" }, dbStatus);
       const rpcName = /\/rpc\/([a-z_]+)/.exec(url)?.[1];
       if (rpcName) return json(rpc[rpcName] ?? []);
-      if (url.includes("/rest/v1/projects?")) {
+      if (url.includes("/projects?")) {
         const offset = Number(/offset=(\d+)/.exec(url)?.[1] ?? 0);
         return json(offset ? [] : projects);
       }
       return json([]);
     }
-    if (url === "https://api.anthropic.com/v1/messages") {
+    if (url === modelUrl) {
       const next = queue.length > 1 ? queue.shift()! : queue[0];
       if (!next) return json({ content: [{ type: "text", text: "default answer" }], stop_reason: "end_turn" });
       return json(next.body, next.status ?? 200);
@@ -59,8 +60,8 @@ function fakeFetch({ tester = true as unknown, testerStatus = 200, model = [] as
   };
   return {
     impl, calls,
-    modelCalls: () => calls.filter((c) => c.url.startsWith("https://api.anthropic.com")),
-    dbCalls: () => calls.filter((c) => c.url.includes("/rest/v1/") && !c.url.endsWith("/rpc/is_tester")),
+    modelCalls: () => calls.filter((c) => c.url === modelUrl),
+    dbCalls: () => calls.filter((c) => isDb(c.url) && !c.url.endsWith("/rpc/is_tester")),
   };
 }
 
@@ -76,7 +77,7 @@ function post(body: unknown, { token = "user-jwt", origin = ORIGIN } = {}) {
 
 const chatBody = { service: "chat", messages: [{ role: "user", content: "How many TSI projects does Croatia have?" }] };
 const impactBody = { service: "impact", messages: [{ role: "user", content: "Project: Health reform in Croatia (id p1; TSI 2023; countries HR)" }] };
-const CTX = { supabaseUrl: ENV.SUPABASE_URL, apikey: "anon-test", userAuth: "Bearer user-jwt" };
+const CTX = { restUrl: ENV.SUPABASE_URL + "/rest/v1", apikey: "anon-test", userAuth: "Bearer user-jwt" };
 
 // ---------- HTTP contract (same as haystack-proxy) ----------
 
@@ -656,7 +657,7 @@ const USER_JWT = `${b64url({ alg: "HS256", typ: "JWT" })}.${b64url({ sub: USER_I
 const SAVE_ENV = { ...ENV, SUPABASE_SERVICE_ROLE_KEY: "service-role-test" };
 const REPORT = "**Project overview** The project.\n\n**Overall verdict:** The reform was adopted and is used.\n\n"
   + "Impact score: 7/10 (strong) — Confidence: medium";
-const saveCalls = (f: ReturnType<typeof fakeFetch>) => f.calls.filter((c) => c.url.endsWith("/rest/v1/impact_reports"));
+const saveCalls = (f: ReturnType<typeof fakeFetch>) => f.calls.filter((c) => c.url.endsWith("/impact_reports"));
 
 test("parseImpact: final score line, dash variants, case and spaces; null otherwise", () => {
   assert.deepEqual(parseImpact("Report\n\nImpact score: 5/10 (moderate) — Confidence: medium"), { score: 5, level: "moderate", confidence: "medium" });
@@ -1148,3 +1149,28 @@ test("search_country_reports calls its RPC and links each passage to its PDF pag
   assert.match(CHAT_SYSTEM, /search_country_reports/);
 });
 
+
+// ---------- self-hosted PostgREST (TSI_REST_URL) ----------
+
+const LOCAL_ENV: Record<string, string> = { SUPABASE_ANON_KEY: "server", TSI_REST_URL: "http://127.0.0.1:3001/", ANTHROPIC_API_KEY: "k", SUPABASE_SERVICE_ROLE_KEY: "service-jwt" };
+const LOCAL_CTX = { restUrl: "http://127.0.0.1:3001", apikey: "server", userAuth: "Bearer user-jwt" };
+
+test("TSI_REST_URL: tools, is_tester and the impact save use it; SUPABASE_URL is not needed", async () => {
+  const f = fakeFetch({ model: [toolReply("get_project", { project_id: "p1" }), textReply(REPORT)] });
+  const res = await handle(post(impactBody, { token: USER_JWT }), LOCAL_ENV, f.impl);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { answer: REPORT, saved: true });
+  const db = f.calls.filter((c) => !c.url.startsWith("https://api.anthropic.com")).map((c) => c.url);
+  assert.ok(db.length >= 4, db.join("\n"));
+  assert.ok(db.every((u) => u.startsWith("http://127.0.0.1:3001/") && !u.includes("/rest/v1/") && !u.includes("3001//")), db.join("\n"));
+  assert.ok(db.includes("http://127.0.0.1:3001/rpc/is_tester"));
+  assert.ok(db.includes("http://127.0.0.1:3001/impact_reports"));
+});
+
+test("neither SUPABASE_URL nor TSI_REST_URL: 500 before any call", async () => {
+  const f = fakeFetch({ model: [textReply("x")] });
+  const res = await handle(post(chatBody), { SUPABASE_ANON_KEY: "a", ANTHROPIC_API_KEY: "k" }, f.impl);
+  assert.equal(res.status, 500);
+  assert.deepEqual(await res.json(), { error: "SUPABASE_URL not configured" });
+  assert.equal(f.calls.length, 0);
+});
