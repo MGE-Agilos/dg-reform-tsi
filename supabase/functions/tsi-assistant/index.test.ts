@@ -1321,3 +1321,41 @@ test("openai: impact with the data tools and their prompt, effort high, 32000 to
   assert.equal(sent(save).source, "web");
   assert.equal(new Headers(save.init.headers).get("Authorization"), "Bearer service-jwt");
 });
+
+test("openai: briefing in JSON mode with the schema in the system prompt; expand with its model", async () => {
+  const f = fakeFetch({ modelUrl: OA_URL, model: [oaText(JSON.stringify(BRIEFING_JSON))] });
+  const res = await handle(post(briefingBody), OA_ENV, f.impl);
+  assert.deepEqual(await res.json(), { briefing: BRIEFING_JSON, unverified: [], saved: false });
+  const b = sent(f.modelCalls()[0]);
+  assert.deepEqual(b.response_format, { type: "json_object" });
+  assert.equal(b.tools, undefined);
+  assert.equal(b.tool_choice, undefined);
+  assert.equal(b.model, "gpt-5.1");
+  assert.equal(b.max_completion_tokens, 16000);
+  assert.equal(b.reasoning_effort, "low");
+  assert.equal(b.messages.length, 2);
+  assert.deepEqual(b.messages[0], { role: "system", content: `${BRIEFING_SYSTEM}\n\nAnswer with a single JSON object that conforms to this JSON schema: ${JSON.stringify(BRIEFING_SCHEMA)}` });
+  assert.equal(b.messages[1].role, "user");
+  assert.match(b.messages[1].content, /^OCCASION\n/);
+
+  const e = fakeFetch({ modelUrl: OA_URL, model: [oaText(JSON.stringify({ terms: ["rural fires"] }))] });
+  const r2 = await handle(post({ service: "expand", query: "wildfire" }), { ...OA_ENV, TSI_EXPAND_MODEL: "gpt-small" }, e.impl);
+  assert.deepEqual(await r2.json(), { terms: ["rural fires"], saved: false });
+  const eb = sent(e.modelCalls()[0]);
+  assert.equal(eb.model, "gpt-small");
+  assert.equal(eb.max_completion_tokens, 4000);
+  assert.deepEqual(eb.response_format, { type: "json_object" });
+  assert.match(eb.messages[0].content, /conforms to this JSON schema/);
+  assert.match(eb.messages[1].content, /"wildfire"/);
+});
+
+test("openai: briefing refused 422, unreadable 502; expand refused or unreadable gives no terms", async () => {
+  const refused = fakeFetch({ modelUrl: OA_URL, model: [oaText("", "content_filter")] });
+  assert.equal((await handle(post(briefingBody), OA_ENV, refused.impl)).status, 422);
+  const bad = fakeFetch({ modelUrl: OA_URL, model: [oaText("not json")] });
+  assert.equal((await handle(post(briefingBody), OA_ENV, bad.impl)).status, 502);
+  const e1 = fakeFetch({ modelUrl: OA_URL, model: [oaText("", "content_filter")] });
+  assert.deepEqual(await (await handle(post({ service: "expand", query: "wildfire" }), OA_ENV, e1.impl)).json(), { terms: [], saved: false });
+  const e2 = fakeFetch({ modelUrl: OA_URL, model: [oaText("terms: fires")] });
+  assert.deepEqual(await (await handle(post({ service: "expand", query: "wildfire" }), OA_ENV, e2.impl)).json(), { terms: [], saved: false });
+});
