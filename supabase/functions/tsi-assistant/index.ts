@@ -297,7 +297,9 @@ export const WEB_FETCH_TOOL = { type: "web_fetch_20250910", name: "web_fetch", m
 export const TOOLS_CHAT: Record<string, unknown>[] = [SEARCH_PROJECTS, LIST_PROJECTS, GET_PROJECT, SEARCH_CSRS, GET_CSR, SEARCH_RECITALS, SEARCH_COUNTRY_REPORTS];
 export const TOOLS_IMPACT: Record<string, unknown>[] = [GET_PROJECT, SEARCH_PROJECTS, WEB_SEARCH_TOOL, WEB_FETCH_TOOL];
 
-const SERVICES: Record<AgentService, { system: () => string; tools: Record<string, unknown>[]; clientTools: string[] }> = {
+type ServiceConfig = { system: () => string; tools: Record<string, unknown>[]; clientTools: string[] };
+
+const SERVICES: Record<AgentService, ServiceConfig> = {
   chat: { system: () => CHAT_SYSTEM, tools: TOOLS_CHAT, clientTools: ["search_projects", "list_projects", "get_project", "search_csrs", "get_csr", "search_recitals", "search_country_reports"] },
   impact: { system: () => impactSystem(), tools: TOOLS_IMPACT, clientTools: ["get_project", "search_projects"] },
 };
@@ -726,7 +728,7 @@ export async function runTool(name: string, input: unknown, ctx: ToolContext): P
   }
 }
 
-// ---------- Anthropic loop ----------
+// ---------- agent loop ----------
 
 function isTimeout(e: unknown): boolean {
   const name = (e as { name?: string } | null)?.name;
@@ -823,63 +825,104 @@ async function modelRequest(service: ServiceName, body: Record<string, unknown>,
   return json;
 }
 
+// ---------- model connectors ----------
+
+type ToolUse = { id: string; name: string; input: unknown; invalid?: boolean };
+type ToolOutput = { id: string; content: string };
+type Stop = "tool_use" | "pause" | "end" | "max_tokens" | "refusal";
+
+/** One model API behind the agent loop; each keeps the conversation in its own format. */
+interface Connector {
+  call(final: boolean, timeoutMs: number): Promise<void>;
+  stop(): Stop;
+  toolUses(): ToolUse[];
+  pushAssistant(): void;
+  pushToolOutputs(outputs: ToolOutput[]): void;
+  /** Final text, "" if none; after a turn stopped mid tool use, only the text after the last tool. */
+  answer(): string;
+}
+
+function anthropicConnector(service: AgentService, cfg: ServiceConfig, messages: Message[], env: Env, fetchImpl: FetchImpl,
+  stats: RunStats): Connector {
+  // Cle propre au projet TSI d'abord (le secret ANTHROPIC_API_KEY est partage avec une autre application).
+  const key = env.TSI_ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY;
+  if (!key) throw new HttpError(500, "ANTHROPIC_API_KEY not configured");
+  const model = env.TSI_MODEL || DEFAULT_MODEL;
+  const system = [{ type: "text", text: cfg.system(), cache_control: { type: "ephemeral" } }];
+  const conversation: ApiMessage[] = messages.map((m) => ({ role: m.role, content: m.content }));
+  let res: ModelResponse = { content: [], stop_reason: null };
+  const stop = (): Stop => {
+    switch (res.stop_reason) {
+      case "tool_use": return "tool_use";
+      case "pause_turn": return "pause";
+      case "max_tokens": return "max_tokens";
+      case "refusal": return "refusal";
+      default: return "end";
+    }
+  };
+  return {
+    async call(final, timeoutMs) {
+      // Once the searches or fetches allowed for the run are used up, that server tool is no longer offered (history unchanged).
+      const tools = cfg.tools.filter((t) => !(t === WEB_SEARCH_TOOL && stats.web_searches >= WEB_SEARCH_MAX_USES)
+        && !(t === WEB_FETCH_TOOL && stats.web_fetches >= WEB_FETCH_MAX_USES));
+      const body: Record<string, unknown> = {
+        model, max_tokens: MAX_TOKENS[service], system, tools, messages: withCacheBreakpoint(conversation),
+        output_config: { effort: EFFORT[service] },
+      };
+      if (final) body.tool_choice = { type: "none" };
+      res = await modelRequest(service, body, key, fetchImpl, timeoutMs, stats);
+    },
+    stop,
+    // server_tool_use blocks are run by Anthropic, never answered here.
+    toolUses: () => res.content.filter((b) => b?.type === "tool_use").map((b) => ({ id: b.id as string, name: String(b.name ?? ""), input: b.input })),
+    pushAssistant() { conversation.push({ role: "assistant", content: res.content }); }, // as received, server tool blocks included
+    pushToolOutputs(outputs) {
+      if (!outputs.length) return;
+      conversation.push({ role: "user", content: outputs.map((o) => {
+        const result: Block = { type: "tool_result", tool_use_id: o.id, content: o.content };
+        if (o.content.startsWith("Tool error:")) result.is_error = true;
+        return result;
+      }) });
+    },
+    answer: () => answerText(res.content, stop() === "tool_use" || stop() === "pause"),
+  };
+}
+
 export async function agentLoop(
   service: AgentService, messages: Message[], env: Env, fetchImpl: FetchImpl, now: () => number = Date.now,
   ctx?: { restUrl: string; apikey: string; userAuth: string }, stats: RunStats = emptyStats(),
 ): Promise<{ answer: string; steps: number; stats: RunStats }> {
-  // Cle propre au projet TSI d'abord (le secret ANTHROPIC_API_KEY est partage avec une autre application).
-  const key = env.TSI_ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY;
-  if (!key) throw new HttpError(500, "ANTHROPIC_API_KEY not configured");
   const cfg = SERVICES[service];
+  const conn = anthropicConnector(service, cfg, messages, env, fetchImpl, stats);
   const started = now();
   const deadline = started + DEADLINE_MS;
   const toolCtx: ToolContext = {
     restUrl: ctx?.restUrl ?? (env.TSI_REST_URL || env.SUPABASE_URL ? restUrl(env) : ""), apikey: ctx?.apikey ?? "", userAuth: ctx?.userAuth ?? "",
     fetchImpl, deadline, now,
   };
-  const model = env.TSI_MODEL || DEFAULT_MODEL;
-  const system = [{ type: "text", text: cfg.system(), cache_control: { type: "ephemeral" } }];
-  const conversation: ApiMessage[] = messages.map((m) => ({ role: m.role, content: m.content }));
+  const timeout = () => Math.max(1000, Math.min(MODEL_TIMEOUT_MS, deadline - now()));
 
-  const call = async (final: boolean): Promise<ModelResponse> => {
-    // Once the searches or fetches allowed for the run are used up, that server tool is no longer offered (history unchanged).
-    const tools = cfg.tools.filter((t) => !(t === WEB_SEARCH_TOOL && stats.web_searches >= WEB_SEARCH_MAX_USES)
-      && !(t === WEB_FETCH_TOOL && stats.web_fetches >= WEB_FETCH_MAX_USES));
-    const body: Record<string, unknown> = {
-      model, max_tokens: MAX_TOKENS[service], system, tools, messages: withCacheBreakpoint(conversation),
-      output_config: { effort: EFFORT[service] },
-    };
-    if (final) body.tool_choice = { type: "none" };
-    return await modelRequest(service, body, key, fetchImpl, Math.max(1000, Math.min(MODEL_TIMEOUT_MS, deadline - now())), stats);
-  };
-
-  let res = await call(false);
+  await conn.call(false, timeout());
   let final = false;
-  while (!final && (res.stop_reason === "tool_use" || res.stop_reason === "pause_turn")) {
+  while (!final && (conn.stop() === "tool_use" || conn.stop() === "pause")) {
     stats.steps++;
-    conversation.push({ role: "assistant", content: res.content }); // as received, server tool blocks included
-    if (res.stop_reason === "tool_use") {
-      // Client tools of one turn run in parallel; server_tool_use is run by Anthropic, never answered here.
-      const uses = res.content.filter((b) => b?.type === "tool_use");
-      const outputs = await Promise.all(uses.map((b) => {
-        const name = String(b.name ?? "");
-        return cfg.clientTools.includes(name) ? runTool(name, b.input, toolCtx) : Promise.resolve(`Tool error: unknown tool ${name.slice(0, 60)}`);
-      }));
-      const results: Block[] = uses.map((b, i) => {
-        const result: Block = { type: "tool_result", tool_use_id: b.id, content: outputs[i] };
-        if (outputs[i].startsWith("Tool error:")) result.is_error = true;
-        return result;
-      });
-      if (results.length) conversation.push({ role: "user", content: results });
+    conn.pushAssistant();
+    if (conn.stop() === "tool_use") {
+      // Client tools of one turn run in parallel; results in the order of the calls.
+      const uses = conn.toolUses();
+      const outputs = await Promise.all(uses.map((u) => u.invalid
+        ? Promise.resolve("Tool error: the arguments are not valid JSON")
+        : cfg.clientTools.includes(u.name) ? runTool(u.name, u.input, toolCtx) : Promise.resolve(`Tool error: unknown tool ${u.name.slice(0, 60)}`)));
+      conn.pushToolOutputs(uses.map((u, i) => ({ id: u.id, content: outputs[i] })));
     }
     final = stats.steps >= MAX_STEPS || now() - started > BUDGET_MS;
-    res = await call(final);
+    await conn.call(final, timeout());
   }
-  if (res.stop_reason === "refusal") throw new HttpError(422, "The model declined this request");
-  const midTool = res.stop_reason === "tool_use" || res.stop_reason === "pause_turn";
-  let answer = answerText(res.content, midTool);
+  const stop = conn.stop();
+  if (stop === "refusal") throw new HttpError(422, "The model declined this request");
+  let answer = conn.answer();
   if (!answer) throw new HttpError(502, "Empty response from the model");
-  if (res.stop_reason === "max_tokens") answer += "\n\n[answer truncated]";
+  if (stop === "max_tokens") answer += "\n\n[answer truncated]";
   return { answer, steps: stats.steps, stats };
 }
 
