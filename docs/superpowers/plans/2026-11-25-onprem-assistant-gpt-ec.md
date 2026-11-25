@@ -6,7 +6,7 @@
 
 **Architecture:** `supabase/functions/tsi-assistant/index.ts` gets a model connector interface: the existing Anthropic code becomes one connector, a new OpenAI-compatible connector is the other (`TSI_LLM_PROVIDER=openai`). A `TSI_REST_URL` setting points its database calls at a plain PostgREST. The Node application service (`server/`) imports that file (Node type stripping), calls its `handle()` in process for `POST /api/assistant`, and routes the gateway calls through a proxy-aware `fetch` (undici). The page reads two optional `config.js` settings to name the AI service and say whether there is web search.
 
-**Tech Stack:** TypeScript run by Node 22.6+ (`--experimental-strip-types`) and Deno (Supabase), Node.js `node:test`, undici 7.16.0, plain browser ES modules.
+**Tech Stack:** TypeScript run by Node 22.6+ (`--experimental-strip-types`) and Deno (Supabase), Node.js `node:test`, undici 7.30.2, plain browser ES modules.
 
 **Spec:** `docs/superpowers/specs/2026-11-25-onprem-assistant-gpt-ec-design.md`
 
@@ -917,11 +917,11 @@ git commit -m "feat(assistant): briefing and related terms in JSON mode on the O
   },
   "dependencies": {
     "openid-client": "6.9.1",
-    "undici": "7.16.0"
+    "undici": "7.30.2"
   }
 ```
 
-Run: `cd server && npm install --save-exact undici@7.16.0 && npm test`
+Run: `cd server && npm install --save-exact undici@7.30.2 && npm test`
 Expected: PASS, 17 tests; `package-lock.json` updated.
 
 - [ ] **Step 2: Append the failing tests to `server/test/server.test.js`**
