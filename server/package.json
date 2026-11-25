@@ -6,7 +6,7 @@
   "type": "module",
   "main": "index.js",
   "engines": {
-    "node": ">=22.6"
+    "node": ">=22.12"
   },
   "scripts": {
     "start": "node --experimental-strip-types --disable-warning=ExperimentalWarning index.js",

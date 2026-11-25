@@ -25,7 +25,7 @@ application; we only need the server ready and the access below.
 | Operating system | Ubuntu 24.04 LTS (or Debian 12 / RHEL 9). A virtual machine is fine. |
 | Resources | 2 vCPU, 4 GB RAM and 20 GB disk available. A server shared with other applications is fine. |
 | Web server | nginx (or Apache), with TLS. |
-| Node.js | 22.6 or later (22 LTS). |
+| Node.js | 22.12 or later (22 LTS). |
 | Python | 3.12 or later, with `python3-venv`. It runs the monthly update. |
 | Tools | `git`, `curl`, `tar`, and the PostgreSQL client `psql` (to install the schema). |
 | Time | Time synchronisation (NTP) enabled. |

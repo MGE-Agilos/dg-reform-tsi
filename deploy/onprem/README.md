@@ -103,7 +103,7 @@ readable by the `tsi` account (`chmod 600`), never in Git, never in the web fold
 As an administrator on the application server:
 
 ```bash
-node --version            # v22.x
+node --version            # v22.12 or later
 python3 --version         # 3.12 or later
 nginx -v
 psql --version
@@ -313,31 +313,50 @@ PORT=3000
 PUBLIC_URL=https://<dns>
 POSTGREST_URL=http://127.0.0.1:3001
 JWT_SECRET_FILE=/etc/tsi-explorer/jwt-secret
-SESSION_SECRET_FILE=/etc/tsi-explorer/session-secret   # 32 characters or more, like jwt-secret
-SESSION_HOURS=10                                       # a user signs in again after 10 hours
+# 32 characters or more, like jwt-secret
+SESSION_SECRET_FILE=/etc/tsi-explorer/session-secret
+# a user signs in again after 10 hours
+SESSION_HOURS=10
 
 # Sign-in (OpenID Connect): register the site with your identity provider, redirect URI
 # https://<dns>/api/auth/callback, scopes openid email profile
 AUTH_MODE=oidc
-OIDC_ISSUER=https://<identity-provider>/...            # its discovery document: <issuer>/.well-known/openid-configuration
+# its discovery document: <issuer>/.well-known/openid-configuration
+OIDC_ISSUER=https://<identity-provider>/...
 OIDC_CLIENT_ID=<client id>
 OIDC_CLIENT_SECRET=<client secret>
-# OIDC_EMAIL_CLAIM=email                               # claim of the ID token that holds the e-mail address
+# claim of the ID token that holds the e-mail address
+# OIDC_EMAIL_CLAIM=email
 
 # OR, until the identity provider is ready: e-mail + one password per user (needs an https:// PUBLIC_URL)
 # AUTH_MODE=password
 
 # Assistant on GPT@EC (leave LLM_BASE_URL out to run the explorer without assistant)
-LLM_BASE_URL=https://api.tech.ec.europa.eu/ecgpt/v1   # gateway address up to /v1
-LLM_API_KEY_FILE=/etc/tsi-explorer/llm-key           # file holding the GPT@EC key only (owner tsi, mode 600)
-LLM_MODEL=gpt-5.1                                    # a model with function calling
-# LLM_EXPAND_MODEL=                                  # model of the related search terms (default: LLM_MODEL)
-# LLM_REASONING=off                                  # if the gateway refuses the reasoning_effort parameter
+# gateway address up to /v1
+LLM_BASE_URL=https://api.tech.ec.europa.eu/ecgpt/v1
+# file holding the GPT@EC key only (owner tsi, mode 600), or LLM_API_KEY=<key> here
+LLM_API_KEY_FILE=/etc/tsi-explorer/llm-key
+# a model with function calling
+LLM_MODEL=gpt-5.1
+# model of the related search terms (default: LLM_MODEL)
+# LLM_EXPAND_MODEL=
+# if the gateway refuses the reasoning_effort parameter
+# LLM_REASONING=off
 
 # Outbound proxy, if any (used for GPT@EC only; the database stays direct)
 # HTTPS_PROXY=http://<proxy>:<port>
 # NO_PROXY=localhost,127.0.0.1
-# NODE_EXTRA_CA_CERTS=/etc/pki/tls/certs/proxy-ca.pem   # if the proxy inspects HTTPS with its own certificate
+# if the proxy inspects HTTPS with its own certificate
+# NODE_EXTRA_CA_CERTS=/etc/pki/tls/certs/proxy-ca.pem
+```
+
+systemd reads this file: put comments on their own lines, never after a value.
+
+Create the GPT@EC key file (paste the key, then Ctrl+D), or put `LLM_API_KEY=<key>` directly in `server.env` instead:
+
+```bash
+sudo install -o tsi -g tsi -m 600 /dev/null /etc/tsi-explorer/llm-key
+sudo -u tsi tee /etc/tsi-explorer/llm-key >/dev/null
 ```
 
 `/etc/systemd/system/tsi-explorer.service`:
@@ -366,8 +385,8 @@ sudo systemctl enable --now tsi-explorer
 curl -s http://127.0.0.1:3000/api/health      # {"ok":true,"database":true,"assistant":true,"auth":"oidc"}
 ```
 
-Node 22.6 or later: `--experimental-strip-types` lets Node read the assistant's TypeScript file without
-compiling it. `"assistant":false` means that `LLM_BASE_URL` is not set.
+Node.js 22.12 or later (22 LTS): `--experimental-strip-types` lets Node read the assistant's TypeScript file without
+compiling it (it needs type stripping, 22.6, and ES module detection without a `package.json`, default from 22.7). `"assistant":false` means that `LLM_BASE_URL` is not set.
 
 Notes on the assistant:
 
@@ -377,16 +396,15 @@ Notes on the assistant:
 - Only signed-in users can use the assistant (otherwise `401`).
 - The related search terms wait for the gateway for 9 seconds at most (the page gives up after 10 seconds); the
   search then runs without terms. If the default model is slow, put a small, fast model in `LLM_EXPAND_MODEL`.
-  The briefing waits up to 120 seconds.
+  The briefing waits up to 110 seconds. Each gateway call of a chat or an impact analysis may take up to 2 minutes;
+  if impact analyses end with a `504` in `journalctl -u tsi-explorer`, the gateway is too slow for the chosen model.
 - The impact analysis on GPT@EC uses the explorer's data only (the project, its linked CSRs and assessments, the
   recitals and the country reports). It says that no web search was made and does not give a high confidence.
 
 Check the gateway with the key, before the users (one call with a tool, one in JSON mode):
 
 ```bash
-cd /opt/tsi-explorer/app/server
-set -a; . /etc/tsi-explorer/server.env; set +a
-npm run assistant-check
+sudo -u tsi bash -c 'cd /opt/tsi-explorer/app/server && set -a && . /etc/tsi-explorer/server.env && set +a && npm run assistant-check'
 ```
 
 The first line shows the gateway address (without credentials), the model, whether `reasoning_effort` is sent, and
