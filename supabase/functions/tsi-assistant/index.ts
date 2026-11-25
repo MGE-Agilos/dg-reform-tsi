@@ -53,7 +53,8 @@ export const EFFORT: Record<ServiceName, string> = { chat: "low", impact: "high"
 export const MAX_FACTS = 25000; // characters of JSON.stringify(facts) (briefing)
 export const MAX_STEPS = 8; // tool rounds; then one last call without tools
 export const MODEL_TIMEOUT_MS = 60000; // per Anthropic call
-export const OPENAI_BRIEFING_TIMEOUT_MS = 120000; // gateway reasoning models are slower; below DEADLINE_MS and the page's 130 s
+export const OPENAI_BRIEFING_TIMEOUT_MS = 110000; // gateway reasoning models are slower; with the 10 s tester check it stays below DEADLINE_MS and the page's 130 s
+export const OPENAI_MODEL_TIMEOUT_MS = 120000; // per gateway call in chat/impact (reasoning, up to 32000 tokens); still bounded by the deadline
 export const OPENAI_EXPAND_TIMEOUT_MS = 9000; // below the page's 10 s (web/app.js EXPAND_TIMEOUT_MS): past it the search runs without terms
 export const DEADLINE_MS = 140000; // nothing runs past it (the page gives up at 160 s)
 export const BUDGET_MS = DEADLINE_MS - 30000; // beyond it, one last call without tools (with at least ~30 s left)
@@ -1069,7 +1070,7 @@ export async function agentLoop(
     restUrl: ctx?.restUrl ?? (env.TSI_REST_URL || env.SUPABASE_URL ? restUrl(env) : ""), apikey: ctx?.apikey ?? "", userAuth: ctx?.userAuth ?? "",
     fetchImpl, deadline, now,
   };
-  const timeout = () => Math.max(1000, Math.min(MODEL_TIMEOUT_MS, deadline - now()));
+  const timeout = () => Math.max(1000, Math.min(provider === "openai" ? OPENAI_MODEL_TIMEOUT_MS : MODEL_TIMEOUT_MS, deadline - now()));
 
   await conn.call(false, timeout());
   let final = false;

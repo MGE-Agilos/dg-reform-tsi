@@ -3,7 +3,8 @@
 // signOut, onAuthStateChange), backed by /api/auth/*: the session is an HttpOnly cookie, the page only receives a
 // short-lived token for the data requests, renewed before it expires.
 
-const RENEW_BEFORE_S = 60;
+// Above the page's 160 s wait for an assistant answer: the token forwarded to the database must not expire during a chat or impact run.
+const RENEW_BEFORE_S = 180;
 
 /** `base`: address of the service's API (e.g. https://tsi.example.eu/api). */
 export function createServerAuth(base, { fetchImpl = (...a) => fetch(...a), now = () => Date.now() / 1000, timers = globalThis } = {}) {

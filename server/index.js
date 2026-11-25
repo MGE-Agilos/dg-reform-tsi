@@ -9,7 +9,7 @@ let cfg;
 try {
   cfg = loadConfig();
 } catch (e) {
-  if (e instanceof ConfigError || e?.code === "ENOENT") {
+  if (e instanceof ConfigError || e?.code === "ENOENT" || e?.code === "EACCES") {
     console.error(`Configuration error: ${e.message}`);
     process.exit(2);
   }

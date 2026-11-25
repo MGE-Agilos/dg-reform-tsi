@@ -49,7 +49,7 @@ test("an expiring token is read again; signOut calls the service and notifies", 
   const events = [];
   auth.onAuthStateChange((e, s) => events.push([e, s?.user?.id ?? null]));
   await auth.getSession();
-  now = T + 50; // within 60 s of the expiry
+  now = T + 50; // within 180 s of the expiry
   assert.equal((await auth.getSession()).data.session.expires_at, T + 1000);
   assert.equal(f.calls.length, 2);
   await auth.signOut();
@@ -66,7 +66,7 @@ test("the renewal timer re-reads the session and emits TOKEN_REFRESHED", async (
   const events = [];
   auth.onAuthStateChange((e) => events.push(e));
   await auth.getSession();
-  assert.equal(pending.at(-1).ms, (900 - 60) * 1000);
+  assert.equal(pending.at(-1).ms, (900 - 180) * 1000);
   await pending.at(-1).fn();
   assert.deepEqual(events, ["INITIAL_SESSION", "TOKEN_REFRESHED"]);
 });

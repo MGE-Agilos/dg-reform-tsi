@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   handle, agentLoop, runTool, validate, allowedOrigins, corsHeaders, answerText, csrMatches, normalizeCsr, canonicalCsrId,
   canonicalDocId, docIdOf,
-  HttpError, CHAT_SYSTEM, impactSystem, impactDataSystem, TOOLS_IMPACT_DATA, OPENAI_BRIEFING_TIMEOUT_MS, OPENAI_EXPAND_TIMEOUT_MS, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
+  HttpError, CHAT_SYSTEM, impactSystem, impactDataSystem, TOOLS_IMPACT_DATA, OPENAI_BRIEFING_TIMEOUT_MS, OPENAI_MODEL_TIMEOUT_MS, OPENAI_EXPAND_TIMEOUT_MS, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
   withCacheBreakpoint, emptyStats, parseImpact, extractVerdict, extractProject, jwtSub, SAVE_TIMEOUT_MS,
   validateBriefing, validateOccasion, OCCASION_FORMATS, parseBriefing, runBriefing, BRIEFING_SYSTEM, BRIEFING_SCHEMA, BRIEFING_FIELDS, briefingUserMessage, numbersIn, unverifiedTexts, MAX_FACTS, MAX_TOKENS,
   validateExpand, cleanTerms, EXPAND_MODEL, EXPAND_MAX_QUERY, EXPAND_SCHEMA,
@@ -1373,8 +1373,8 @@ test("openai: truncated briefing is logged without content and gives 502", async
   assert.ok(!logs.join("").includes("partial"));
 });
 
-test("timeouts: openai briefing 120 s and expand 9 s (under the page's 10 s), anthropic unchanged", async () => {
-  assert.equal(OPENAI_BRIEFING_TIMEOUT_MS, 120000);
+test("timeouts: openai briefing 110 s and expand 9 s (under the page's 10 s), anthropic unchanged", async () => {
+  assert.equal(OPENAI_BRIEFING_TIMEOUT_MS, 110000);
   assert.ok(OPENAI_EXPAND_TIMEOUT_MS < 10000, "the page gives up on related terms at 10 s");
   assert.equal(OPENAI_EXPAND_TIMEOUT_MS, 9000);
   assert.ok(OPENAI_BRIEFING_TIMEOUT_MS < DEADLINE_MS);
@@ -1387,7 +1387,21 @@ test("timeouts: openai briefing 120 s and expand 9 s (under the page's 10 s), an
     await handle(post(briefingBody), ENV, fakeFetch({ model: [textReply(JSON.stringify(BRIEFING_JSON))] }).impl);
     await handle(post({ service: "expand", query: "wildfire" }), ENV, fakeFetch({ model: [textReply("{}")] }).impl);
   } finally { AbortSignal.timeout = orig; }
-  assert.deepEqual(seen.filter((m) => [120000, 9000, 60000, 15000].includes(m)), [120000, 9000, 60000, 15000]);
+  assert.deepEqual(seen.filter((m) => [110000, 9000, 60000, 15000].includes(m)), [110000, 9000, 60000, 15000]);
+});
+
+test("chat: one gateway call may take 120 s with openai, anthropic keeps 60 s", async () => {
+  assert.equal(OPENAI_MODEL_TIMEOUT_MS, 120000);
+  const seen: number[] = [];
+  const orig = AbortSignal.timeout;
+  AbortSignal.timeout = ((ms: number) => { seen.push(ms); return orig.call(AbortSignal, ms); }) as typeof AbortSignal.timeout;
+  try {
+    await handle(post(chatBody), OA_ENV, fakeFetch({ modelUrl: OA_URL, model: [oaText("ok")] }).impl);
+    assert.equal(seen.find((m) => m === 120000 || m === 60000), 120000);
+    seen.length = 0;
+    await handle(post(chatBody), ENV, fakeFetch({ model: [textReply("ok")] }).impl);
+    assert.equal(seen.find((m) => m === 120000 || m === 60000), 60000);
+  } finally { AbortSignal.timeout = orig; }
 });
 
 test("openai: expand tolerates a fenced JSON answer", async () => {
