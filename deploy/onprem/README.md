@@ -594,7 +594,7 @@ and `sudo systemctl restart tsi-explorer`.
 
 | What | Where |
 |---|---|
-| Application service and assistant (sign-ins, errors, gateway errors with their status; never the content of a question) | `journalctl -u tsi-explorer` |
+| Application service and assistant (sign-ins, errors, and one line per assistant request with its service, status, duration and token counts; never the content of a question) | `journalctl -u tsi-explorer` |
 | PostgREST | `journalctl -u tsi-postgrest` |
 | nginx | `/var/log/nginx/` |
 | Data update | `/opt/tsi-explorer/app/logs/` |
