@@ -107,9 +107,18 @@ def main() -> None:
         f.write(f"-- TSI x CSR Explorer: data export of {now}.\n"
                 "-- Load AFTER deploy/onprem/sql/000_compat.sql and supabase/migrations/001 to 010:\n"
                 "--   psql -v ON_ERROR_STOP=1 -f <this file>\n"
-                "-- Replaces all the explorer's rows. Contains personal data (e-mail addresses): keep it private.\n\n"
-                "\\set ON_ERROR_STOP on\nbegin;\n"
-                f"truncate table {', '.join(f'{sc}.{n}' for n in names)};\n\n")
+                "-- Replaces all the explorer's rows. Contains personal data (e-mail addresses): keep it private.\n"
+                "-- Users added on the installation and their passwords (800_passwords.sql) are kept. Plain SQL: it can\n"
+                "-- also be run in a query tool (pgAdmin, DBeaver), as the owner of the tables.\n\n"
+                "begin;\n"
+                # Kept across the reload: the installation's own users (e.g. its administrators) and their passwords.
+                f"create temp table tsi_keep_testers on commit drop as select * from {sc}.testers;\n"
+                "do $$ begin\n"
+                f"  if to_regclass('{sc}.user_passwords') is not null then\n"
+                f"    create temp table tsi_keep_passwords on commit drop as select * from {sc}.user_passwords;\n"
+                "  end if;\n"
+                "end $$;\n"
+                f"truncate table {', '.join(f'{sc}.{n}' for n in names)} cascade;\n\n")
         for table, order, skip in TABLES:
             rows = fetch(url, key, table, order)
             counts[table] = len(rows)
@@ -119,7 +128,15 @@ def main() -> None:
         for table in sorted(IDENTITY):
             f.write(f"select setval(pg_get_serial_sequence('{sc}.{table}', 'id'), "
                     f"coalesce(max(id), 1), max(id) is not null) from {sc}.{table};\n")
-        f.write("commit;\n" + "".join(f"analyze {sc}.{n};\n" for n in names) + "\n-- Row counts after loading (expected values in the comments).\n")
+        f.write(f"insert into {sc}.testers select * from tsi_keep_testers on conflict (email) do nothing;\n"
+                "do $$ begin\n"
+                "  if to_regclass('pg_temp.tsi_keep_passwords') is not null then\n"
+                f"    insert into {sc}.user_passwords select k.* from tsi_keep_passwords k join {sc}.testers t using (email)\n"
+                "      on conflict (email) do nothing;\n"
+                "  end if;\n"
+                "end $$;\n")
+        f.write("commit;\n" + "".join(f"analyze {sc}.{n};\n" for n in names)
+                + "\n-- Row counts after loading: rows = expected, except testers (expected or more: users of the installation kept).\n")
         f.write("\nunion all\n".join(f"select '{t}' as table_name, count(*) as rows, {counts[t]} as expected "
                                      f"from {sc}.{t}" for t in names) + ";\n")
     print(f"written {args.out}: {sum(counts.values())} rows in {len(names)} tables", file=sys.stderr)
