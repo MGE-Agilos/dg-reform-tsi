@@ -49,7 +49,8 @@ limits, statistics). What depends on the API moves behind a small connector inte
   is truncation (same note as `max_tokens`; during a tool round the content is empty, so the answer is
   the usual "Empty response" 502), `content_filter` is a refusal (422). Tool arguments are parsed from JSON;
   unreadable arguments give a `Tool error:` result to the model, never an exception.
-- **Conversation.** The assistant message is sent back as received (`content`, `tool_calls`); each tool call gets one
+- **Conversation.** The assistant message is sent back with the API's fields only (`content`, and `tool_calls` rebuilt as
+  `{id, type, function: {name, arguments}}`: strict gateways reject extra fields); each tool call gets one
   `{role: "tool", tool_call_id, content}` message, unknown tools included (the API refuses a call left unanswered).
 - **Usage.** `prompt_tokens`, `completion_tokens` and `prompt_tokens_details.cached_tokens` fill the same statistics.
 - **Errors.** Same mapping as today: timeout 504, network 502, HTTP error 502 with only the status and the error
