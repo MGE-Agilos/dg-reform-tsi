@@ -603,6 +603,8 @@ deploy/onprem/update.sh --recheck-all        # full check: every detail and publ
   second attempt); `3` the site's sitemap could not be read (run again later); `2` stopped (configuration error, or
   `csr-build`, `anomalies` failed): nothing is loaded into the database; `75` another update is running.
 - Warnings do not stop the update. A failed `db-sync` leaves the database as it was; the next run loads everything.
+  `db-sync` also refuses to load when `output/` has no project or no recommendation, or less than half the projects
+  already in the database (state not restored, wrong volume); `db-sync --force` loads anyway.
 - Each run writes `logs/update-YYYYMMDD-HHMM.log` with a summary (steps, new or updated projects and publications,
   LLM calls and cost).
 
@@ -628,11 +630,12 @@ it by `docker compose`.
    ```bash
    podman-compose -f compose.updater.yaml build
    ```
+   (`:z` in the volume options below lets SELinux (RHEL) give the container access to a file of the home folder.)
 3. Start from the current state rather than from nothing (otherwise the first run reads everything, about 3 hours):
    put `tsi-output-state.zip` (Agilos's data file, or the latest `data-*` release of the repository) next to the
    compose file, then
    ```bash
-   podman-compose -f compose.updater.yaml run --rm -v "$PWD/tsi-output-state.zip:/tmp/state.zip:ro" \
+   podman-compose -f compose.updater.yaml run --rm -v "$PWD/tsi-output-state.zip:/tmp/state.zip:ro,z" \
      --entrypoint python updater -m zipfile -e /tmp/state.zip /app/output
    ```
 4. Check, then a first run:
@@ -641,9 +644,10 @@ it by `docker compose`.
    podman-compose -f compose.updater.yaml run --rm --entrypoint python updater -m tsi_agent db-sync --dry-run
    podman-compose -f compose.updater.yaml run --rm updater
    ```
-5. Cron of the account that runs the containers (`crontab -e`):
+5. Cron of the account that runs the containers (`crontab -e`). Cron has a short `PATH`: give the full path of
+   `podman-compose` (`command -v podman-compose`, often `~/.local/bin/podman-compose` or `/usr/bin/podman-compose`):
    ```cron
-   0 2 1-7 * * [ "$(date +\%u)" = 7 ] && cd ~/tsi-docker/updater && podman-compose -f compose.updater.yaml run --rm updater --scheduled >> ~/tsi-docker/updater/cron.log 2>&1
+   0 2 1-7 * * [ "$(date +\%u)" = 7 ] && cd ~/tsi-docker/updater && /usr/bin/podman-compose -f compose.updater.yaml run --rm updater --scheduled >> ~/tsi-docker/updater/cron.log 2>&1
    ```
    With rootless Podman, the account must be allowed to run containers without being logged in
    (`loginctl enable-linger <account>`, once, by an administrator).

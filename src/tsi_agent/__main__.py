@@ -190,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
                                          "installation auto-hébergée (connexion directe, une transaction)")
     dbs.add_argument("--dry-run", action="store_true",
                      help="vérifier connexion, tables et droits d'écriture sans rien écrire (code 1 si un problème)")
+    dbs.add_argument("--force", action="store_true",
+                     help="charger même si output/ a beaucoup moins de projets que la base (sinon refus)")
     export = sub.add_parser("export-yaml", help="exporter le pipeline en YAML (import deepset)")
     export.add_argument("path")
     export.add_argument("--index", action="store_true", help="exporter le pipeline d'indexation (couche vectorisée)")
@@ -434,7 +436,8 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"ERREUR : tables absentes {report['missing']} ou non modifiables {report['not_writable']} "
                           f"(schema {schema}, role {report['role']})", file=sys.stderr)
                 return 1 if problems else 0
-            summary = load(rows, url, schema, role, backup=Path(settings.output_dir) / "state" / "db_rows.json")
+            summary = load(rows, url, schema, role, backup=Path(settings.output_dir) / "state" / "db_rows.json",
+                           force=args.force)
         except (SyncError, OSError) as exc:
             print(f"ERREUR : {exc} — base inchangée (transaction annulée)", file=sys.stderr)
             return 1
@@ -673,8 +676,8 @@ def _csr_related(settings: Settings, args: argparse.Namespace) -> int:
 def _commission(settings: Settings, fetch_missing: bool):
     """(recommandations de la Commission, annee) : annee la plus recente dont le texte est local. Avec `fetch_missing` :
     la publication de l'annee en cours est essayee si elle manque (pas encore parue : annee precedente gardee, sans
-    erreur), puis les PDF anglais des pays manquants sont telecharges et ajoutes a la copie locale. None (message
-    d'erreur affiche) si le telechargement des pays manquants echoue."""
+    erreur), puis les PDF anglais des pays manquants sont telecharges et ajoutes a la copie locale (echec : avertissement,
+    texte local garde : une indisponibilite du site n'arrete jamais la mise a jour)."""
     from tsi_agent import csr_commission
     from tsi_agent.countries import COUNTRIES
     from tsi_agent.http import FetchError, shared_fetcher
@@ -700,9 +703,10 @@ def _commission(settings: Settings, fetch_missing: bool):
         fetcher = fetcher or shared_fetcher(settings.cache_dir, settings.min_interval_s, settings.user_agent)
         added = csr_commission.fetch_missing(fetcher, commission.missing_countries,
                                              page_url=csr_commission.publication_url(year))
-    except (FetchError, OSError) as exc:
-        print(f"ERREUR : téléchargement des PDF CSR impossible : {exc}", file=sys.stderr)
-        return None
+    except (FetchError, OSError) as exc:  # site indisponible (429...) : texte local garde, nouvel essai au run suivant
+        print(f"ATTENTION : téléchargement des PDF CSR impossible ({exc}) : recommandations locales gardées",
+              file=sys.stderr)
+        return commission, year
     if added:
         path = csr_commission.find_source(output_dir, year)
         existing = path.read_text(encoding="utf-8") if path else None

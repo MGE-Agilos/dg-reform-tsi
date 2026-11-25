@@ -385,9 +385,11 @@ def test_csr_build_fetch_missing_completes_the_local_copy(tmp_path, capsys, monk
     def boom(fetcher, countries, **kw):
         raise http.FetchError("https://x", "HTTP 503", 503)
 
-    monkeypatch.setattr(csr_commission, "fetch_missing", boom)
-    assert cli.main(["--settings", str(settings), "csr-build", "--fetch-missing"]) == 1
-    assert "téléchargement des PDF CSR impossible" in capsys.readouterr().err
+    monkeypatch.setattr(csr_commission, "fetch_missing", boom)   # site down: warning, local text kept, build done
+    (out / "csr" / "publications" / f"{csr_commission.PUBLICATION_ID}.md").write_text(
+        COMMISSION_TEXT.replace("- Croatia", "- Nowhere"), encoding="utf-8")   # a country missing again
+    assert cli.main(["--settings", str(settings), "csr-build", "--fetch-missing"]) == 0
+    assert "ATTENTION : téléchargement des PDF CSR impossible" in capsys.readouterr().err
 
 
 def test_db_sync_without_url_is_exit_1(monkeypatch, capsys):
@@ -401,10 +403,12 @@ def test_db_sync_load_and_dry_run(monkeypatch, capsys):
     from tsi_agent import db_sync, supabase_sync
     monkeypatch.setenv("TSI_DATABASE_URL", "postgresql://u:p@h/db")
     monkeypatch.setattr(supabase_sync, "build_rows", lambda out: {"projects": [{"project_id": "p"}]})
-    monkeypatch.setattr(db_sync, "load", lambda rows, url, schema, role, backup=None: {"projects": 1, "warnings": ["w"]})
+    monkeypatch.setattr(db_sync, "load", lambda rows, url, schema, role, backup=None, force=False:
+                        {"projects": 1, "force": force, "warnings": ["w"]})
     assert cli.main(["db-sync"]) == 0
     captured = capsys.readouterr()
-    assert '"projects": 1' in captured.out and "ATTENTION : w" in captured.err
+    assert '"projects": 1' in captured.out and "ATTENTION : w" in captured.err and '"force": false' in captured.out
+    assert cli.main(["db-sync", "--force"]) == 0 and '"force": true' in capsys.readouterr().out
     report = {"schema": "public", "role": "r", "missing": [], "missing_optional": [], "not_writable": ["csrs"]}
     monkeypatch.setattr(db_sync, "check", lambda url, schema, role: report)
     assert cli.main(["db-sync", "--dry-run"]) == 1

@@ -920,6 +920,7 @@ function ensureDataYears() {
   dataYearsPromise ||= Promise.all([latest("csr_recitals"), latest("country_reports")]).then(([recitals, reports]) => {
     if (recitals) RECITALS_YEAR = recitals;
     if (reports) REPORTS_YEAR = reports;
+    if (!recitals && !reports) dataYearsPromise = null; // nothing read (not signed in yet, table missing): ask again later
   });
   return dataYearsPromise;
 }
@@ -1273,7 +1274,7 @@ function partLinkKeys(parts) {
 }
 
 async function renderCsrDoc(id, seq) {
-  const res = await fetchDocument(id);
+  const [res] = await Promise.all([fetchDocument(id), ensureDataYears()]);
   if (stale(seq)) return;
   if (res.error) return showError(res.error, "Could not load the CSR document");
   const d = res.doc;

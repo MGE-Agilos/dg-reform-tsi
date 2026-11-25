@@ -122,6 +122,17 @@ def test_strict_failure_stops(repo):
     assert "STOPPED: csr-build failed" in result.stdout
 
 
+def test_strict_failure_with_code_1_is_reported_as_stopped(repo):
+    result = run(repo, codes="anomalies=1")
+    assert result.returncode == 2 and "db-sync" not in steps(repo)
+
+
+def test_log_ends_with_the_summary(repo):
+    run(repo, codes="run=1")
+    log = next((repo[0] / "logs").glob("update-*.log")).read_text()
+    assert log.rstrip().splitlines()[-1].startswith("Finished in") and "exit code 1" in log
+
+
 def test_llm_configuration_error_stops(repo):
     result = run(repo, codes="run=2")
     assert result.returncode == 2 and steps(repo) == ["run", ".github/scripts/ci_summary.py"]

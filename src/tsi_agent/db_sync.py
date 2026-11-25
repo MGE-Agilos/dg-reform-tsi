@@ -26,6 +26,7 @@ from tsi_agent.supabase_sync import (DELETE_ORDER, IMPACT_TABLE, INSERT_ORDER, O
 BATCH = 500
 NEVER_WRITTEN = (*PROTECTED_TABLES, "page_views", "user_passwords")
 MANDATORY = (*DELETE_ORDER, IMPACT_TABLE)
+MIN_SHARE = 0.5  # garde-fou : moins de la moitie des projets de la base -> refus (output/ vide ou mal monte), sauf force
 _NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 # Le role effectif peut-il inserer et supprimer toutes les lignes ? Droits, puis securite par ligne : table sans RLS,
 # proprietaire (non force), BYPASSRLS, ou regle pour ce role (900_service_role.sql : service_role_all).
@@ -33,7 +34,9 @@ _WRITABLE = """select has_table_privilege(current_user, c.oid, 'INSERT') and has
   and (not c.relrowsecurity or pg_get_userbyid(c.relowner) = current_user
        or coalesce((select r.rolbypassrls from pg_roles r where r.rolname = current_user), false)
        or exists (select 1 from pg_policies p where p.schemaname = n.nspname and p.tablename = c.relname
-                  and p.cmd in ('ALL', 'DELETE') and (current_user = any(p.roles) or 'public' = any(p.roles))))
+                  and p.permissive = 'PERMISSIVE' and p.cmd in ('ALL', 'DELETE')
+                  and exists (select 1 from unnest(p.roles) r(name)
+                              where r.name = 'public' or pg_has_role(current_user, r.name, 'USAGE'))))
 from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = %s and c.relname = %s"""
 
 
@@ -96,18 +99,24 @@ def _open(connect: Callable[[str], Any], url: str) -> Any:
 
 
 def load(rows: dict[str, list[dict[str, Any]]], url: str, schema: str, role: str = "", *,
-         connect: Callable[[str], Any] = _connect, backup: Path | None = None) -> dict[str, Any]:
+         connect: Callable[[str], Any] = _connect, backup: Path | None = None, force: bool = False) -> dict[str, Any]:
     """Remplace les donnees publiques dans UNE transaction ; resume {table: lignes, warnings?}. SyncError sinon.
 
     Ordre de supabase-sync : suppressions (liens avant les tables referencees), insertions, analyses d'impact locales
     (source='local' seulement), tables optionnelles (absentes : sautees avec un avertissement). Puis ANALYZE hors
     transaction (seul le proprietaire le peut ; sinon PostgreSQL passe la table, autovacuum le fera).
+
+    Garde-fou : sans projet ou sans CSR, ou avec moins de MIN_SHARE des projets deja en base, refus (SyncError) avant
+    toute ecriture, sauf `force` : un output/ vide ou mal monte ne doit pas vider l'explorateur.
     """
     from psycopg import sql
     written = {*DELETE_ORDER, *INSERT_ORDER, *(t for t in (IMPACT_TABLE, *(o[0] for o in OPTIONAL_TABLES)) if t in rows)}
     forbidden = (written | set(rows)) & set(NEVER_WRITTEN)
     if forbidden:
         raise SyncError(f"tables protegees dans la synchronisation : {sorted(forbidden)}")
+    if not force and not (rows.get("projects") and rows.get("csrs")):
+        raise SyncError("aucun projet ou aucune CSR dans output/ (etat non restaure ? mauvais volume ?) : "
+                        "chargement refuse, la base est inchangee (--force pour charger quand meme)")
     if backup is not None:
         backup.parent.mkdir(parents=True, exist_ok=True)
         backup.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
@@ -119,6 +128,13 @@ def load(rows: dict[str, list[dict[str, Any]]], url: str, schema: str, role: str
     try:
         with conn.cursor() as cur:
             _set_role(cur, role)
+            step = ("check", "projects")
+            cur.execute(sql.SQL("select count(*) from {}").format(_table(schema, "projects")))
+            current = cur.fetchone()[0] or 0
+            new = len(rows.get("projects") or [])
+            if not force and current and new < MIN_SHARE * current:
+                raise SyncError(f"{new} projets a charger pour {current} dans la base : chargement refuse "
+                                "(output/ incomplet ?), --force pour charger quand meme")
             for table in DELETE_ORDER:
                 step = ("delete", table)
                 cur.execute(sql.SQL("delete from {}").format(_table(schema, table)))
@@ -154,6 +170,8 @@ def load(rows: dict[str, list[dict[str, Any]]], url: str, schema: str, role: str
             conn.rollback()
         finally:
             conn.close()
+        if isinstance(exc, SyncError):
+            raise
         raise SyncError(f"{step[0]} {step[1]}: {type(exc).__name__}: {exc}") from exc
     try:
         with conn.cursor() as cur:

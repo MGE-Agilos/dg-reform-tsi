@@ -59,6 +59,8 @@ class FakeCursor:
             self._one = (None if params[0].split(".")[1] in self.conn.missing else params[0],)
         elif text.startswith("select has_table_privilege"):
             self._one = (params[1] not in self.conn.readonly,)
+        elif text.startswith("select count(*)"):
+            self._one = (self.conn.current_projects,)
 
     def fetchone(self):
         return self._one
@@ -69,6 +71,7 @@ class FakeConn:
         self.log, self.missing, self.fail_on, self.readonly = [], set(missing), fail_on, set(readonly)
         self.commits = self.rollbacks = 0
         self.closed = False
+        self.current_projects = 3
 
     def cursor(self):
         return FakeCursor(self)
@@ -85,7 +88,7 @@ class FakeConn:
 
 def rows_fixture(n_projects=3):
     return {"projects": [{"project_id": f"p{i}", "title": "T", "countries": ["HR"]} for i in range(n_projects)],
-            "csr_documents": [], "csrs": [], "csr_parts": [], "project_csr_links": [],
+            "csr_documents": [], "csrs": [{"csr_id": "csr-HR-2022-1"}], "csr_parts": [], "project_csr_links": [],
             "anomalies": [{"project_id": None, "type": "x", "severity": "low"}],
             "impact_reports": [{"project_id": "p0", "score": 5, "report": "r", "source": "local"}],
             "csr_related_projects": [], "csr_recitals": [{"recital_id": "rec-HR-2026-1"}],
@@ -163,3 +166,28 @@ def test_check_reports_missing_and_not_writable_and_writes_nothing():
     assert report["not_writable"] == ["projects"]
     assert conn.rollbacks == 1 and conn.commits == 0 and conn.closed
     assert not any(s.startswith(("delete", "insert")) for s in statements(conn))
+
+
+def test_load_refuses_an_empty_output_before_connecting():
+    rows = rows_fixture()
+    rows["csrs"] = []
+    with pytest.raises(SyncError, match="aucun projet ou aucune CSR"):
+        load(rows, URL, "public", "", connect=lambda url: pytest.fail("no connection expected"))
+
+
+def test_load_refuses_far_fewer_projects_than_the_database_unless_forced():
+    conn = FakeConn()
+    conn.current_projects = 2155
+    with pytest.raises(SyncError, match="3 projets a charger pour 2155"):
+        load(rows_fixture(), URL, "public", "", connect=lambda url: conn)
+    assert conn.rollbacks == 1 and conn.commits == 0
+    assert not any(s.startswith(("delete", "insert")) for s in statements(conn))
+    forced = FakeConn()
+    forced.current_projects = 2155
+    assert load(rows_fixture(), URL, "public", "", connect=lambda url: forced, force=True)["projects"] == 3
+
+
+def test_load_accepts_an_empty_database():
+    conn = FakeConn()
+    conn.current_projects = 0
+    assert load(rows_fixture(), URL, "public", "", connect=lambda url: conn)["projects"] == 3

@@ -14,6 +14,7 @@ services:
       context: ../../..
       dockerfile: deploy/onprem/docker/updater.Dockerfile
     image: localhost/tsi-explorer-updater
+    init: true   # tiny init as PID 1: the update script's log is written to the end, signals reach the script
     env_file: updater.env
     volumes:
       - tsi-update-output:/app/output

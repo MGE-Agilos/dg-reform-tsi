@@ -63,6 +63,7 @@ LOG="logs/update-$STAMP.log"
 WORK="logs/update-$STAMP"
 mkdir -p "$WORK"
 exec > >(tee -a "$LOG") 2>&1
+TEE_PID=$!
 SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 START="$(date +%s)"
 WORST=0
@@ -88,13 +89,18 @@ finish() {  # finish <exit code>
   fi
   echo
   echo "Finished in $(( $(date +%s) - START )) s with exit code $1. Log: $ROOT/$LOG"
+  # Let tee write the last lines before exiting (in a container, bash may be PID 1: its children die with it).
+  exec >&- 2>&-
+  wait "$TEE_PID" 2>/dev/null
   exit "$1"
 }
 
-stop() {  # stop <message> <code>
+stop() {  # stop <message> <code>: a stopped update never ends with a warning code (1 or 3), at least 2
+  local code="$2"
+  case "$code" in 0|1|3) code=2 ;; esac
   echo
   echo "STOPPED: $1"
-  finish "$2"
+  finish "$code"
 }
 
 step() {  # step <name> <policy> <command args...>: runs python -m tsi_agent, records the result for the summary

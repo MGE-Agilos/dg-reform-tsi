@@ -49,5 +49,16 @@ def test_failed_load_rolls_back_after_its_deletes(counts):
                                    "rationale": "r", "basis": "full_text"}],   # unknown part: foreign key violation
             "anomalies": []}
     with pytest.raises(SyncError, match="insert project_csr_links"):
+        load(rows, URL, SCHEMA, ROLE, force=True)   # past the size safeguard, up to the failing insert
+    assert counts() == before
+
+
+def test_much_smaller_load_is_refused_before_any_change(counts):
+    before = counts()
+    rows = {"projects": [{"project_id": "it-p1", "title": "T"}], "csrs": [{"csr_id": "csr-XX-1999-1", "country": "HR",
+            "year": 1999, "number": "1", "title": "T", "text": "T"}]}
+    if before["projects"] < 4:
+        pytest.skip("database almost empty")
+    with pytest.raises(SyncError, match="chargement refuse"):
         load(rows, URL, SCHEMA, ROLE)
     assert counts() == before
