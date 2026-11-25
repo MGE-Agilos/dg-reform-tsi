@@ -39,6 +39,11 @@ export const MAX_TOTAL = 40000; // all messages together
 export const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 export const ANTHROPIC_VERSION = "2023-06-01";
 export const DEFAULT_MODEL = "claude-sonnet-5-5";
+export type Provider = "anthropic" | "openai";
+export const OPENAI_DEFAULT_MODEL = "gpt-5.1";
+/** Output tokens with the OpenAI connector: they include the reasoning tokens. */
+export const OPENAI_MAX_TOKENS: Record<ServiceName, number> = { chat: 16000, impact: 32000, briefing: 16000, expand: 4000 };
+export const JSON_SCHEMA_INSTRUCTION = "Answer with a single JSON object that conforms to this JSON schema: ";
 export const MAX_TOKENS: Record<ServiceName, number> = { chat: 16000, impact: 16000, briefing: 5000, expand: 1000 };
 export const EFFORT: Record<ServiceName, string> = { chat: "low", impact: "high", briefing: "low", expand: "low" };
 export const MAX_FACTS = 25000; // characters of JSON.stringify(facts) (briefing)
@@ -75,8 +80,21 @@ class ToolError extends Error {}
 /** Base URL of the PostgREST API: TSI_REST_URL (self-hosted PostgREST, e.g. http://127.0.0.1:3001), else SUPABASE_URL/rest/v1. */
 export function restUrl(env: Env): string {
   const url = env.TSI_REST_URL || (env.SUPABASE_URL ? `${env.SUPABASE_URL}/rest/v1` : "");
-  if (!url) throw new HttpError(500, "SUPABASE_URL not configured");
+  if (!url) throw new HttpError(500, "SUPABASE_URL or TSI_REST_URL not configured");
   return url.replace(/\/+$/, "");
+}
+
+/** Model API: TSI_LLM_PROVIDER=anthropic (default) or openai (OpenAI-compatible gateway such as GPT@EC). */
+export function providerOf(env: Env): Provider {
+  const p = (env.TSI_LLM_PROVIDER || "anthropic").trim().toLowerCase();
+  if (p !== "anthropic" && p !== "openai") throw new HttpError(500, "TSI_LLM_PROVIDER must be anthropic or openai");
+  return p;
+}
+
+/** Model of a service: TSI_MODEL (TSI_EXPAND_MODEL for the related terms), else the connector's default. */
+export function modelOf(env: Env, service: ServiceName): string {
+  if (providerOf(env) === "openai") return (service === "expand" && env.TSI_EXPAND_MODEL) || env.TSI_MODEL || OPENAI_DEFAULT_MODEL;
+  return service === "expand" ? env.TSI_EXPAND_MODEL || EXPAND_MODEL : env.TSI_MODEL || DEFAULT_MODEL;
 }
 
 // ---------- prompts ----------
@@ -847,7 +865,7 @@ function anthropicConnector(service: AgentService, cfg: ServiceConfig, messages:
   // Cle propre au projet TSI d'abord (le secret ANTHROPIC_API_KEY est partage avec une autre application).
   const key = env.TSI_ANTHROPIC_API_KEY || env.ANTHROPIC_API_KEY;
   if (!key) throw new HttpError(500, "ANTHROPIC_API_KEY not configured");
-  const model = env.TSI_MODEL || DEFAULT_MODEL;
+  const model = modelOf(env, service);
   const system = [{ type: "text", text: cfg.system(), cache_control: { type: "ephemeral" } }];
   const conversation: ApiMessage[] = messages.map((m) => ({ role: m.role, content: m.content }));
   let res: ModelResponse = { content: [], stop_reason: null };
@@ -888,12 +906,113 @@ function anthropicConnector(service: AgentService, cfg: ServiceConfig, messages:
   };
 }
 
+type OpenAIConfig = { url: string; key: string; reasoning: boolean };
+type OAToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
+type OAMessage = { role: "system" | "user" | "assistant" | "tool"; content: string | null; tool_calls?: OAToolCall[]; tool_call_id?: string };
+type OAChoice = { message: { content?: string | null; tool_calls?: OAToolCall[]; refusal?: string | null }; finish_reason: string | null };
+type OAResponse = { choices?: OAChoice[]; usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } };
+
+function openaiConfig(env: Env): OpenAIConfig {
+  const base = (env.TSI_OPENAI_BASE_URL || "").trim().replace(/\/+$/, "");
+  const key = (env.TSI_OPENAI_API_KEY || "").trim();
+  if (!base || !key) throw new HttpError(500, "TSI_OPENAI_BASE_URL and TSI_OPENAI_API_KEY not configured");
+  return { url: `${base}/chat/completions`, key, reasoning: (env.TSI_OPENAI_REASONING || "on").trim().toLowerCase() !== "off" };
+}
+
+/** One chat/completions call; errors mapped like modelRequest (only the status and the error code or type are logged). */
+async function openaiRequest(service: ServiceName, oa: OpenAIConfig, body: Record<string, unknown>, fetchImpl: FetchImpl,
+  timeout: number, stats: RunStats): Promise<OAChoice> {
+  let res: Response;
+  try {
+    res = await fetchImpl(oa.url, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${oa.key}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeout),
+    });
+  } catch (e) {
+    if (isTimeout(e)) throw new HttpError(504, "The model service timed out");
+    throw new HttpError(502, "The model service could not be reached");
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => null) as { error?: { type?: unknown; code?: unknown } } | null;
+    const kind = typeof err?.error?.code === "string" ? err.error.code : err?.error?.type;
+    console.log(JSON.stringify({ service, llmStatus: res.status, llmError: typeof kind === "string" ? kind.slice(0, 80) : null }));
+    throw new HttpError(502, `Model service error ${res.status}`);
+  }
+  let json: OAResponse;
+  try {
+    json = await res.json() as OAResponse;
+  } catch (e) {
+    if (isTimeout(e)) throw new HttpError(504, "The model service timed out");
+    throw new HttpError(502, "Unexpected response from the model service");
+  }
+  const choice = json?.choices?.[0];
+  if (!choice || !choice.message || typeof choice.message !== "object") throw new HttpError(502, "Unexpected response from the model service");
+  const u = json.usage ?? {};
+  stats.input_tokens += u.prompt_tokens ?? 0;
+  stats.output_tokens += u.completion_tokens ?? 0;
+  stats.cache_read_tokens += u.prompt_tokens_details?.cached_tokens ?? 0;
+  return choice;
+}
+
+function openaiStop(choice: OAChoice): Stop {
+  if (typeof choice.message.refusal === "string" && choice.message.refusal) return "refusal";
+  if (choice.finish_reason === "content_filter") return "refusal";
+  if (choice.finish_reason === "length") return "max_tokens";
+  if (choice.message.tool_calls?.length) return "tool_use";
+  return "end";
+}
+
+/** Anthropic tool schema -> OpenAI function tool. */
+export function functionTool(t: Record<string, unknown>): Record<string, unknown> {
+  return { type: "function", function: { name: t.name, description: t.description, parameters: t.input_schema } };
+}
+
+function openaiConnector(service: AgentService, cfg: ServiceConfig, messages: Message[], env: Env, fetchImpl: FetchImpl,
+  stats: RunStats): Connector {
+  const oa = openaiConfig(env);
+  const model = modelOf(env, service);
+  const tools = cfg.tools.map(functionTool);
+  const conversation: OAMessage[] = [{ role: "system", content: cfg.system() }, ...messages.map((m) => ({ role: m.role, content: m.content }))];
+  let choice: OAChoice = { message: {}, finish_reason: null };
+  return {
+    async call(final, timeoutMs) {
+      const body: Record<string, unknown> = { model, messages: conversation, tools, max_completion_tokens: OPENAI_MAX_TOKENS[service] };
+      if (oa.reasoning) body.reasoning_effort = EFFORT[service];
+      if (final) body.tool_choice = "none";
+      choice = await openaiRequest(service, oa, body, fetchImpl, timeoutMs, stats);
+    },
+    stop: () => openaiStop(choice),
+    toolUses: () => (choice.message.tool_calls ?? []).map((c) => {
+      const name = String(c?.function?.name ?? "");
+      try {
+        return { id: String(c.id), name, input: JSON.parse(c?.function?.arguments || "{}") };
+      } catch {
+        return { id: String(c.id), name, input: null, invalid: true };
+      }
+    }),
+    pushAssistant() {
+      // Only the fields the API accepts back (not refusal, annotations...).
+      const m: OAMessage = { role: "assistant", content: choice.message.content ?? null };
+      if (choice.message.tool_calls?.length) m.tool_calls = choice.message.tool_calls;
+      conversation.push(m);
+    },
+    // Every tool call gets its answer, unknown tools included: the API refuses a call left unanswered.
+    pushToolOutputs(outputs) { for (const o of outputs) conversation.push({ role: "tool", tool_call_id: o.id, content: o.content }); },
+    answer: () => (openaiStop(choice) === "tool_use" ? "" : String(choice.message.content ?? "").trim()),
+  };
+}
+
 export async function agentLoop(
   service: AgentService, messages: Message[], env: Env, fetchImpl: FetchImpl, now: () => number = Date.now,
   ctx?: { restUrl: string; apikey: string; userAuth: string }, stats: RunStats = emptyStats(),
 ): Promise<{ answer: string; steps: number; stats: RunStats }> {
   const cfg = SERVICES[service];
-  const conn = anthropicConnector(service, cfg, messages, env, fetchImpl, stats);
+  const provider = providerOf(env);
+  const conn = provider === "openai"
+    ? openaiConnector(service, cfg, messages, env, fetchImpl, stats)
+    : anthropicConnector(service, cfg, messages, env, fetchImpl, stats);
   const started = now();
   const deadline = started + DEADLINE_MS;
   const toolCtx: ToolContext = {
