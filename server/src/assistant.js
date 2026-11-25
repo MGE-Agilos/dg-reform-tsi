@@ -1,6 +1,6 @@
 // Assistant of the self-hosted installation: the explorer's tsi-assistant (supabase/functions/tsi-assistant/index.ts) run in
 // this process with its OpenAI-compatible connector (GPT@EC). Loaded only when LLM_BASE_URL is set; Node must strip the
-// types (node --experimental-strip-types, Node 22.6 or later). Calls to the gateway honour HTTPS_PROXY / NO_PROXY; the
+// types (node --experimental-strip-types, Node 22.12 or later). Calls to the gateway honour HTTPS_PROXY / NO_PROXY; the
 // database calls go straight to PostgREST with the user's token (row-level security applies).
 import { serviceToken } from "./tokens.js";
 

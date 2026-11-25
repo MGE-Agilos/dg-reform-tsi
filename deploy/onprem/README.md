@@ -350,7 +350,7 @@ LLM_MODEL=gpt-5.1
 # NODE_EXTRA_CA_CERTS=/etc/pki/tls/certs/proxy-ca.pem
 ```
 
-systemd reads this file: put comments on their own lines, never after a value.
+systemd reads this file: put comments on their own lines, never after a value. If a value contains `$`, a backtick, `;`, `&` or a space, put it in single quotes (systemd and the shell both remove them).
 
 Create the GPT@EC key file (paste the key, then Ctrl+D), or put `LLM_API_KEY=<key>` directly in `server.env` instead:
 

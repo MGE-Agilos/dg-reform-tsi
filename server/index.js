@@ -23,7 +23,7 @@ if (cfg.llm) {
     assistant = await createAssistant(cfg);
   } catch (e) {
     console.error(e?.code === "ERR_UNKNOWN_FILE_EXTENSION"
-      ? "Assistant: start the service with node --experimental-strip-types (Node 22.6 or later); npm start does it."
+      ? "Assistant: start the service with node --experimental-strip-types (Node 22.12 or later); npm start does it."
       : `Assistant: ${e?.message || e}`);
     process.exit(2);
   }

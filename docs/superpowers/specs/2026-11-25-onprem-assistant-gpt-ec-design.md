@@ -97,7 +97,7 @@ NO_PROXY=localhost,127.0.0.1
   `EnvHttpProxyAgent` (reads `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`); every other call keeps Node's `fetch`.
   `undici` is added as the service's second dependency, pinned. A proxy certificate authority is given with Node's
   own `NODE_EXTRA_CA_CERTS`.
-- **TypeScript.** The service starts with `node --experimental-strip-types index.js` (Node 22.6 or later): Node removes
+- **TypeScript.** The service starts with `node --experimental-strip-types index.js` (Node 22.12 or later: type stripping and ES module detection): Node removes
   the types of `index.ts`, nothing is compiled. `npm start`, the systemd unit and the README use it.
 - `GET /api/health`: `assistant: true` when on.
 - **Gateway check.** `npm run assistant-check` reads the same settings and makes two short calls to the gateway: one
@@ -121,7 +121,7 @@ keep their own text in their report.
 
 `deploy/onprem/README.md`: status table (assistant ready), step 6 (settings, key file, proxy, start command, systemd
 unit), new check `npm run assistant-check`, step 12 (assistant question), operations (logs: `journalctl -u
-tsi-explorer` holds one line per assistant request, without content). `REQUIREMENTS.md`: Node 22.6 or later.
+tsi-explorer` holds one line per assistant request, without content). `REQUIREMENTS.md`: Node 22.12 or later.
 
 ## 5. Tests
 
