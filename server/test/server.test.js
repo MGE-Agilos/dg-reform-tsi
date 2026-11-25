@@ -13,6 +13,7 @@ import { oidcProvider } from "../src/auth.js";
 import { runAdmin, validate, HttpError } from "../src/admin.js";
 import { assistantEnv, routedFetch, createAssistant } from "../src/assistant.js";
 import { llmConfig } from "../src/config.js";
+import { checkGateway } from "../assistant-check.js";
 
 const SECRET = "s".repeat(40);
 const SESSION = "k".repeat(40);
@@ -305,4 +306,28 @@ test("assistant in the service: user token to PostgREST, gateway key, impact sav
     assert.deepEqual(await (await fetch(`${s.base}/api/health`)).json(), { ok: true, database: true, assistant: true, auth: "dev" });
     assert.equal((await fetch(`${s.base}/api/assistant`, { method: "POST", body: "{}" })).status, 401);
   } finally { await s.close(); }
+});
+
+test("assistant-check: tool and JSON calls; gateway errors shown with status and excerpt", async () => {
+  const llm = { baseUrl: "https://g/v1", apiKey: "k", model: "m", expandModel: "m", reasoning: false };
+  const bodies = [];
+  const good = async (url, init) => {
+    assert.equal(url, "https://g/v1/chat/completions");
+    const b = JSON.parse(init.body);
+    bodies.push(b);
+    return Response.json(b.tools
+      ? { choices: [{ message: { tool_calls: [{ id: "1", type: "function", function: { name: "ping", arguments: "{\"ok\":true}" } }] } }] }
+      : { choices: [{ message: { content: "{\"ok\": true}" } }] });
+  };
+  assert.deepEqual((await checkGateway(llm, good)).map((r) => r.ok), [true, true]);
+  assert.ok(bodies.every((b) => b.model === "m" && !("reasoning_effort" in b)));
+  assert.deepEqual(bodies[1].response_format, { type: "json_object" });
+  const bad = async () => new Response("{\"error\":{\"message\":\"Unrecognized request argument supplied: reasoning_effort\"}}", { status: 400 });
+  const r = await checkGateway({ ...llm, reasoning: true }, bad);
+  assert.deepEqual(r.map((x) => x.ok), [false, false]);
+  assert.match(r[0].detail, /^HTTP 400: .*reasoning_effort/);
+  const noTool = async () => Response.json({ choices: [{ message: { content: "pong" } }] });
+  assert.match((await checkGateway(llm, noTool))[0].detail, /without calling the tool/);
+  const down = async () => { throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }); };
+  assert.match((await checkGateway(llm, down))[0].detail, /no answer \(ECONNREFUSED\)/);
 });
