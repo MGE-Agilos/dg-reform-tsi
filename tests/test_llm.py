@@ -200,6 +200,13 @@ def test_read_dotenv_bom_quotes_and_inline_comments(tmp_path):
                                 "KEY_D": "q", "KEY_E": "a#b", "KEY_F": "sk-abc", "KEY_G": "sk-def"}
 
 
+def test_read_dotenv_ignores_a_directory(tmp_path):
+    # Un volume monte sur un .env absent de l'hote cree un dossier .env : pas un fichier, rien a lire, pas d'erreur.
+    (tmp_path / ".env").mkdir()
+    assert read_dotenv(tmp_path / ".env") == {}
+    assert load_dotenv(tmp_path / ".env") == {}
+
+
 def test_check_provider(monkeypatch):
     check_provider(Settings())  # claude_cli : rien a verifier
     with pytest.raises(ValueError, match="llm_provider"):

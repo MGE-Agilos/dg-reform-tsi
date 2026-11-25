@@ -196,7 +196,7 @@ def read_dotenv(path: Path) -> dict[str, str]:
     isole et un commentaire ` # ...` en fin de ligne sont retires.
     """
     values: dict[str, str] = {}
-    if not path.exists():
+    if not path.is_file():  # absent, ou dossier (volume monte sur un .env inexistant) : rien a lire
         return values
     for line in path.read_text(encoding="utf-8-sig").splitlines():
         line = line.strip()
