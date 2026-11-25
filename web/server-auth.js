@@ -75,6 +75,48 @@ export function createServerAuth(base, { fetchImpl = (...a) => fetch(...a), now 
       Promise.resolve().then(() => cb("INITIAL_SESSION", session));
       return { data: { subscription: { unsubscribe: () => listeners.delete(cb) } } };
     },
+    /** Sign-in mode of the installation: "oidc" (organisation account), "password" (e-mail + password) or "dev". */
+    async mode() {
+      try {
+        const res = await fetchImpl(`${base}/auth/config`, { credentials: "same-origin", cache: "no-store" });
+        if (res.ok) return (await res.json()).mode || "oidc";
+      } catch { /* service unreachable: the organisation-account button, which explains the error */ }
+      return "oidc";
+    },
+    /** E-mail + password (mode "password"), like supabase-js: { data, error }, error "Invalid login credentials". */
+    async signInWithPassword({ email, password }) {
+      let res;
+      try {
+        res = await fetchImpl(`${base}/auth/password`, { method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+      } catch {
+        return { data: { session: null }, error: { message: "The sign-in service cannot be reached" } };
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return { data: { session: null }, error: { status: res.status, message: body.error || `The sign-in service answered ${res.status}` } };
+      }
+      const out = await load();
+      if (out.session) emit("SIGNED_IN");
+      return { data: { session: out.session }, error: out.error };
+    },
+    /** New password of the signed-in user, like supabase-js updateUser({ password }). */
+    async updateUser({ password } = {}) {
+      let res;
+      try {
+        res = await fetchImpl(`${base}/auth/password/change`, { method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) });
+      } catch {
+        return { data: { user: null }, error: { message: "The sign-in service cannot be reached" } };
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return { data: { user: null }, error: { status: res.status, message: body.error || `The sign-in service answered ${res.status}` } };
+      }
+      const out = await load();
+      if (out.session) emit("USER_UPDATED");
+      return { data: { user: out.session?.user ?? null }, error: out.error };
+    },
     /** Address of the sign-in page, coming back to `next` (a route of the page, e.g. "#projects"). */
     loginUrl(next) {
       return `${base}/auth/login?next=${encodeURIComponent(next || "#dashboard")}`;

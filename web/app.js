@@ -15,6 +15,8 @@ import * as CM from "./compare.js";
 // deploy/onprem/config.js), where the application service signs users in with their organisation account.
 const { SUPABASE_URL, SUPABASE_ANON_KEY, PROXY_URL } = CFG;
 const SERVER_AUTH = CFG.AUTH_MODE === "server";
+// Self-hosted installation signing in with e-mail + password (service in AUTH_MODE=password): known at start-up.
+let PASSWORD_MODE = false;
 
 const SUPABASE_JS = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm";
 const MARKED_JS = "https://cdn.jsdelivr.net/npm/marked@12.0.2/lib/marked.esm.js";
@@ -5889,7 +5891,11 @@ function inviteFormHtml() {
     + `<label class="field"><span>Role</span><select name="role">${options(A.ROLES, "user", null)}</select></label>`
     + (SERVER_AUTH ? "" : `<label class="check"><input type="checkbox" name="send_link" value="1"> Also e-mail a sign-in link</label>`)
     + `<button type="submit" class="btn" id="adm-invite-submit">Invite</button></form>`
-    + (SERVER_AUTH
+    + (PASSWORD_MODE
+      ? `<p class="muted small">The address gets access to the explorer with a temporary password, shown once here: give it to the user`
+        + ` through a separate channel, with the address of the site. They replace it with their own at the first sign-in.`
+        + ` Administrators can also invite users and see the usage monitoring.</p>`
+      : SERVER_AUTH
       ? `<p class="muted small">The address gets access to the explorer: the user signs in with their organisation account (no password`
         + ` here). Tell them the address of the site. Administrators can also invite users and see the usage monitoring.</p>`
       : `<p class="muted small">A new address gets an account with a temporary password, to be replaced at the first sign-in. An address that`
@@ -5938,7 +5944,8 @@ function usersTableHtml(state) {
       + ` data-email="${esc(u.email)}"${action === "role" ? ` data-role="${other}"` : ""}${disabled ? ` disabled title="${esc(why)}"` : ""}>${esc(label)}</button>`;
     const actions = state.fallback ? `<span class="muted small">—</span>`
       : `<div class="adm-actions">${act("role", other === "admin" ? "Make admin" : "Make user", lastAdmin, "The last administrator cannot be demoted")}`
-        + (SERVER_AUTH ? "" : act("reset", "Reset password", !u.account, "No account for this e-mail"))
+        + (PASSWORD_MODE ? act("reset", u.has_password ? "Reset password" : "Create password", false)
+          : SERVER_AUTH ? "" : act("reset", "Reset password", !u.account, "No account for this e-mail"))
         + act("revoke", "Revoke", self, "You cannot revoke your own access") + `</div>`;
     return [
       td(`${esc(u.email)}${self ? ` <span class="muted small">(you)</span>` : ""}`, "adm-email"),
@@ -6064,11 +6071,14 @@ async function adminAction(button) {
   } else if (action === "reset") {
     confirmText = { title: "Reset the password?", confirm: "Reset password", danger: true,
       html: `<p>A new temporary password is generated for <strong>${esc(email)}</strong>; they must replace it at the next sign-in.</p>`
-        + `<p class="adm-warning"><strong>Warning:</strong> this also changes their password for any other application using the same account`
-        + ` (shared sign-in service). Prefer the e-mailed sign-in link when the user only forgot it.</p>` };
+        + (PASSWORD_MODE ? "" : `<p class="adm-warning"><strong>Warning:</strong> this also changes their password for any other application using the same account`
+        + ` (shared sign-in service). Prefer the e-mailed sign-in link when the user only forgot it.</p>`) };
   } else {
     confirmText = { title: "Revoke the access?", confirm: "Revoke access", danger: true,
-      html: `<p><strong>${esc(email)}</strong> will no longer be able to open the explorer. Their account is kept (it may be used by another`
+      html: PASSWORD_MODE
+        ? `<p><strong>${esc(email)}</strong> will no longer be able to open the explorer, and their password is deleted. You can invite`
+          + ` them again later (with a new temporary password).</p>`
+        : `<p><strong>${esc(email)}</strong> will no longer be able to open the explorer. Their account is kept (it may be used by another`
         + ` application); you can invite them again later.</p>` };
   }
   if (!(await confirmAdmin(confirmText, button))) return;
@@ -6688,7 +6698,7 @@ async function signInWithPassword(event) {
   const password = $("login-password").value;
   if (!email) return;
   if (!password) {
-    setLoginMessage("Enter your password, or use the sign-in link below.", true);
+    setLoginMessage(PASSWORD_MODE ? "Enter your password." : "Enter your password, or use the sign-in link below.", true);
     $("login-password").focus();
     return;
   }
@@ -6700,7 +6710,7 @@ async function signInWithPassword(event) {
   if (error) {
     // Same message for unknown e-mail and wrong password (no account enumeration).
     setLoginMessage(/invalid login credentials/i.test(error.message || "")
-      ? "Wrong e-mail or password." : `Could not sign in: ${error.message}`, true);
+      ? "Wrong e-mail or password." : error.status === 429 ? error.message : `Could not sign in: ${error.message}`, true);
     return;
   }
   $("login-password").value = "";
@@ -6760,7 +6770,13 @@ async function init() {
     $("config-error").innerHTML = `<h2>Could not load the Supabase client</h2><p>${esc(e.message || e)}. Check your network connection and reload the page.</p>`;
     return;
   }
-  if (SERVER_AUTH) {
+  if (SERVER_AUTH) PASSWORD_MODE = (await auth.mode()) === "password";
+  if (PASSWORD_MODE) {
+    // E-mail + password checked by the installation's service: no e-mailed link, a forgotten password is reset by an admin.
+    $("login-form").addEventListener("submit", signInWithPassword);
+    $("login-help").textContent = "Access is restricted to registered users. Sign in with your e-mail address and password.";
+    $("login-magic").closest("p").textContent = "Forgotten your password? Ask an administrator of the explorer to reset it.";
+  } else if (SERVER_AUTH) {
     // Organisation account (identity provider of the installation): no password, no e-mailed link.
     $("login-form").hidden = true;
     $("login-help").textContent = "Access is restricted to registered users. Sign in with your organisation account.";

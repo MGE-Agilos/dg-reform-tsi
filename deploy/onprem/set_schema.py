@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCES = [*sorted((ROOT / "deploy/onprem/sql").glob("0*.sql")), *sorted((ROOT / "supabase/migrations").glob("0*.sql")),
-           *sorted((ROOT / "deploy/onprem/sql").glob("9*.sql"))]
+           *sorted((ROOT / "deploy/onprem/sql").glob("[1-9]*.sql"))]  # 800_passwords, 900_service_role: after the migrations
 
 RULES = [
     (re.compile(r"\bpublic\.", re.I), "{s}."),

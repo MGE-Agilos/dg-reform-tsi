@@ -41,7 +41,7 @@ Server preparation (to do first): [REQUIREMENTS.md](REQUIREMENTS.md).
 | Web page (`web/`) with `deploy/onprem/config.js` | Ready. Signs in through the application service. Tested end to end on this stack. |
 | Database schema (`deploy/onprem/sql/000_compat.sql`, then `supabase/migrations/001` to `010`) | Ready. Tested on PostgreSQL 16: schema, row-level security, search and dashboard functions. |
 | Transfer of the current data (SQL file provided by Agilos) | Ready. Tested: same rows and same content as the cloud database. |
-| Application service (`server/`): sign-in, data API, administration | Ready. Tested end to end with the test sign-in; OpenID Connect tested against a simulated identity provider only. |
+| Application service (`server/`): sign-in, data API, administration | Ready. Tested end to end with e-mail + password (`AUTH_MODE=password`) and with the test sign-in; OpenID Connect tested against a simulated identity provider only. |
 | Assistant on GPT@EC (questions, impact analyses, briefings, related search terms) | **(planned)**. Until then the page works without it (the assistant answers "not available yet"). |
 | Data load into a self-hosted database (`supabase-sync` to a local PostgREST) | **(planned)** |
 | Linux update script and service files (`deploy/onprem/`) | **(planned)** |
@@ -73,7 +73,7 @@ recommendations, recitals, country reports).
 
 | Decision | Assumed in this document | Alternative |
 |---|---|---|
-| Sign-in | OpenID Connect with your identity provider (for example EU Login or Microsoft Entra ID): users sign in with their usual account. | Windows integrated sign-in (Kerberos) through nginx; heavier on Linux. |
+| Sign-in | OpenID Connect with your identity provider (for example EU Login or Microsoft Entra ID): users sign in with their usual account. | E-mail + one password per user, managed in the Admin page (`AUTH_MODE=password`, step 6), for example until the identity provider is ready. |
 | Authorised users | A list of e-mail addresses in the database, managed by the explorer's administrators. | An identity-provider group. |
 | Database role names | `anon`, `authenticated`, `service_role` (the names used by the schema). | Other names, if they clash with roles already in your PostgreSQL cluster (roles are cluster-wide). |
 | Schema of the tables | `public`. | Another schema, for example `tsi_explorer`: adapted copies of the scripts ([step 4](#step-4--install-the-database-schema)). |
@@ -169,6 +169,7 @@ psql -v ON_ERROR_STOP=1 -f deploy/onprem/sql/000_compat.sql         # see below
 for f in supabase/migrations/0*.sql; do
   echo "== $f"; psql -v ON_ERROR_STOP=1 -f "$f" || break
 done
+psql -v ON_ERROR_STOP=1 -f deploy/onprem/sql/800_passwords.sql      # AUTH_MODE=password (step 6); harmless otherwise
 psql -v ON_ERROR_STOP=1 -f deploy/onprem/sql/900_service_role.sql   # only if service_role has no BYPASSRLS
 psql -c "notify pgrst, 'reload schema';"
 ```
@@ -181,6 +182,7 @@ python3 deploy/onprem/set_schema.py tsi_explorer --out ~/tsi-sql
 for f in ~/tsi-sql/0*.sql; do
   echo "== $f"; psql -v ON_ERROR_STOP=1 -f "$f" || break
 done
+psql -v ON_ERROR_STOP=1 -f ~/tsi-sql/800_passwords.sql      # AUTH_MODE=password (step 6); harmless otherwise
 psql -v ON_ERROR_STOP=1 -f ~/tsi-sql/900_service_role.sql   # only if service_role has no BYPASSRLS
 psql -c "notify pgrst, 'reload schema';"
 ```
@@ -197,7 +199,7 @@ Check:
 ```bash
 psql -c "select count(*) from information_schema.tables where table_schema = '<schema>';"   # 15 or more
 psql -c "select count(*) from pg_policies where schemaname = '<schema>' and policyname = 'service_role_all';"
-# 14 if 900_service_role.sql was run, 0 otherwise
+# 15 if 900_service_role.sql was run after 800_passwords.sql (14 without it), 0 otherwise
 ```
 
 `900_service_role.sql` must be run again after every upgrade that adds tables (see [Operations](#operations)).
@@ -321,6 +323,9 @@ OIDC_CLIENT_ID=<client id>
 OIDC_CLIENT_SECRET=<client secret>
 # OIDC_EMAIL_CLAIM=email                               # claim of the ID token that holds the e-mail address
 
+# OR, until the identity provider is ready: e-mail + one password per user (needs an https:// PUBLIC_URL)
+# AUTH_MODE=password
+
 # Assistant (planned): address of the assistant service once installed
 # ASSISTANT_URL=http://127.0.0.1:3002
 
@@ -353,6 +358,22 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now tsi-explorer
 curl -s http://127.0.0.1:3000/api/health      # {"ok":true,"database":true,"assistant":false,"auth":"oidc"}
 ```
+
+### Sign-in with e-mail and password (`AUTH_MODE=password`)
+
+Until the site is registered with the identity provider, the users can sign in with their e-mail address and their
+own password. Switching to `AUTH_MODE=oidc` later needs nothing else: the users, their roles and their data stay.
+
+- Run `deploy/onprem/sql/800_passwords.sql` (step 4, as the owner; with another schema, the copy written by
+  `set_schema.py`), then `900_service_role.sql` again if `service_role` has no `BYPASSRLS`: 15 rules instead of 14.
+- The passwords are stored as hashes only (scrypt), in the table `user_passwords`, readable by the service only.
+- An administrator gives each user a temporary password from the **Admin** page (**Invite**, or **Create password** /
+  **Reset password** for an existing user). It is shown once: give it through another channel than the address of
+  the site. The user must replace it at the first sign-in (12 characters or more). A forgotten password: an
+  administrator resets it.
+- After 5 failed sign-ins in a row, an account is locked for 15 minutes; an address that fails 30 times in 15 minutes
+  is refused too (behind nginx, the service uses the address nginx puts last in `X-Forwarded-For`).
+- The first administrator gets a temporary password from the server (see step 9).
 
 ## Step 7 — Publish the web page
 
@@ -431,6 +452,17 @@ psql -c "insert into public.testers (email, role) values ('first.admin@example.e
 
 The administrators then add the other users from the page (**Admin** menu). E-mail addresses are stored in lower
 case.
+
+With `AUTH_MODE=password`, give the first administrator a temporary password, with the same environment variables as
+the service (in Docker: `docker exec -it <service container> node set-password.js first.admin@example.eu`):
+
+```bash
+cd /opt/tsi-explorer/app/server
+set -a; . /etc/tsi-explorer/server.env; set +a
+node set-password.js first.admin@example.eu    # prints the temporary password once
+```
+
+The same command helps when no administrator can sign in any more.
 
 ## Step 10 — First data load
 

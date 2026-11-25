@@ -13,6 +13,7 @@ import { extname, join, normalize, sep } from "node:path";
 import { seal, unseal, uuidV5, userToken, verifyJwt, serviceToken } from "./tokens.js";
 import { devLoginPage, DEV_ISSUER } from "./auth.js";
 import { HttpError, runAdmin, store, validate, normEmail } from "./admin.js";
+import { verifyPassword, passwordProblem, hashPassword, DUMMY_HASH, MAX_FAILURES, LOCK_MINUTES, MAX_LENGTH } from "./passwords.js";
 
 const SESSION_COOKIE = "tsi_session";
 const PENDING_COOKIE = "tsi_signin";
@@ -28,6 +29,13 @@ const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; cha
   ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8" };
 
 const nowS = () => Math.floor(Date.now() / 1000);
+const IP_MAX_FAILURES = 30; // failed password sign-ins per address and LOCK_MINUTES, all e-mail addresses together
+
+/** Address of the visitor: the last X-Forwarded-For entry (added by nginx, not by the browser), else the socket. */
+export function clientIp(req) {
+  const fwd = String(req.headers["x-forwarded-for"] || "").split(",").map((x) => x.trim()).filter(Boolean);
+  return fwd.at(-1) || req.socket?.remoteAddress || "unknown";
+}
 
 export function parseCookies(header) {
   const out = {};
@@ -72,17 +80,82 @@ export function createApp(cfg, { fetchImpl = fetch, provider = null, log = conso
   const db = store(cfg, fetchImpl);
 
   const session = (req) => unseal(parseCookies(req.headers.cookie)[SESSION_COOKIE], cfg.sessionSecret);
+  const ipFailures = new Map(); // address -> { count, until }
+
+  /** Session cookie: user id, e-mail, expiry and, with passwords, "must change the temporary password". */
+  function sessionCookie(person, mustChange = false, exp = nowS() + cfg.sessionHours * 3600) {
+    const user = { id: uuidV5(person.sub), email: person.email };
+    return { user, value: cookie(cfg, SESSION_COOKIE, seal({ ...user, ...(mustChange ? { mc: true } : {}), exp }, cfg.sessionSecret),
+      Math.max(0, exp - nowS())) };
+  }
 
   function startSession(res, person, next) {
-    const user = { id: uuidV5(person.sub), email: person.email };
-    const exp = nowS() + cfg.sessionHours * 3600;
+    const { user, value } = sessionCookie(person);
     res.writeHead(303, {
       "Location": `${cfg.publicUrl}/${safeNext(next)}`, "Cache-Control": "no-store",
-      "Set-Cookie": [cookie(cfg, SESSION_COOKIE, seal({ ...user, exp }, cfg.sessionSecret), cfg.sessionHours * 3600),
-        cookie(cfg, PENDING_COOKIE, "", 0)],
+      "Set-Cookie": [value, cookie(cfg, PENDING_COOKIE, "", 0)],
     });
     res.end();
     log(JSON.stringify({ event: "sign_in", user: user.id }));
+  }
+
+  const ipBlocked = (ip) => { const f = ipFailures.get(ip); return Boolean(f && f.until > Date.now() && f.count >= IP_MAX_FAILURES); };
+  function ipFailed(ip) {
+    const f = ipFailures.get(ip);
+    if (!f || f.until <= Date.now()) ipFailures.set(ip, { count: 1, until: Date.now() + LOCK_MINUTES * 60000 });
+    else f.count += 1;
+    if (ipFailures.size > 10000) ipFailures.clear(); // bounded memory
+  }
+
+  async function jsonBody(req) {
+    try { return JSON.parse((await readBody(req)).toString("utf8") || "null"); } catch { throw new HttpError(400, "Invalid JSON body"); }
+  }
+
+  /** E-mail + password (AUTH_MODE=password). Same answer for an unknown address and a wrong password. */
+  async function passwordSignIn(req, res) {
+    const ip = clientIp(req);
+    const tooMany = { error: `Too many failed attempts: try again in ${LOCK_MINUTES} minutes, or ask an administrator to reset your password.` };
+    if (ipBlocked(ip)) return send(res, 429, tooMany);
+    const body = await jsonBody(req);
+    const password = typeof body?.password === "string" ? body.password : "";
+    let email = null;
+    try { email = normEmail(body?.email); } catch { /* answered like a wrong password */ }
+    const row = email && password && password.length <= MAX_LENGTH && (await db.tester(email)) ? await db.password(email) : null;
+    if (row?.locked_until && Date.parse(row.locked_until) > Date.now()) {
+      ipFailed(ip);
+      log(JSON.stringify({ event: "sign_in_locked", email }));
+      return send(res, 429, tooMany);
+    }
+    const ok = (await verifyPassword(password.slice(0, MAX_LENGTH), row?.hash ?? DUMMY_HASH)) && Boolean(row);
+    if (!ok) {
+      ipFailed(ip);
+      if (row) {
+        const n = (row.failed_count || 0) + 1;
+        await db.signInResult(email, n >= MAX_FAILURES
+          ? { failed_count: 0, locked_until: new Date(Date.now() + LOCK_MINUTES * 60000).toISOString() }
+          : { failed_count: n });
+      }
+      log(JSON.stringify({ event: "sign_in_failed", email: email ?? "(invalid)", ip }));
+      return send(res, 401, { error: "Invalid login credentials" });
+    }
+    if (row.failed_count || row.locked_until) await db.signInResult(email, { failed_count: 0, locked_until: null });
+    const { user, value } = sessionCookie({ email, sub: `password|${email}` }, row.must_change === true);
+    log(JSON.stringify({ event: "sign_in", user: user.id, email, ip }));
+    return send(res, 200, { ok: true }, { "Set-Cookie": value });
+  }
+
+  /** New password chosen by the signed-in user (replaces a temporary one). */
+  async function passwordChange(req, res) {
+    const s = session(req);
+    if (!s) return send(res, 401, { error: "Not signed in" });
+    const body = await jsonBody(req);
+    const problem = passwordProblem(body?.password);
+    if (problem) return send(res, 400, { error: problem });
+    if (!(await db.tester(s.email))) return send(res, 403, { error: "Not a user of the explorer" });
+    await db.savePassword({ email: s.email, hash: await hashPassword(body.password), must_change: false });
+    const { value } = sessionCookie({ email: s.email, sub: `password|${s.email}` }, false, s.exp);
+    log(JSON.stringify({ event: "password_changed", email: s.email }));
+    return send(res, 200, { ok: true }, { "Set-Cookie": value });
   }
 
   /** Administrator calling /api/admin: valid token, e-mail in testers with the role admin. */
@@ -157,8 +230,24 @@ export function createApp(cfg, { fetchImpl = fetch, provider = null, log = conso
         return send(res, database ? 200 : 503, { ok: database, database, assistant: Boolean(cfg.assistantUrl), auth: cfg.authMode });
       }
 
+      if (p === "/api/auth/config" && req.method === "GET") return send(res, 200, { mode: cfg.authMode });
+
+      if (p === "/api/auth/password" && req.method === "POST") {
+        if (cfg.authMode !== "password") return send(res, 404, { error: "Not found" });
+        return await passwordSignIn(req, res);
+      }
+
+      if (p === "/api/auth/password/change" && req.method === "POST") {
+        if (cfg.authMode !== "password") return send(res, 404, { error: "Not found" });
+        return await passwordChange(req, res);
+      }
+
       if (p === "/api/auth/login" && req.method === "GET") {
         const next = safeNext(url.searchParams.get("next"));
+        if (cfg.authMode === "password") { // the sign-in form is on the page itself
+          res.writeHead(303, { "Location": `${cfg.publicUrl}/${next}`, "Cache-Control": "no-store" });
+          return res.end();
+        }
         if (cfg.authMode === "dev") return send(res, 200, devLoginPage(next), { "Content-Type": "text/html; charset=utf-8" });
         const { url: to, pending } = await provider.start();
         res.writeHead(303, { "Location": to, "Cache-Control": "no-store",
@@ -196,7 +285,7 @@ export function createApp(cfg, { fetchImpl = fetch, provider = null, log = conso
         const user = { id: s.id, email: s.email };
         const { token, exp } = userToken(user, cfg.jwtSecret, cfg.tokenMinutes);
         return send(res, 200, { access_token: token, token_type: "bearer", expires_at: Math.min(exp, s.exp),
-          user: { ...user, user_metadata: {}, app_metadata: { provider: cfg.authMode } } });
+          user: { ...user, user_metadata: { must_change_password: s.mc === true }, app_metadata: { provider: cfg.authMode } } });
       }
 
       if (p === "/api/auth/logout" && req.method === "POST") {
@@ -208,10 +297,8 @@ export function createApp(cfg, { fetchImpl = fetch, provider = null, log = conso
 
       if (p === "/api/admin" && req.method === "POST") {
         const me = await adminCaller(req);
-        let body;
-        try { body = JSON.parse((await readBody(req)).toString("utf8") || "null"); } catch { throw new HttpError(400, "Invalid JSON body"); }
-        const v = validate(body);
-        const out = await runAdmin(db, me, v);
+        const v = validate(await jsonBody(req));
+        const out = await runAdmin(db, me, v, cfg.authMode);
         log(JSON.stringify({ event: "admin", action: v.action }));
         return send(res, 200, out);
       }

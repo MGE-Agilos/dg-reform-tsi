@@ -70,3 +70,34 @@ test("the renewal timer re-reads the session and emits TOKEN_REFRESHED", async (
   await pending.at(-1).fn();
   assert.deepEqual(events, ["INITIAL_SESSION", "TOKEN_REFRESHED"]);
 });
+
+test("password mode: mode read from the service, sign-in and password change like supabase-js, errors kept", async () => {
+  const mode = fake([{ status: 200, body: { mode: "password" } }, new TypeError("offline")]);
+  const a = createServerAuth("/api", { fetchImpl: mode.impl, now: () => T, timers: noTimers });
+  assert.equal(await a.mode(), "password");
+  assert.equal(await a.mode(), "oidc", "unreachable: organisation account by default");
+  assert.equal(mode.calls[0].url, "/api/auth/config");
+
+  const f = fake([{ status: 401, body: { error: "Invalid login credentials" } }, { status: 429, body: { error: "Too many failed attempts" } },
+    { status: 200, body: { ok: true } }, { status: 200, body: session() },
+    { status: 400, body: { error: "The password must have at least 12 characters." } },
+    { status: 200, body: { ok: true } }, { status: 200, body: session() }]);
+  const auth = createServerAuth("/api", { fetchImpl: f.impl, now: () => T, timers: noTimers });
+  const events = [];
+  auth.onAuthStateChange((e) => events.push(e));
+  const bad = await auth.signInWithPassword({ email: "u1@x.eu", password: "x" });
+  assert.equal(bad.error.message, "Invalid login credentials");
+  assert.equal((await auth.signInWithPassword({ email: "u1@x.eu", password: "x" })).error.status, 429);
+  const ok = await auth.signInWithPassword({ email: "u1@x.eu", password: "right" });
+  assert.equal(ok.error, null);
+  assert.equal(ok.data.session.user.id, "u1");
+  assert.deepEqual(f.calls.slice(0, 4).map((c) => `${c.method} ${c.url}`),
+    ["POST /api/auth/password", "POST /api/auth/password", "POST /api/auth/password", "GET /api/auth/session"]);
+  assert.equal((await auth.updateUser({ password: "short" })).error.message, "The password must have at least 12 characters.");
+  const up = await auth.updateUser({ password: "a good long password" });
+  assert.equal(up.error, null);
+  assert.equal(up.data.user.id, "u1");
+  assert.equal(f.calls[5].url, "/api/auth/password/change");
+  await Promise.resolve();
+  assert.deepEqual(events, ["INITIAL_SESSION", "SIGNED_IN", "USER_UPDATED"]);
+});

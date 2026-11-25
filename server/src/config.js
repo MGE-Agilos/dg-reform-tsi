@@ -21,10 +21,14 @@ export function loadConfig(env = process.env) {
     throw new ConfigError("PUBLIC_URL must be the address of the site, e.g. https://tsi-explorer.example.eu");
   }
   const authMode = (env.AUTH_MODE || "oidc").toLowerCase();
-  if (!["oidc", "dev"].includes(authMode)) throw new ConfigError("AUTH_MODE must be oidc or dev");
+  if (!["oidc", "password", "dev"].includes(authMode)) throw new ConfigError("AUTH_MODE must be oidc, password or dev");
   // The test sign-in (any e-mail address, no password) only exists on a local address.
   if (authMode === "dev" && !LOOPBACK.has(pub.hostname)) {
     throw new ConfigError("AUTH_MODE=dev is only allowed when PUBLIC_URL is a local address (localhost)");
+  }
+  // Passwords never travel in clear: HTTPS, except for a local test.
+  if (authMode === "password" && pub.protocol !== "https:" && !LOOPBACK.has(pub.hostname)) {
+    throw new ConfigError("AUTH_MODE=password needs an https:// PUBLIC_URL");
   }
   const cfg = {
     port: Number(env.PORT || 3000),

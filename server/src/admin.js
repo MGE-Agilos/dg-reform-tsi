@@ -1,6 +1,8 @@
-// Administration of the explorer's users (testers table), same contract as the cloud function tsi-admin without
-// passwords: people sign in with their organisation account, so an invitation only grants access.
+// Administration of the explorer's users (testers table), same contract as the cloud function tsi-admin.
+// AUTH_MODE=oidc: people sign in with their organisation account, so an invitation only grants access.
+// AUTH_MODE=password: an invitation (or a reset) also gives a temporary password, shown once to the administrator.
 import { serviceToken } from "./tokens.js";
+import { hashPassword, tempPassword } from "./passwords.js";
 
 export class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -61,15 +63,39 @@ export function store(cfg, fetchImpl) {
     setRole: (email, role) => call(`/testers?email=${eq(email)}`, {
       method: "PATCH", headers: { "Prefer": "return=minimal" }, body: JSON.stringify({ role }),
     }, "Saving the role"),
+    passwords: async () => (await call(`/user_passwords?select=email,must_change&limit=${MAX_USERS}`, {}, "Reading passwords")) ?? [],
+    password: async (email) => (await call(`/user_passwords?select=email,hash,must_change,failed_count,locked_until&email=${eq(email)}`,
+      {}, "Reading the password"))?.[0] ?? null,
+    savePassword: (row) => call("/user_passwords?on_conflict=email", {
+      method: "POST", headers: { "Prefer": "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify({ failed_count: 0, locked_until: null, ...row, updated_at: new Date().toISOString() }),
+    }, "Saving the password"),
+    signInResult: (email, fields) => call(`/user_passwords?email=${eq(email)}`, {
+      method: "PATCH", headers: { "Prefer": "return=minimal" }, body: JSON.stringify(fields),
+    }, "Saving the sign-in"),
     remove: (email) => call(`/testers?email=${eq(email)}`, { method: "DELETE", headers: { "Prefer": "return=minimal" } }, "Revoking the access"),
   };
 }
 
-/** Runs one action for the administrator `me` (already checked). */
-export async function runAdmin(db, me, v) {
+/** New temporary password for `email` (must be changed at the next sign-in); returns it in clear, once. */
+export async function giveTempPassword(db, email) {
+  const password = tempPassword();
+  await db.savePassword({ email, hash: await hashPassword(password), must_change: true });
+  return password;
+}
+
+/** Runs one action for the administrator `me` (already checked). `mode`: AUTH_MODE of the installation. */
+export async function runAdmin(db, me, v, mode = "oidc") {
+  const withPasswords = mode === "password";
   if (v.action === "list") {
     const rows = await db.testers();
     const seen = await Promise.all(rows.map((t) => db.lastSeen(t.email).catch(() => null)));
+    if (withPasswords) {
+      const pw = new Map((await db.passwords()).map((r) => [r.email, r]));
+      return { users: rows.map((t, i) => ({ email: t.email, role: t.role, invited_at: t.invited_at ?? null, invited_by: t.invited_by ?? null,
+        account: true, password_mode: true, has_password: pw.has(t.email), must_change_password: pw.get(t.email)?.must_change === true,
+        email_confirmed_at: seen[i], last_sign_in_at: seen[i] })) };
+    }
     // sso: accounts of the identity provider; "last_sign_in_at" is the last page opened in the explorer.
     return { users: rows.map((t, i) => ({ email: t.email, role: t.role, invited_at: t.invited_at ?? null, invited_by: t.invited_by ?? null,
       account: true, sso: true, email_confirmed_at: seen[i], last_sign_in_at: seen[i], must_change_password: false })) };
@@ -77,10 +103,13 @@ export async function runAdmin(db, me, v) {
   if (v.action === "invite") {
     if (await db.tester(v.email)) throw new HttpError(409, "This e-mail already has access to the explorer");
     await db.upsert({ email: v.email, role: v.role, invited_by: me, invited_at: new Date().toISOString() });
+    if (withPasswords) return { email: v.email, role: v.role, existing: false, password: await giveTempPassword(db, v.email) };
     return { email: v.email, role: v.role, existing: false };
   }
   if (v.action === "reset_password") {
-    throw new HttpError(400, "Not available: users sign in with their organisation account (no password in the explorer)");
+    if (!withPasswords) throw new HttpError(400, "Not available: users sign in with their organisation account (no password in the explorer)");
+    if (!(await db.tester(v.email))) throw new HttpError(404, "Not a user of the explorer");
+    return { email: v.email, password: await giveTempPassword(db, v.email) };
   }
   const row = await db.tester(v.email);
   if (!row) throw new HttpError(404, "Not a user of the explorer");
