@@ -400,12 +400,14 @@ test("config: POSTGREST_URL must not be under LLM_BASE_URL", () => {
 
 test("assistant-check: error excerpts never show the key or token-like strings", async () => {
   const llm = { baseUrl: "https://g/v1", apiKey: "sk-secret-key", model: "m", expandModel: "m", reasoning: false };
-  const long = "A".repeat(30) + "-" + "b".repeat(10);
-  const leak = async () => new Response(`bad key sk-secret-key, token ${long}, see reasoning`, { status: 401 });
+  const long = "Ab3".repeat(12) + "-" + "x9".repeat(5);
+  const leak = async () => new Response(`bad key sk-secret-key, token ${long}, see reasoning, `
+    + `max_completion_tokens_is_unsupported at api.tech.ec.europa.eu.example`, { status: 401 });
   const r = await checkGateway(llm, leak);
   for (const x of r) {
     assert.ok(!x.detail.includes("sk-secret-key"));
-    assert.ok(!x.detail.includes("AAAAAAAAAAAAAAAAAAAA"));
+    assert.ok(!x.detail.includes("Ab3Ab3Ab3"));
     assert.match(x.detail, /^HTTP 401: bad key …, token …, see reasoning/);
+    assert.match(x.detail, /max_completion_tokens_is_unsupported at api\.tech\.ec\.europa\.eu\.example/, "words stay readable");
   }
 });
