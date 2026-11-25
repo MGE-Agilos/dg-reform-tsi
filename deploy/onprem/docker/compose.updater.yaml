@@ -1,0 +1,26 @@
+# Monthly data update of the self-hosted TSI x CSR Explorer (deploy/onprem/README.md, step 11).
+# Its own compose file: never started by "up" of the explorer's stack, only by "run" (cron of the host).
+#
+#   podman-compose -f compose.updater.yaml build
+#   podman-compose -f compose.updater.yaml run --rm updater --skip-deliverables   # options of update.sh
+#   podman-compose -f compose.updater.yaml run --rm updater --scheduled           # from cron
+#   (docker compose -f compose.updater.yaml ... works the same way)
+#
+# Put this file and updater.env (from updater.env.example) in a folder of the host, for example ~/tsi-docker/updater/,
+# and set "context" below to the folder of the repository.
+services:
+  updater:
+    build:
+      context: ../../..
+      dockerfile: deploy/onprem/docker/updater.Dockerfile
+    image: localhost/tsi-explorer-updater
+    env_file: updater.env
+    volumes:
+      - tsi-update-output:/app/output
+      - tsi-update-cache:/app/.cache
+      - tsi-update-logs:/app/logs
+
+volumes:
+  tsi-update-output:
+  tsi-update-cache:
+  tsi-update-logs:

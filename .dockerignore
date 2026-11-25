@@ -1,0 +1,17 @@
+# Build context of the images (deploy/onprem/docker/): code only, never data, secrets or local environments.
+.git
+.venv
+.cache
+.env
+.env.*
+.secrets
+output
+logs
+**/node_modules
+**/__pycache__
+deploy/prod/build
+*.zip
+*.pdf
+*.docx
+*.msg
+User Feedback
