@@ -75,5 +75,6 @@ export function loadConfig(env = process.env) {
       redirectUri: `${publicUrl}/api/auth/callback`,
     };
   }
+  if (cfg.llm && (cfg.postgrestUrl + "/").startsWith(cfg.llm.baseUrl + "/")) throw new ConfigError("POSTGREST_URL must not be under LLM_BASE_URL");
   return cfg;
 }

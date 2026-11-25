@@ -8,6 +8,13 @@ import { proxyFetch } from "./src/assistant.js";
 const PING_TOOL = { type: "function", function: { name: "ping", description: "Health check: call it with ok set to true.",
   parameters: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] } } };
 
+/** Error excerpt without the key and without long token-like strings. */
+function mask(text, apiKey) {
+  let s = text;
+  if (apiKey) s = s.split(apiKey).join("…");
+  return s.replace(/[A-Za-z0-9_\-\.]{20,}/g, "…");
+}
+
 /** [{ name, ok, detail }] for the tool call and the JSON mode; never throws. */
 export async function checkGateway(llm, fetchImpl) {
   const call = async (body) => {
@@ -23,11 +30,11 @@ export async function checkGateway(llm, fetchImpl) {
       return { error: `no answer (${e?.cause?.code || e?.name || "network error"})` };
     }
     const text = await res.text();
-    if (!res.ok) return { error: `HTTP ${res.status}: ${text.slice(0, 300)}` };
+    if (!res.ok) return { error: `HTTP ${res.status}: ${mask(text.slice(0, 300), llm.apiKey)}` };
     try {
       return { message: JSON.parse(text)?.choices?.[0]?.message ?? null };
     } catch {
-      return { error: `the answer is not JSON: ${text.slice(0, 200)}` };
+      return { error: `the answer is not JSON: ${mask(text.slice(0, 200), llm.apiKey)}` };
     }
   };
   const tool = await call({ messages: [{ role: "user", content: "Call the ping tool with ok set to true." }], tools: [PING_TOOL] });
@@ -51,8 +58,12 @@ async function main() {
     console.error("LLM_BASE_URL is not set: load the service settings first (set -a; . /etc/tsi-explorer/server.env; set +a)");
     return 2;
   }
-  console.log(`Gateway ${llm.baseUrl}, model ${llm.model}, reasoning_effort ${llm.reasoning ? "sent" : "not sent"}`
-    + `${process.env.HTTPS_PROXY || process.env.https_proxy ? ", through the proxy" : ""}`);
+  const shown = new URL(llm.baseUrl);
+  shown.username = ""; shown.password = "";
+  const env = process.env;
+  const proxySet = Boolean(env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy);
+  console.log(`Gateway ${shown.href.replace(/\/+$/, "")}, model ${llm.model}, reasoning_effort ${llm.reasoning ? "sent" : "not sent"}, `
+    + `proxy: HTTPS_PROXY ${proxySet ? "set" : "unset"}, NO_PROXY ${env.NO_PROXY || env.no_proxy || "unset"}`);
   const results = await checkGateway(llm, await proxyFetch());
   for (const r of results) console.log(`${r.ok ? "OK  " : "FAIL"} ${r.name}: ${r.detail}`);
   if (results.some((r) => /reasoning/i.test(r.detail))) console.log("Hint: the gateway refuses reasoning_effort: set LLM_REASONING=off");

@@ -187,6 +187,9 @@ export function createApp(cfg, { fetchImpl = fetch, provider = null, log = conso
 
   async function runAssistant(req, res) {
     if (!assistant) return send(res, 503, { error: "The assistant is not available yet on this installation" });
+    const m = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization || "");
+    const claims = m && verifyJwt(m[1], cfg.jwtSecret);
+    if (claims?.role !== "authenticated") return send(res, 401, { error: "Invalid or expired session" });
     const out = await assistant(req, await readBody(req));
     send(res, out.status, Buffer.from(await out.arrayBuffer()), { "Content-Type": out.headers.get("content-type") || "application/json" });
   }

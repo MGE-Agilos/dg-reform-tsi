@@ -11,9 +11,11 @@ import { loadConfig, ConfigError } from "../src/config.js";
 import { createApp, safeNext, parseCookies } from "../src/app.js";
 import { oidcProvider } from "../src/auth.js";
 import { runAdmin, validate, HttpError } from "../src/admin.js";
-import { assistantEnv, routedFetch, createAssistant } from "../src/assistant.js";
+import { assistantEnv, routedFetch, createAssistant, proxyFetch } from "../src/assistant.js";
 import { llmConfig } from "../src/config.js";
 import { checkGateway } from "../assistant-check.js";
+import { request as httpRequest } from "node:http";
+import { connect as netConnect } from "node:net";
 
 const SECRET = "s".repeat(40);
 const SESSION = "k".repeat(40);
@@ -330,4 +332,80 @@ test("assistant-check: tool and JSON calls; gateway errors shown with status and
   assert.match((await checkGateway(llm, noTool))[0].detail, /without calling the tool/);
   const down = async () => { throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }); };
   assert.match((await checkGateway(llm, down))[0].detail, /no answer \(ECONNREFUSED\)/);
+});
+
+// ---------- hardening of the assistant ----------
+
+test("proxyFetch: goes through HTTP_PROXY / HTTPS_PROXY, direct when NO_PROXY matches", async () => {
+  const viaProxy = [];
+  const targetSeen = [];
+  const target = createServer((req, res) => { targetSeen.push(req.headers.authorization || ""); res.setHeader("content-type", "application/json"); res.end("{\"ok\":true}"); });
+  await new Promise((r) => target.listen(0, "127.0.0.1", r));
+  const targetPort = target.address().port;
+  const proxy = createServer((req, res) => { // absolute-form request (plain http target)
+    viaProxy.push(`GET ${req.url}`);
+    const up = httpRequest(req.url, { method: req.method, headers: req.headers }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
+    req.pipe(up);
+  });
+  proxy.on("connect", (req, socket, head) => { // tunnel (CONNECT)
+    viaProxy.push(`CONNECT ${req.url}`);
+    const [host, port] = req.url.split(":");
+    const up = netConnect(Number(port), host, () => { socket.write("HTTP/1.1 200 Connection Established\r\n\r\n"); up.write(head); up.pipe(socket); socket.pipe(up); });
+    up.on("error", () => socket.destroy()); socket.on("error", () => up.destroy());
+  });
+  await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
+  const saved = {};
+  const names = ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"];
+  for (const k of names) { saved[k] = process.env[k]; delete process.env[k]; }
+  const url = `http://127.0.0.1:${targetPort}/v1/ping`;
+  try {
+    process.env.HTTP_PROXY = `http://127.0.0.1:${proxy.address().port}`;
+    process.env.HTTPS_PROXY = process.env.HTTP_PROXY;
+    const viaFetch = await proxyFetch();
+    const res = await viaFetch(url, { headers: { authorization: "Bearer gw-key" } });
+    assert.deepEqual(await res.json(), { ok: true });
+    assert.equal(viaProxy.length, 1);
+    assert.ok(viaProxy[0].includes(`127.0.0.1:${targetPort}`));
+    assert.equal(targetSeen[0], "Bearer gw-key");
+    process.env.NO_PROXY = "127.0.0.1";
+    const direct = await proxyFetch();
+    assert.deepEqual(await (await direct(url, {})).json(), { ok: true });
+    assert.equal(viaProxy.length, 1, "NO_PROXY: the request must not go through the proxy");
+    assert.equal(targetSeen.length, 2);
+  } finally {
+    for (const k of names) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+    await new Promise((r) => proxy.close(r)); await new Promise((r) => target.close(r));
+  }
+});
+
+test("assistant route: the token is verified in the service before anything is called", async () => {
+  const pg = fakePostgrest();
+  const assistant = async () => Response.json({ answer: "x" });
+  const s = await serve(LLM_ENV, { fetchImpl: pg.impl, assistant });
+  try {
+    const post = (headers) => fetch(`${s.base}/api/assistant`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: "{}" });
+    const bad = await post({ authorization: "Bearer garbage" });
+    assert.equal(bad.status, 401);
+    assert.deepEqual(await bad.json(), { error: "Invalid or expired session" });
+    assert.equal((await post({})).status, 401);
+    assert.equal((await post({ authorization: `Bearer ${signJwt({ role: "service_role", exp: Math.floor(Date.now() / 1000) + 60 }, SECRET)}` })).status, 401);
+    assert.equal(pg.calls.length, 0);
+  } finally { await s.close(); }
+});
+
+test("config: POSTGREST_URL must not be under LLM_BASE_URL", () => {
+  assert.throws(() => loadConfig({ ...BASE_ENV, ...LLM_ENV, LLM_BASE_URL: "http://pgrst/v1", POSTGREST_URL: "http://pgrst/v1/db" }), /POSTGREST_URL must not be under LLM_BASE_URL/);
+  assert.ok(loadConfig({ ...BASE_ENV, ...LLM_ENV, LLM_BASE_URL: "http://pgrst/v1", POSTGREST_URL: "http://pgrst/v10" }));
+});
+
+test("assistant-check: error excerpts never show the key or token-like strings", async () => {
+  const llm = { baseUrl: "https://g/v1", apiKey: "sk-secret-key", model: "m", expandModel: "m", reasoning: false };
+  const long = "A".repeat(30) + "-" + "b".repeat(10);
+  const leak = async () => new Response(`bad key sk-secret-key, token ${long}, see reasoning`, { status: 401 });
+  const r = await checkGateway(llm, leak);
+  for (const x of r) {
+    assert.ok(!x.detail.includes("sk-secret-key"));
+    assert.ok(!x.detail.includes("AAAAAAAAAAAAAAAAAAAA"));
+    assert.match(x.detail, /^HTTP 401: bad key …, token …, see reasoning/);
+  }
 });
