@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import {
   handle, agentLoop, runTool, validate, allowedOrigins, corsHeaders, answerText, csrMatches, normalizeCsr, canonicalCsrId,
   canonicalDocId, docIdOf,
-  HttpError, CHAT_SYSTEM, impactSystem, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
+  HttpError, CHAT_SYSTEM, impactSystem, impactDataSystem, TOOLS_IMPACT_DATA, TOOLS_CHAT, TOOLS_IMPACT, MAX_STEPS, BUDGET_MS, DEADLINE_MS, DEFAULT_MODEL,
   withCacheBreakpoint, emptyStats, parseImpact, extractVerdict, extractProject, jwtSub, SAVE_TIMEOUT_MS,
   validateBriefing, validateOccasion, OCCASION_FORMATS, parseBriefing, runBriefing, BRIEFING_SYSTEM, BRIEFING_SCHEMA, BRIEFING_FIELDS, briefingUserMessage, numbersIn, unverifiedTexts, MAX_FACTS, MAX_TOKENS,
   validateExpand, cleanTerms, EXPAND_MODEL, EXPAND_MAX_QUERY, EXPAND_SCHEMA,
@@ -1294,4 +1294,30 @@ test("openai: tool calls are sent back with the API's fields only", async () => 
   const msgs = sent(f.modelCalls()[1]).messages;
   const a = msgs.find((m: any) => m.role === "assistant");
   assert.deepEqual(a.tool_calls, [{ id: "call_x", type: "function", function: { name: "list_projects", arguments: "{}" } }]);
+});
+
+test("impact prompt without web search: data tools, no web tool names, same report format and score line", () => {
+  const p = impactDataSystem();
+  assert.doesNotMatch(p, /web_search|web_fetch/);
+  assert.match(p, /No web search was made/);
+  assert.match(p, /get_csr/);
+  assert.match(p, /search_country_reports/);
+  const format = impactSystem().slice(impactSystem().indexOf("Answer with a Markdown report"));
+  assert.ok(format.length > 500 && p.endsWith(format));
+  assert.deepEqual(TOOLS_IMPACT_DATA.map((t) => t.name), ["get_project", "search_projects", "get_csr", "search_csrs", "search_recitals", "search_country_reports"]);
+});
+
+test("openai: impact with the data tools and their prompt, effort high, 32000 tokens; saved through TSI_REST_URL with the gateway model", async () => {
+  const f = fakeFetch({ modelUrl: OA_URL, model: [oaTools(["get_project", { project_id: "p1" }]), oaText(REPORT)] });
+  const res = await handle(post(impactBody, { token: USER_JWT }), { ...OA_ENV, SUPABASE_SERVICE_ROLE_KEY: "service-jwt" }, f.impl);
+  assert.deepEqual(await res.json(), { answer: REPORT, saved: true });
+  const b = sent(f.modelCalls()[0]);
+  assert.equal(b.messages[0].content, impactDataSystem());
+  assert.deepEqual(b.tools.map((t: any) => t.function.name), TOOLS_IMPACT_DATA.map((t) => t.name));
+  assert.equal(b.reasoning_effort, "high");
+  assert.equal(b.max_completion_tokens, 32000);
+  const save = f.calls.find((c) => c.url === "http://127.0.0.1:3001/impact_reports")!;
+  assert.equal(sent(save).model, "gpt-5.1");
+  assert.equal(sent(save).source, "web");
+  assert.equal(new Headers(save.init.headers).get("Authorization"), "Bearer service-jwt");
 });

@@ -167,6 +167,23 @@ Rules:
 
 ${FILTER_VALUES}`;
 
+const IMPACT_FORMAT = `Answer with a Markdown report with these sections:
+**Project overview** (objectives and actions), **Evidence of positive impact**, **Evidence of negative impact or
+limitations**, **Impact by level** (country, Europe, world), **Objectives** (a table: objective | conclusion:
+achieved, partly achieved, not achieved or insufficient evidence | rationale), **Overall conclusion** (one or two
+sentences). Never use the word "verdict".
+End with exactly one line: "Impact score: X/10 (strong | moderate | weak) — Confidence: high | medium | low".
+The score rates the POSITIVE impact documented in your report, on outcomes rather than outputs:
+- 0: no evidence of positive impact (outputs not used, reform abandoned, contradicted or reversed).
+- 1-3 (weak): outputs delivered (reports, recommendations, trainings) but little or no evidence of uptake; a reform
+  adopted outside the project or going against its objectives counts as no uptake.
+- 4-6 (moderate): the supported reform was adopted or partly implemented, attribution to the project plausible but
+  partial or early.
+- 7-8 (strong): documented results or outcomes plausibly attributable to the project.
+- 9-10 (strong): well-documented, sustained outcomes clearly attributable to the project.
+An objective whose intended reform did not happen, or went the other way, is "not achieved", not "insufficient
+evidence".`;
+
 export function impactSystem(maxSearches: number = WEB_SEARCH_MAX_USES): string {
   return `You are an impact analyst for the European Commission's DG REFORM. You assess the impact of one Technical
 Support Instrument (TSI) or SRSP project on its country, on Europe and on the world, against the project's own
@@ -196,22 +213,39 @@ Rules:
   the confidence to low.
 - Write in English, concise and factual. Do not write any text before the report (no "I will search...").
 
-Answer with a Markdown report with these sections:
-**Project overview** (objectives and actions), **Evidence of positive impact**, **Evidence of negative impact or
-limitations**, **Impact by level** (country, Europe, world), **Objectives** (a table: objective | conclusion:
-achieved, partly achieved, not achieved or insufficient evidence | rationale), **Overall conclusion** (one or two
-sentences). Never use the word "verdict".
-End with exactly one line: "Impact score: X/10 (strong | moderate | weak) — Confidence: high | medium | low".
-The score rates the POSITIVE impact documented in your report, on outcomes rather than outputs:
-- 0: no evidence of positive impact (outputs not used, reform abandoned, contradicted or reversed).
-- 1-3 (weak): outputs delivered (reports, recommendations, trainings) but little or no evidence of uptake; a reform
-  adopted outside the project or going against its objectives counts as no uptake.
-- 4-6 (moderate): the supported reform was adopted or partly implemented, attribution to the project plausible but
-  partial or early.
-- 7-8 (strong): documented results or outcomes plausibly attributable to the project.
-- 9-10 (strong): well-documented, sustained outcomes clearly attributable to the project.
-An objective whose intended reform did not happen, or went the other way, is "not achieved", not "insufficient
-evidence".`;
+${IMPACT_FORMAT}`;
+}
+
+/** Impact prompt for a connector without web search (GPT@EC): the explorer's data only. */
+export function impactDataSystem(): string {
+  return `You are an impact analyst for the European Commission's DG REFORM. You assess the impact of one Technical
+Support Instrument (TSI) or SRSP project on its country, on Europe and on the world, against the project's own
+objectives. The user gives a project title or id. You have no web access: you only know what the tools return from the
+explorer's database.
+
+Method:
+1. Call get_project with the project id to read the project: identify its objectives, the actions carried out and the
+   CSRs it is linked to. If you only have a title, call search_projects first to find the id. The summary is
+   AI-generated and the deliverables' full texts are not available.
+2. Call get_csr for the most relevant linked CSRs: the Commission's assessment of their implementation tells whether
+   the reform area progressed. It covers the whole recommendation, not the project alone.
+3. Call search_country_reports and search_recitals with precise English queries naming the country, the institution
+   and the reform: the Commission's 2026 analysis of the country may say whether the reform was adopted, implemented
+   or is still pending. Use search_csrs for related recommendations of other years if useful.
+4. You have a limited number of steps: after a few tool calls, write the report with what you found.
+
+Rules:
+- Cite the project with a Markdown link to its URL, CSRs by id (csr-HR-2022-1), recitals by id (rec-HR-2026-12) and
+  country report passages with a Markdown link to the PDF page, e.g. [Portugal 2026 country report, p. 21](https://...#page=21).
+  Never invent a source, a URL, a figure or an impact.
+- CSR assessments, recitals and country reports describe the country and the reform area, not the project: say how
+  directly the evidence can be attributed to the project (causal link established, plausible, or unclear).
+- No web search was made: laws, evaluations and press coverage could not be checked. Say so in the Overall
+  conclusion, and set the confidence to low, or medium at most when the explorer's data documents the outcome directly.
+- When evidence is missing or too recent, say so: a short, honest report is better than a speculative one.
+- Write in English, concise and factual. Do not write any text before the report (no "I will search...").
+
+${IMPACT_FORMAT}`;
 }
 
 // ---------- tool schemas ----------
@@ -320,6 +354,14 @@ type ServiceConfig = { system: () => string; tools: Record<string, unknown>[]; c
 const SERVICES: Record<AgentService, ServiceConfig> = {
   chat: { system: () => CHAT_SYSTEM, tools: TOOLS_CHAT, clientTools: ["search_projects", "list_projects", "get_project", "search_csrs", "get_csr", "search_recitals", "search_country_reports"] },
   impact: { system: () => impactSystem(), tools: TOOLS_IMPACT, clientTools: ["get_project", "search_projects"] },
+};
+
+export const TOOLS_IMPACT_DATA: Record<string, unknown>[] = [GET_PROJECT, SEARCH_PROJECTS, GET_CSR, SEARCH_CSRS, SEARCH_RECITALS, SEARCH_COUNTRY_REPORTS];
+
+/** Without Anthropic's server tools (web search and fetch), the impact analysis relies on the explorer's data. */
+const SERVICES_DATA: Record<AgentService, ServiceConfig> = {
+  chat: SERVICES.chat,
+  impact: { system: () => impactDataSystem(), tools: TOOLS_IMPACT_DATA, clientTools: TOOLS_IMPACT_DATA.map((t) => String(t.name)) },
 };
 
 // ---------- tool input validation ----------
@@ -973,7 +1015,7 @@ function openaiConnector(service: AgentService, cfg: ServiceConfig, messages: Me
   stats: RunStats): Connector {
   const oa = openaiConfig(env);
   const model = modelOf(env, service);
-  const tools = cfg.tools.map(functionTool);
+  const tools = cfg.tools.filter((t) => t.input_schema).map(functionTool);
   const conversation: OAMessage[] = [{ role: "system", content: cfg.system() }, ...messages.map((m) => ({ role: m.role, content: m.content }))];
   let choice: OAChoice = { message: {}, finish_reason: null };
   return {
@@ -1008,8 +1050,8 @@ export async function agentLoop(
   service: AgentService, messages: Message[], env: Env, fetchImpl: FetchImpl, now: () => number = Date.now,
   ctx?: { restUrl: string; apikey: string; userAuth: string }, stats: RunStats = emptyStats(),
 ): Promise<{ answer: string; steps: number; stats: RunStats }> {
-  const cfg = SERVICES[service];
   const provider = providerOf(env);
+  const cfg = (provider === "openai" ? SERVICES_DATA : SERVICES)[service];
   const conn = provider === "openai"
     ? openaiConnector(service, cfg, messages, env, fetchImpl, stats)
     : anthropicConnector(service, cfg, messages, env, fetchImpl, stats);
@@ -1158,7 +1200,7 @@ async function saveImpact(answer: string, messages: Message[], env: Env, rest: s
   const row = {
     project_id: project.project_id, title: project.title, score: impact.score, level: impact.level,
     confidence: impact.confidence, verdict: extractVerdict(answer), report: answer,
-    model: env.TSI_MODEL || DEFAULT_MODEL, source: "web", created_by: jwtSub(authorization),
+    model: modelOf(env, "impact"), source: "web", created_by: jwtSub(authorization),
   };
   try {
     const res = await fetchImpl(`${rest}/impact_reports`, {
