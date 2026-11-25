@@ -18,6 +18,11 @@ const { SUPABASE_URL, SUPABASE_ANON_KEY, PROXY_URL } = CFG;
 const SERVER_AUTH = CFG.AUTH_MODE === "server";
 // Self-hosted installation signing in with e-mail + password (service in AUTH_MODE=password): known at start-up.
 let PASSWORD_MODE = false;
+// Latest Semester year of the recitals and of the country reports in the database (monthly update: 2027 once the
+// Commission publishes it); 2026 until read. Read once per session by ensureDataYears().
+let RECITALS_YEAR = 2026;
+let REPORTS_YEAR = 2026;
+let dataYearsPromise = null;
 const IMPACT_RUN_NOTE = AI_WEB_SEARCH ? `Takes 30 s to 2 min; uses web search (${AI_NAME}).` : `Takes 30 s to 2 min; AI model: ${AI_NAME}.`;
 document.querySelectorAll("[data-ai-name]").forEach((el) => { el.textContent = AI_NAME; });
 
@@ -894,14 +899,30 @@ function csrsModeLinks(mode, f) {
   const a = (href, label, on) => `<a class="btn btn-secondary seg"${on ? ' aria-current="page"' : ""} href="${esc(href)}">${label}</a>`;
   return `<p class="seg-group" role="group" aria-label="Show">${a(docs, "By document", mode === "docs")}`
     + `${a(recs, "All recommendations", mode === "recs")}${a(recitals, `Recitals ${RECITALS_YEAR}`, mode === "recitals")}`
-    + `${a(reports, `Country reports ${RECITALS_YEAR}`, mode === "reports")}</p>`;
+    + `${a(reports, `Country reports ${REPORTS_YEAR}`, mode === "reports")}</p>`;
 }
 
 // ---------- Country reports (country_reports, country_report_passages: migration 010) ----------
-const REPORTS_YEAR = 2026; // declared here: RECITALS_YEAR comes later in the file (temporal dead zone at load)
-const REPORTS_ABOUT = `Country reports are the Commission's staff working documents published with the ${REPORTS_YEAR} recommendations: `
+const reportsAbout = () => `Country reports are the Commission's staff working documents published with the ${REPORTS_YEAR} recommendations: `
   + `about 100 pages per Member State analysing its economy, reforms and investment needs. Search them by word to find `
   + `the passages on a topic, with a link to the page of the PDF.`;
+
+/** Latest year of the recitals and of the country reports (one small request each, once per session; errors keep 2026). */
+function ensureDataYears() {
+  const latest = async (table) => {
+    try {
+      const res = await sb.from(table).select("year").order("year", { ascending: false }).limit(1);
+      return res.error ? null : num(res.data?.[0]?.year) || null;
+    } catch {
+      return null;
+    }
+  };
+  dataYearsPromise ||= Promise.all([latest("csr_recitals"), latest("country_reports")]).then(([recitals, reports]) => {
+    if (recitals) RECITALS_YEAR = recitals;
+    if (reports) REPORTS_YEAR = reports;
+  });
+  return dataYearsPromise;
+}
 
 function pdfPage(url, page) {
   return url ? `${String(url).split("#")[0]}#page=${page}` : "";
@@ -914,7 +935,7 @@ async function renderReportList(p, seq, { title, country }) {
   const rel = await searchTerms(f.q, f.exact);
   if (stale(seq)) return;
   f.terms = rel.terms;
-  const intro = `<p class="muted">${esc(REPORTS_ABOUT)}</p>`;
+  const intro = `<p class="muted">${esc(reportsAbout())}</p>`;
   const modes = csrsModeLinks("reports", f);
   const form = filterForm("csrs",
     `<input type="hidden" name="view" value="reports">` + (f.exact ? `<input type="hidden" name="exact" value="1">` : "")
@@ -961,12 +982,11 @@ async function renderReportList(p, seq, { title, country }) {
 }
 
 // ---------- Recitals of the Commission recommendations (csr_recitals, migration 009) ----------
-const RECITALS_YEAR = 2026;
 const RECITAL_COLS = "recital_id,country,year,number,text,source_url,doc_id";
 const RECITAL_EXCERPT = 420;
-const RECITALS_ABOUT = `Recitals are the numbered paragraphs ("Whereas: (1)…") that precede the recommendations in each ${RECITALS_YEAR} `
+const recitalsAbout = () => `Recitals are the numbered paragraphs ("Whereas: (1)…") that precede the recommendations in each `
   + `Commission document. They set out the Commission's analysis of the country's situation and challenges, so they cover `
-  + `topics that the recommendations only mention briefly. Available for ${RECITALS_YEAR} only.`;
+  + `topics that the recommendations only mention briefly. Available from 2026 (latest: ${RECITALS_YEAR}).`;
 
 /** Recital text matches the words, or one of the related terms (substring or English full-text search). */
 function recitalMatchFilter(text, terms = []) {
@@ -1019,7 +1039,7 @@ async function renderRecitalList(p, seq, { title, country }) {
   const res = await fetchPage((opts) => recitalsQuery(f, opts), page);
   if (stale(seq)) return;
   if (res.redirectPage) return redirectToPage("csrs", p, res.redirectPage);
-  const intro = `<p class="muted">${esc(RECITALS_ABOUT)}</p>`;
+  const intro = `<p class="muted">${esc(recitalsAbout())}</p>`;
   const modes = csrsModeLinks("recitals", f);
   if (res.error) {
     if (relationMissing(res)) {
@@ -1048,7 +1068,7 @@ async function renderRecitalList(p, seq, { title, country }) {
 
 /** The country report of a country and year, or null (none, or the table is not available). */
 async function countryReport(country, year) {
-  if (year !== RECITALS_YEAR) return null;
+  if (year < 2026) return null; // first country reports kept: 2026
   try {
     const res = await sb.from("country_reports").select("title,source_url,pages").eq("country", country).eq("year", year).maybeSingle();
     return res.error ? null : res.data;
@@ -1072,17 +1092,18 @@ function recitalsCard(recitals) {
   if (!recitals?.length) return "";
   const items = recitals.map((r) => `<li value="${esc(r.number)}"><p class="prose">${esc(r.text)}</p></li>`).join("");
   return `<div class="card"><details class="recitals"><summary><h3 class="section-label">Recitals (${fmtN(recitals.length)}): `
-    + `the Commission's analysis</h3></summary><p class="muted small">${esc(RECITALS_ABOUT)} `
+    + `the Commission's analysis</h3></summary><p class="muted small">${esc(recitalsAbout())} `
     + `<a href="${esc(hrefFor("csrs", { view: "recitals" }))}">Search all recitals</a></p>`
     + `<ol class="recital-list">${items}</ol></details></div>`;
 }
 
 /** Number of recitals matching a recommendation search (country filter kept); null when unknown or not applicable. */
 async function recitalMatchCount(f, tableName = "csr_recitals", idCol = "recital_id") {
-  if (!f.q || (f.year && f.year !== RECITALS_YEAR)) return null;
+  if (!f.q || (f.year && f.year < 2026)) return null;
   try {
     let q = sb.from(tableName).select(idCol, { count: "exact", head: true }).or(recitalMatchFilter(f.q, f.terms || []));
     if (f.country) q = q.eq("country", f.country);
+    if (f.year) q = q.eq("year", f.year);
     const res = await q;
     return res.error ? null : res.count ?? null;
   } catch {
@@ -1110,6 +1131,8 @@ function docCard(d, related = null) {
 }
 
 async function renderCsrs(p, seq) {
+  await ensureDataYears();
+  if (stale(seq)) return;
   const recitalsMode = p.get("view") === "recitals";
   const reportsMode = p.get("view") === "reports";
   const recsMode = !recitalsMode && !reportsMode && (p.get("view") === "recs" || Boolean((p.get("q") || "").trim()));
@@ -1173,7 +1196,7 @@ async function renderCsrList(p, seq, { title, years, country, year }) {
     nRecitals ? also("recitals", `${fmtN(nRecitals)} recital${nRecitals === 1 ? "" : "s"}`) : "",
     nPassages ? also("reports", `${fmtN(nPassages)} country report passage${nPassages === 1 ? "" : "s"}`) : "",
   ].filter(Boolean);
-  const recitalsNote = extra.length ? `<p class="related-notice small">The Commission's ${RECITALS_YEAR} analysis also mentions this: `
+  const recitalsNote = extra.length ? `<p class="related-notice small">The Commission's analysis (recitals, country reports) also mentions this: `
     + `${extra.join(" · ")}.</p>` : "";
 
   const form = filterForm("csrs",
@@ -1259,7 +1282,7 @@ async function renderCsrDoc(id, seq) {
   const commission = isCommission(d.stage);
   const keys = partLinkKeys(arr(d.csrs).flatMap((c) => arr(c.csr_parts)));
   const [, related, recitals, report] = await Promise.all([keys.length ? loadReviews(keys) : null,
-    year >= RELATED_YEAR ? loadRelated() : null, year === RECITALS_YEAR ? docRecitals(d.doc_id) : [],
+    year >= RELATED_YEAR ? loadRelated() : null, year >= 2026 ? docRecitals(d.doc_id) : [],
     countryReport(d.country, year)]);
   if (stale(seq)) return;
   const recs = [...arr(d.csrs)].sort(csrNumber);
