@@ -1,1 +1,5 @@
 tests/fixtures/* -text
+# Shell scripts run on Linux (cron, containers): always LF, also in a Windows working copy.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
