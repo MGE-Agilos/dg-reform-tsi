@@ -937,7 +937,7 @@ async function openaiRequest(service: ServiceName, oa: OpenAIConfig, body: Recor
   if (!res.ok) {
     const err = await res.json().catch(() => null) as { error?: { type?: unknown; code?: unknown } } | null;
     const kind = typeof err?.error?.code === "string" ? err.error.code : err?.error?.type;
-    console.log(JSON.stringify({ service, llmStatus: res.status, llmError: typeof kind === "string" ? kind.slice(0, 80) : null }));
+    console.log(JSON.stringify({ service, llmStatus: res.status, llmError: typeof kind === "string" ? kind.slice(0, 80) : null, requestId: res.headers.get("x-request-id") }));
     throw new HttpError(502, `Model service error ${res.status}`);
   }
   let json: OAResponse;
@@ -995,7 +995,7 @@ function openaiConnector(service: AgentService, cfg: ServiceConfig, messages: Me
     pushAssistant() {
       // Only the fields the API accepts back (not refusal, annotations...).
       const m: OAMessage = { role: "assistant", content: choice.message.content ?? null };
-      if (choice.message.tool_calls?.length) m.tool_calls = choice.message.tool_calls;
+      if (choice.message.tool_calls?.length) m.tool_calls = choice.message.tool_calls.map((c) => ({ id: String(c.id), type: "function", function: { name: String(c.function?.name ?? ""), arguments: String(c.function?.arguments ?? "{}") } }));
       conversation.push(m);
     },
     // Every tool call gets its answer, unknown tools included: the API refuses a call left unanswered.

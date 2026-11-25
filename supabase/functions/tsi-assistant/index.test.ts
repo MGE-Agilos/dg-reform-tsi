@@ -1270,6 +1270,7 @@ test("openai: length keeps the text with a note; content_filter and refusal 422;
     assert.deepEqual(await res.json(), { error: "Model service error 401" });
   } finally { console.log = orig; }
   assert.ok(logs.some((l) => l.includes('"llmStatus":401') && l.includes('"llmError":"invalid_issuer"')), logs.join("\n"));
+  assert.ok(logs.some((l) => l.includes('"requestId"')), logs.join("\n"));
   assert.ok(!logs.join("").includes("secret-detail") && !logs.join("").includes("gw-secret-test"));
 });
 
@@ -1283,4 +1284,14 @@ test("openai: missing gateway settings and unknown provider 500; usage summed wi
   const stats = emptyStats();
   await agentLoop("chat", chatBody.messages as any, OA_ENV, g.impl, Date.now, LOCAL_CTX, stats);
   assert.deepEqual([stats.steps, stats.input_tokens, stats.output_tokens, stats.cache_read_tokens], [1, 100, 20, 60]);
+});
+
+test("openai: tool calls are sent back with the API's fields only", async () => {
+  const reply: Reply = { body: { choices: [{ message: { role: "assistant", content: null,
+    tool_calls: [{ index: 0, id: "call_x", type: "function", function: { name: "list_projects", arguments: "{}", extra: "no" } }] }, finish_reason: "tool_calls" }] } };
+  const f = fakeFetch({ modelUrl: OA_URL, model: [reply, oaText("ok")] });
+  await agentLoop("chat", chatBody.messages as any, OA_ENV, f.impl, Date.now, LOCAL_CTX);
+  const msgs = sent(f.modelCalls()[1]).messages;
+  const a = msgs.find((m: any) => m.role === "assistant");
+  assert.deepEqual(a.tool_calls, [{ id: "call_x", type: "function", function: { name: "list_projects", arguments: "{}" } }]);
 });
